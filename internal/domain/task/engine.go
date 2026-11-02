@@ -1164,7 +1164,7 @@ func (e *Engine) rescheduleLoopTask(ctx context.Context, task *domain.Task) {
 	if err != nil || fresh == nil {
 		return
 	}
-	if fresh.Status == domain.TaskStatusPaused || fresh.Status == domain.TaskStatusCancelled {
+	if fresh.Status != domain.TaskStatusCompleted && fresh.Status != domain.TaskStatusFailed {
 		return
 	}
 	interval := task.LoopIntervalMinutes
@@ -1172,7 +1172,7 @@ func (e *Engine) rescheduleLoopTask(ctx context.Context, task *domain.Task) {
 		interval = 60
 	}
 	next := time.Now().Add(time.Duration(interval) * time.Minute)
-	if err := e.repo.RescheduleLoopTask(ctx, task.TenantID, task.TaskID, next); err != nil {
-		taskLog.Printf("[task] failed to reschedule loop task %s: %v", task.TaskID, err)
+	if err := e.repo.RescheduleLoopTaskIfCurrent(ctx, task.TenantID, task.TaskID, next, fresh.Status); err != nil {
+		taskLog.Printf("[task] loop task %s was not rescheduled: %v", task.TaskID, err)
 	}
 }

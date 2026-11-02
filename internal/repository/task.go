@@ -604,17 +604,25 @@ func (r *TaskRepository) StopLoopIfCurrent(ctx context.Context, tenantID, taskID
 	return nil
 }
 
-// RescheduleLoopTask resets a finished loop task back to scheduled with a new run time.
+// RescheduleLoopTask resets a finished loop task back to pending with a new run time.
 func (r *TaskRepository) RescheduleLoopTask(ctx context.Context, tenantID, taskID uuid.UUID, nextRunAt time.Time) error {
-	_, err := r.db.Exec(ctx, `
-		-- 状态必须重置为 'pending': 调度器的 ActivatePendingTasks 每500ms扫描
-		-- 'pending' 且 scheduled_at 到期的任务激活为 queued。
-		-- 原值 'scheduled' 没有任何调度路径处理, 会导致循环任务执行一次后永远停摆。
+	return r.RescheduleLoopTaskIfCurrent(ctx, tenantID, taskID, nextRunAt, domain.TaskStatusCompleted)
+}
+
+// RescheduleLoopTaskIfCurrent prevents a concurrent pause/cancel from being overwritten.
+func (r *TaskRepository) RescheduleLoopTaskIfCurrent(ctx context.Context, tenantID, taskID uuid.UUID, nextRunAt time.Time, expected domain.TaskStatus) error {
+	res, err := r.db.Exec(ctx, `
 		UPDATE tasks SET status = 'pending', next_run_at = $3, scheduled_at = $3,
 		                 completed_at = NULL, locked_at = NULL, worker_id = NULL,
 		                 progress = '{"total":0,"done":0,"failed":0}'
-		WHERE tenant_id = $1 AND task_id = $2`, tenantID, taskID, nextRunAt)
-	return err
+		WHERE tenant_id = $1 AND task_id = $2 AND status = $4`, tenantID, taskID, nextRunAt, expected)
+	if err != nil {
+		return err
+	}
+	if res.RowsAffected() == 0 {
+		return fmt.Errorf("task status is no longer %q; refusing to reschedule loop", expected)
+	}
+	return nil
 }
 
 // AccountStats 返回单个账号维度的仪表盘统计(账号切换后只看该账号的数据)。
