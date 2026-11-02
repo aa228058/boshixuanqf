@@ -724,8 +724,7 @@ func (s *AccountService) SetPoolStatus(ctx context.Context, tenantID, accountID 
 	if target != "active" && target != "standby" {
 		return fmt.Errorf("无效的池状态: %s", target)
 	}
-	acc, err := s.repo.GetByID(ctx, tenantID, accountID)
-	if err != nil {
+	if _, err := s.repo.GetByID(ctx, tenantID, accountID); err != nil {
 		return err
 	}
 	maxAccounts := 0
