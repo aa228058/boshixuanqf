@@ -428,16 +428,17 @@ func (e *Engine) executeScrapeMembers(ctx context.Context, task *domain.Task) {
 			AccountID:  accID,
 			TargetID:   "",
 			Action:     "scrape_members",
-			Status:     "not_supported",
-			ErrorCode:  "channel_members_not_found",
+			Status:     "success",
+			ErrorCode:  "no_visible_members",
+			Message:    "未采集到可见成员",
 			ExecutedAt: time.Now(),
 		}); err != nil {
 			taskLog.Printf("[scrape] log create failed: %v", err)
 		}
 		e.publishLog(task.TenantID, task.TaskID, &domain.TaskLog{
 			TaskID: task.TaskID, TenantID: task.TenantID, AccountID: accID,
-			Action: "scrape_members", Status: "not_supported",
-			ErrorCode: "channel_members_not_found", ExecutedAt: time.Now(),
+			Action: "scrape_members", Status: "success",
+			ErrorCode: "no_visible_members", Message: "未采集到可见成员", ExecutedAt: time.Now(),
 		})
 		return
 	}
