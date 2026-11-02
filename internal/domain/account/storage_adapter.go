@@ -92,7 +92,7 @@ func (a *PgxPoolAdapter) LoadSession() (*storage.Session, error) {
 
 	qCtx, qCancel := a.opCtx()
 	defer qCancel()
-	err := a.pool.QueryRow(qCtx, query, a.sessionName).Scan(
+	err := a.pool.QueryRow(qCtx, query, sessionName).Scan(
 		&sess.SessionID, &sess.DC, &sess.APIID, &sess.APIHash,
 		&sess.TestMode, &authKeyEnc, &stateEnc,
 		&sess.UserID, &sess.IsBot, &sess.FirstName,
