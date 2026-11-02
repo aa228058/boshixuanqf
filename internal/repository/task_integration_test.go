@@ -203,3 +203,90 @@ func TestClaimTimeoutTasks_ReclaimsExpiredLock(t *testing.T) {
 		t.Errorf("new worker = %v, want rescue-worker", claimed[0].WorkerID)
 	}
 }
+
+
+func TestUpdateProgressIfOwned_RejectsStaleWorker(t *testing.T) {
+	pool := connectTestDB(t)
+	ensureTasksTable(t, pool)
+	repo := NewTaskRepository(pool)
+	tenant := uuid.New()
+	id := seedTask(t, pool, tenant, string(domain.TaskTypeBroadcast), 5)
+	if _, err := pool.Exec(context.Background(),
+		`UPDATE tasks SET status='running', worker_id='current-worker', progress='{"done":1,"failed":0}'::jsonb WHERE task_id=$1`, id); err != nil {
+		t.Fatalf("set task lease: %v", err)
+	}
+
+	updated, err := repo.UpdateProgressIfOwned(context.Background(), tenant, id, "stale-worker",
+		domain.TaskProgress{Done: 5, Failed: 2, CurrentTarget: "stale"})
+	if err != nil {
+		t.Fatalf("stale worker update: %v", err)
+	}
+	if updated {
+		t.Fatal("stale worker unexpectedly updated progress")
+	}
+
+	var progress domain.TaskProgress
+	if err := pool.QueryRow(context.Background(), `SELECT progress FROM tasks WHERE task_id=$1`, id).Scan(&progress); err != nil {
+		t.Fatalf("read progress after stale update: %v", err)
+	}
+	if progress.Done != 1 || progress.Failed != 0 {
+		t.Fatalf("stale worker changed progress: %+v", progress)
+	}
+
+	updated, err = repo.UpdateProgressIfOwned(context.Background(), tenant, id, "current-worker",
+		domain.TaskProgress{Done: 2, Failed: 1, CurrentTarget: "target-2"})
+	if err != nil {
+		t.Fatalf("current worker update: %v", err)
+	}
+	if !updated {
+		t.Fatal("current worker should update progress")
+	}
+	if err := pool.QueryRow(context.Background(), `SELECT progress FROM tasks WHERE task_id=$1`, id).Scan(&progress); err != nil {
+		t.Fatalf("read progress after current update: %v", err)
+	}
+	if progress.Done != 3 || progress.Failed != 1 || progress.CurrentTarget != "target-2" {
+		t.Fatalf("current worker progress = %+v, want done=3 failed=1 target-2", progress)
+	}
+}
+
+func TestUpdateStatusIfOwned_RequeuesOnlyCurrentOwner(t *testing.T) {
+	pool := connectTestDB(t)
+	ensureTasksTable(t, pool)
+	repo := NewTaskRepository(pool)
+	tenant := uuid.New()
+	id := seedTask(t, pool, tenant, string(domain.TaskTypeBroadcast), 5)
+	if _, err := pool.Exec(context.Background(),
+		`UPDATE tasks SET status='running', worker_id='current-worker', locked_at=NOW() WHERE task_id=$1`, id); err != nil {
+		t.Fatalf("set task lease: %v", err)
+	}
+
+	updated, err := repo.UpdateStatusIfOwned(context.Background(), tenant, id, "stale-worker", domain.TaskStatusQueued)
+	if err != nil {
+		t.Fatalf("stale requeue: %v", err)
+	}
+	if updated {
+		t.Fatal("stale worker unexpectedly requeued task")
+	}
+	var status string
+	var workerID pgtype.Text
+	if err := pool.QueryRow(context.Background(), `SELECT status, worker_id FROM tasks WHERE task_id=$1`, id).Scan(&status, &workerID); err != nil {
+		t.Fatalf("read task: %v", err)
+	}
+	if status != "running" || !workerID.Valid || workerID.String != "current-worker" {
+		t.Fatalf("stale worker changed lease: status=%s worker=%v", status, workerID)
+	}
+
+	updated, err = repo.UpdateStatusIfOwned(context.Background(), tenant, id, "current-worker", domain.TaskStatusQueued)
+	if err != nil {
+		t.Fatalf("current requeue: %v", err)
+	}
+	if !updated {
+		t.Fatal("current worker should requeue its own task")
+	}
+	if err := pool.QueryRow(context.Background(), `SELECT status, worker_id FROM tasks WHERE task_id=$1`, id).Scan(&status, &workerID); err != nil {
+		t.Fatalf("read requeued task: %v", err)
+	}
+	if status != "queued" || workerID.Valid {
+		t.Fatalf("task not safely requeued: status=%s worker=%v", status, workerID)
+	}
+}
