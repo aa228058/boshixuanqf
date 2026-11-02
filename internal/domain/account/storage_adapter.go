@@ -65,7 +65,10 @@ func (a *PgxPoolAdapter) ServerAddress() string {
 
 func (a *PgxPoolAdapter) SetSessionName(name string) {
 	a.mu.Lock()
-	a.sessionName = name
+	if a.sessionName != name {
+		a.sessionName = name
+		a.serverAddress = ""
+	}
 	a.mu.Unlock()
 }
 
