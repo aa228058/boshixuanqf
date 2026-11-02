@@ -128,8 +128,8 @@ func (e *Engine) executeBroadcast(ctx context.Context, task *domain.Task) {
 					targets = append(targets, ts)
 				}
 			}
-			accountTargets[accID] = targets
-			total += len(targets)
+			// 同一账号允许多条 mapping，先合并，避免后一条覆盖前一条。
+			accountTargets[accID] = append(accountTargets[accID], targets...)
 		}
 		// Fallback: if no valid mappings parsed, use cartesian
 		if len(accountTargets) == 0 {
@@ -141,7 +141,23 @@ func (e *Engine) executeBroadcast(ctx context.Context, task *domain.Task) {
 		for _, accID := range task.AccountIDs {
 			accountTargets[accID] = task.TargetIDs
 		}
-		total = len(task.TargetIDs) * len(task.AccountIDs)
+	}
+
+	// 只在账号内部去重，保留不同账号向同一目标发送的笛卡尔语义。
+	// total 必须基于最终实际分配的账号-目标对计算，不能用原始 mapping 条数累加。
+	total = 0
+	for accID, targets := range accountTargets {
+		seen := make(map[string]bool, len(targets))
+		unique := make([]string, 0, len(targets))
+		for _, target := range targets {
+			if target == "" || seen[target] {
+				continue
+			}
+			seen[target] = true
+			unique = append(unique, target)
+		}
+		accountTargets[accID] = unique
+		total += len(unique)
 	}
 
 	done := 0
@@ -407,6 +423,18 @@ accountLoop:
 					accDone++
 					done++
 					progressAccum.Done++
+					// 保留独立的跳过明细：Done 表示已处理量，日志 status=skipped
+					// 用于区分历史成功续传跳过与本次实际发送成功。
+					skippedLog := &domain.TaskLog{
+						LogID: uuid.New(), TaskID: task.TaskID, TenantID: task.TenantID,
+						AccountID: accID, TargetID: targetID, Action: "send_message",
+						Status: "skipped", ErrorCode: "already_sent",
+						Message: "续传跳过：该账号此前已成功发送",
+						ExecutedAt: time.Now(),
+					}
+					batchLogs = append(batchLogs, skippedLog)
+					pendingLogs = append(pendingLogs, skippedLog)
+					pendingProgress = domain.TaskProgress{Total: total, Done: done, Failed: failed, CurrentTarget: targetID}
 				}
 				mu.Unlock()
 				if alreadySent {
