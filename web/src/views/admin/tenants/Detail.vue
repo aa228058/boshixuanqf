@@ -18,7 +18,7 @@
       <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
         <div>
           <p class="text-xs text-text-secondary">租户名称</p>
-          <p class="text-lg font-medium mt-1">{{ tenant.tenant_name }}</p>
+          <p class="text-lg font-medium mt-1">{{ tenant.name }}</p>
         </div>
         <div>
           <p class="text-xs text-text-secondary">租户ID</p>
