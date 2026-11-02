@@ -409,7 +409,7 @@ const groupedResults = computed(() => {
     return ta < tb ? 1 : -1
   })
   for (const g of list) {
-    g.items.sort((a, b) => (a.created_at < b.created_at ? -1 : 1))
+    g.items.sort((a: any, b: any) => (a.created_at < b.created_at ? -1 : 1))
     g.wins = g.items.filter((r: any) => r.kind === 'winner').length
   }
   return list
