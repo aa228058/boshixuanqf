@@ -99,7 +99,9 @@ func (e *Engine) executeInviteMembers(ctx context.Context, task *domain.Task) er
 			return ctx.Err()
 		default:
 		}
-		members, err := e.memberRepo.ListByGroup(ctx, task.TenantID, sourceID, pageSize, offset)
+		listCtx, listCancel := context.WithTimeout(ctx, 15*time.Second)
+		members, err := e.memberRepo.ListByGroup(listCtx, task.TenantID, sourceID, pageSize, offset)
+		listCancel()
 		if err != nil {
 			return fmt.Errorf("读取来源群成员失败: %w", err)
 		}
@@ -121,10 +123,17 @@ func (e *Engine) executeInviteMembers(ctx context.Context, task *domain.Task) er
 				failed++ // 无 access_hash 无法定向邀请
 				continue
 			}
-			_, err := client.Raw().ChannelsInviteToChannel(ctx, &tg.ChannelsInviteToChannelRequest{
+			invokeCtx, invokeCancel := context.WithTimeout(ctx, 60*time.Second)
+			_, err := client.Raw().ChannelsInviteToChannel(invokeCtx, &tg.ChannelsInviteToChannelRequest{
 				Channel: channel,
 				Users:   []tg.InputUserClass{&tg.InputUser{UserID: m.TGUserID, AccessHash: m.AccessHash}},
 			})
+			invokeErr := invokeCtx.Err()
+			invokeCancel()
+			if invokeErr != nil {
+				saveProgress()
+				return fmt.Errorf("邀请请求超时或已取消: %w", invokeErr)
+			}
 			if err != nil {
 				errStr := strings.ToLower(err.Error())
 				// 账号级风险: 邀请过频/被封 → 停止任务并冷却账号
