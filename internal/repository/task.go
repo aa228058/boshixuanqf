@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"sort"
 	"time"
 
 	"github.com/google/uuid"
@@ -198,7 +199,7 @@ func (r *TaskRepository) ClaimTimeoutTasks(ctx context.Context, workerID string,
 			SELECT task_id FROM tasks
 			WHERE status = 'running'
 			  AND (locked_at IS NULL OR locked_at < NOW() - ($3 * INTERVAL '1 minute'))
-			ORDER BY priority DESC, created_at ASC
+			ORDER BY priority DESC, created_at ASC, task_id ASC
 			FOR UPDATE SKIP LOCKED
 			LIMIT $2
 		)
@@ -210,7 +211,12 @@ func (r *TaskRepository) ClaimTimeoutTasks(ctx context.Context, workerID string,
 		return nil, fmt.Errorf("claim timeout tasks: %w", err)
 	}
 	defer rows.Close()
-	return r.scanTasks(rows)
+	tasks, err := r.scanTasks(rows)
+	if err != nil {
+		return nil, err
+	}
+	sortClaimedTasks(tasks)
+	return tasks, nil
 }
 
 // RefreshTaskLock renews a running task lease only while this worker still owns it.
@@ -252,7 +258,26 @@ func (r *TaskRepository) claimTasksWithStatus(ctx context.Context, workerID stri
 		return nil, fmt.Errorf("claim tasks: %w", err)
 	}
 	defer rows.Close()
-	return r.scanTasks(rows)
+	tasks, err := r.scanTasks(rows)
+	if err != nil {
+		return nil, err
+	}
+	sortClaimedTasks(tasks)
+	return tasks, nil
+}
+
+// sortClaimedTasks preserves the priority order selected by the locking query.
+// PostgreSQL does not guarantee UPDATE ... RETURNING row order.
+func sortClaimedTasks(tasks []*domain.Task) {
+	sort.SliceStable(tasks, func(i, j int) bool {
+		if tasks[i].Priority != tasks[j].Priority {
+			return tasks[i].Priority > tasks[j].Priority
+		}
+		if !tasks[i].CreatedAt.Equal(tasks[j].CreatedAt) {
+			return tasks[i].CreatedAt.Before(tasks[j].CreatedAt)
+		}
+		return tasks[i].TaskID.String() < tasks[j].TaskID.String()
+	})
 }
 
 // ActivatePendingTasks converts pending tasks whose scheduled_at has passed to queued.
