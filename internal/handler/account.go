@@ -813,6 +813,14 @@ func (h *AccountHandler) ImportSessionFiles(c echo.Context) error {
 	// 落盘临时文件（SQLite 驱动需要可寻址路径）
 	// (2026-10-20) 支持 .zip 压缩包: 自动解压包内全部 .session 逐个导入
 	var paths []string
+	// 临时 session 和同 stem 的 sidecar JSON(可能含明文 2FA 密码)必须在所有退出路径清理。
+	// 清理 defer 放在解压循环前，确保中途报错也不会留下敏感临时文件。
+	defer func() {
+		for _, p := range paths {
+			_ = os.Remove(p)
+			_ = os.Remove(strings.TrimSuffix(p, filepath.Ext(p)) + ".json")
+		}
+	}()
 	for _, fh := range files {
 		src, err := fh.Open()
 		if err != nil {
@@ -839,12 +847,20 @@ func (h *AccountHandler) ImportSessionFiles(c echo.Context) error {
 				}
 				lowerName := strings.ToLower(zf.Name)
 				if strings.HasSuffix(lowerName, ".json") {
-					if rc, err := zf.Open(); err == nil {
-						data, _ := io.ReadAll(io.LimitReader(rc, 1<<20))
-						rc.Close()
-						if stem := sanitizeStem(zf.Name); stem != "" {
-							sidecars[stem] = data
-						}
+					if len(sidecars) >= 50 || zf.UncompressedSize64 > 1<<20 {
+						return echo.NewHTTPError(http.StatusBadRequest, "压缩包 sidecar JSON 数量或大小超限")
+					}
+					rc, openErr := zf.Open()
+					if openErr != nil {
+						return echo.NewHTTPError(http.StatusBadRequest, "压缩包 sidecar JSON 无法读取")
+					}
+					data, readErr := io.ReadAll(io.LimitReader(rc, (1<<20)+1))
+					rc.Close()
+					if readErr != nil || len(data) > 1<<20 {
+						return echo.NewHTTPError(http.StatusBadRequest, "压缩包 sidecar JSON 超过 1MB")
+					}
+					if stem := sanitizeStem(zf.Name); stem != "" {
+						sidecars[stem] = data
 					}
 					continue
 				}
@@ -981,12 +997,6 @@ func (h *AccountHandler) ImportSessionFiles(c echo.Context) error {
 		tmp.Close()
 		paths = append(paths, tmp.Name())
 	}
-	defer func() {
-		for _, p := range paths {
-			os.Remove(p)
-		}
-	}()
-
 	result, err := h.svc.ImportSessionFiles(c.Request().Context(), tenantID, paths, remark)
 	if err != nil {
 		return echo.NewHTTPError(http.StatusInternalServerError, err.Error())
