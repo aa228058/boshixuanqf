@@ -715,8 +715,8 @@ func (e *Engine) runTask(ctx context.Context, task *domain.Task) {
 		// 必须回滚为 queued，让后续轮询重新认领（"retry later"落到实处）。
 		e.runningTasks.Delete(taskKey)
 		taskLog.Printf("[task] 租户配额已满/系统限压，任务 %s 回滚为 queued 等待重试", task.TaskID)
-		if err := e.repo.UpdateStatus(ctx, task.TenantID, task.TaskID, domain.TaskStatusQueued); err != nil {
-			taskLog.Printf("[task] 回滚任务状态失败 %s: %v", task.TaskID, err)
+		if err := e.repo.UpdateStatusIfCurrent(ctx, task.TenantID, task.TaskID, domain.TaskStatusRunning, domain.TaskStatusQueued); err != nil {
+			taskLog.Printf("[task] 条件回滚任务状态未执行 %s: %v", task.TaskID, err)
 		}
 		return
 	}
@@ -834,8 +834,8 @@ func (e *Engine) executeTask(ctx context.Context, task *domain.Task) {
 		e.executeBroadcast(ctx, task)
 		e.rescheduleLoopTask(ctx, task)
 	default:
-		if err := e.repo.UpdateStatus(ctx, task.TenantID, task.TaskID, domain.TaskStatusFailed); err != nil {
-			taskLog.Printf("[task] UpdateStatus failed: %v", err)
+		if err := e.repo.UpdateStatusIfCurrent(ctx, task.TenantID, task.TaskID, domain.TaskStatusRunning, domain.TaskStatusFailed); err != nil {
+			taskLog.Printf("[task] 条件失败状态回写未执行: %v", err)
 		}
 	}
 }
