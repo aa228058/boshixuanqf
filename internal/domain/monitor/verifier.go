@@ -89,10 +89,15 @@ func (vs *verifierState) put(accountID uuid.UUID, chatID int64, s *vstate) {
 	vs.byChat[vs.key(accountID, chatID)] = s
 }
 
-func (vs *verifierState) remove(accountID uuid.UUID, chatID int64) {
+func (vs *verifierState) remove(accountID uuid.UUID, chatID int64, expected *vstate) {
 	vs.mu.Lock()
 	defer vs.mu.Unlock()
-	delete(vs.byChat, vs.key(accountID, chatID))
+	key := vs.key(accountID, chatID)
+	// An expired verification may still be unwinding after a newer state has
+	// replaced it. Only the goroutine that owns the current pointer may delete it.
+	if vs.byChat[key] == expected {
+		delete(vs.byChat, key)
+	}
 }
 
 // SetVerifierDeps 注入验证依赖(container 接线)
@@ -188,7 +193,7 @@ func looksLikeVerification(c *vcandidate) bool {
 
 // runVerification 验证主流程: 执行一轮动作 → 复测发言 → 不行再一轮 → 结算
 func (e *Engine) runVerification(ctx context.Context, client *telegram.Client, st *vstate, cand *vcandidate) {
-	defer e.vstates.remove(st.accID, st.chatID)
+	defer e.vstates.remove(st.accID, st.chatID, st)
 
 	// 预下载验证图片(算式图/字符码, 供 AI 兜底)
 	e.loadCandidateMedia(ctx, client, cand)
