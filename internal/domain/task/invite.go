@@ -124,10 +124,21 @@ func (e *Engine) executeInviteMembers(ctx context.Context, task *domain.Task) er
 				continue
 			}
 			invokeCtx, invokeCancel := context.WithTimeout(ctx, 60*time.Second)
-			_, err := client.Raw().ChannelsInviteToChannel(invokeCtx, &tg.ChannelsInviteToChannelRequest{
-				Channel: channel,
-				Users:   []tg.InputUserClass{&tg.InputUser{UserID: m.TGUserID, AccessHash: m.AccessHash}},
-			})
+			var err error
+			if strings.EqualFold(target.Type, "group") {
+				// Basic groups use messages.addChatUser; channels/supergroups use
+				// channels.inviteToChannel with an InputChannel and AccessHash.
+				_, err = client.Raw().MessagesAddChatUser(invokeCtx, &tg.MessagesAddChatUserRequest{
+					ChatID:   target.TGChatID,
+					UserID:   &tg.InputUser{UserID: m.TGUserID, AccessHash: m.AccessHash},
+					FwdLimit: 0,
+				})
+			} else {
+				_, err = client.Raw().ChannelsInviteToChannel(invokeCtx, &tg.ChannelsInviteToChannelRequest{
+					Channel: channel,
+					Users:   []tg.InputUserClass{&tg.InputUser{UserID: m.TGUserID, AccessHash: m.AccessHash}},
+				})
+			}
 			invokeErr := invokeCtx.Err()
 			invokeCancel()
 			if invokeErr != nil {
