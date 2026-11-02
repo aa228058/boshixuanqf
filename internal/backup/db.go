@@ -76,10 +76,20 @@ func runDBDump(cfg *config.Config, dir string) error {
 	if err != nil {
 		return fmt.Errorf("create backup file: %w", err)
 	}
-	defer f.Close()
+	stderr, err := os.OpenFile(path+".err", os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
+	if err != nil {
+		_ = f.Close()
+		_ = os.Remove(path)
+		return fmt.Errorf("create pg_dump error log: %w", err)
+	}
 
 	gz := gzip.NewWriter(f)
-	defer gz.Close()
+	closeFiles := func() (gzipErr, fileErr, stderrErr error) {
+		gzipErr = gz.Close()
+		fileErr = f.Close()
+		stderrErr = stderr.Close()
+		return
+	}
 
 	// 密码经环境变量传递, 不出现在命令行参数/日志里
 	env := append(os.Environ(), "PGPASSWORD="+cfg.DBPassword)
@@ -92,23 +102,47 @@ func runDBDump(cfg *config.Config, dir string) error {
 		"-Fc", // 自定义格式, 支持 pg_restore 并行恢复
 	)
 	cmd.Env = env
+	cmd.Stderr = stderr
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
+		_, _, _ = closeFiles()
+		_ = os.Remove(path)
 		return fmt.Errorf("stdout pipe: %w", err)
 	}
-	stderr, _ := os.Create(path + ".err")
-	defer stderr.Close()
-	cmd.Stderr = stderr
-
 	if err := cmd.Start(); err != nil {
+		_, _, _ = closeFiles()
+		_ = os.Remove(path)
 		return fmt.Errorf("pg_dump start: %w", err)
 	}
-	if _, err := io.Copy(gz, stdout); err != nil {
-		_ = cmd.Wait()
-		return fmt.Errorf("copy dump: %w", err)
+
+	_, copyErr := io.Copy(gz, stdout)
+	if copyErr != nil {
+		_ = stdout.Close()
 	}
-	if err := cmd.Wait(); err != nil {
-		return fmt.Errorf("pg_dump exit: %w (详见 %s)", err, path+".err")
+	waitErr := cmd.Wait()
+	gzipErr, fileErr, stderrErr := closeFiles()
+	if copyErr != nil {
+		_ = os.Remove(path)
+		return fmt.Errorf("copy dump: %w", copyErr)
+	}
+	if waitErr != nil {
+		_ = os.Remove(path)
+		return fmt.Errorf("pg_dump exit: %w (详见 %s)", waitErr, path+".err")
+	}
+	if gzipErr != nil {
+		_ = os.Remove(path)
+		return fmt.Errorf("finalize compressed backup: %w", gzipErr)
+	}
+	if fileErr != nil {
+		_ = os.Remove(path)
+		return fmt.Errorf("close backup file: %w", fileErr)
+	}
+	if stderrErr != nil {
+		_ = os.Remove(path)
+		return fmt.Errorf("close pg_dump error log: %w", stderrErr)
+	}
+	if err := os.Remove(path + ".err"); err != nil && !os.IsNotExist(err) {
+		log.Printf("[db-backup] 删除临时错误日志失败 %s: %v", path+".err", err)
 	}
 	log.Printf("[db-backup] 备份完成: %s", path)
 	return nil

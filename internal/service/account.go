@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -743,9 +744,13 @@ func (s *AccountService) SetPoolStatus(ctx context.Context, tenantID, accountID 
 		return fmt.Errorf("切换池状态失败: %w", err)
 	}
 	if target == "standby" {
-		// 转备用: 断连接停业务, 标记离线
-		s.engine.DisconnectAccount(ctx, tenantID, accountID)
-		_ = s.repo.UpdateStatus(ctx, tenantID, accountID, "offline")
+		// 转备用: 即使断开连接失败，也继续尝试同步数据库离线状态；
+		// 两个操作的错误都必须返回，避免调用方误以为账号已完全停用。
+		disconnectErr := s.engine.DisconnectAccount(ctx, tenantID, accountID)
+		statusErr := s.repo.UpdateStatus(ctx, tenantID, accountID, "offline")
+		if err := errors.Join(disconnectErr, statusErr); err != nil {
+			return fmt.Errorf("账号已转备用，但停止账号业务未完全成功: %w", err)
+		}
 	}
 	return nil
 }
