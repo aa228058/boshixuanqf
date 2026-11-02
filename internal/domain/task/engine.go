@@ -768,7 +768,10 @@ func (e *Engine) runTask(ctx context.Context, task *domain.Task) {
 		// fixed lock timeout and send the same targets concurrently.
 		leaseDone := make(chan struct{})
 		go e.renewTaskLease(taskCtx, task, cancel, leaseDone)
-		defer func() { <-leaseDone }()
+		defer func() {
+			cancel()
+			<-leaseDone
+		}()
 
 		e.executeTask(taskCtx, task)
 	})
