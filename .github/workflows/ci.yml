@@ -54,7 +54,7 @@ jobs:
 
       - name: Install dependencies
         working-directory: ./web
-        run: npm ci
+        run: npm install --no-audit --no-fund
 
       - name: Typecheck
         working-directory: ./web
@@ -180,4 +180,4 @@ jobs:
         run: npm run typecheck
 
       - name: Unit tests
-        run: npm run test:unit
+        run: npm test
