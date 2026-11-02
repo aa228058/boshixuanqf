@@ -292,6 +292,10 @@ func (h *TaskHandler) Create(c echo.Context) error {
 			if err := h.planChecker.CheckFeature(c, tenantID.String(), middleware.FeatureMonitor); err != nil {
 				return err
 			}
+		case "invite_members":
+			if err := h.planChecker.CheckFeature(c, tenantID.String(), middleware.FeatureInvite); err != nil {
+				return err
+			}
 		case "scheduled_broadcast":
 			if err := h.planChecker.CheckFeature(c, tenantID.String(), middleware.FeatureScheduledTasks); err != nil {
 				return err
@@ -316,6 +320,8 @@ func (h *TaskHandler) Create(c echo.Context) error {
 		return h.CreateJoinGroups(c)
 	case "monitor_scrape":
 		return h.CreateMonitorScrape(c)
+	case "invite_members":
+		return h.CreateInviteMembers(c)
 	case "scheduled_broadcast":
 		return h.CreateScheduledBroadcast(c)
 	default:
@@ -1400,6 +1406,45 @@ func (h *TaskHandler) StreamProgress(c echo.Context) error {
 // @Failure 500 {object} ErrorResponse
 // @Security BearerAuth
 // @Router /tasks/monitor-scrape [post]
+// CreateInviteMembers creates a task that invites members collected from a source group.
+func (h *TaskHandler) CreateInviteMembers(c echo.Context) error {
+	tenantID, err := middleware.GetTenantID(c)
+	if err != nil {
+		return err
+	}
+	var req struct {
+		AccountID  string         `json:"account_id"`
+		AccountIDs []string       `json:"account_ids"`
+		Payload    map[string]any `json:"payload"`
+	}
+	if err := c.Bind(&req); err != nil {
+		return echo.NewHTTPError(http.StatusBadRequest, "请求参数错误")
+	}
+	accountIDText := req.AccountID
+	if len(req.AccountIDs) > 0 {
+		accountIDText = req.AccountIDs[0]
+	}
+	accountID, err := uuid.Parse(accountIDText)
+	if err != nil {
+		return echo.NewHTTPError(http.StatusBadRequest, "账号ID格式错误")
+	}
+	targetText, _ := req.Payload["target_group_id"].(string)
+	sourceText, _ := req.Payload["source_group_id"].(string)
+	targetID, err := uuid.Parse(targetText)
+	if err != nil {
+		return echo.NewHTTPError(http.StatusBadRequest, "目标群ID格式错误")
+	}
+	sourceID, err := uuid.Parse(sourceText)
+	if err != nil {
+		return echo.NewHTTPError(http.StatusBadRequest, "来源群ID格式错误")
+	}
+	task, err := h.svc.CreateInviteMembers(c.Request().Context(), tenantID, accountID, targetID, sourceID)
+	if err != nil {
+		return echo.NewHTTPError(http.StatusBadRequest, err.Error())
+	}
+	return Success(c, task)
+}
+
 func (h *TaskHandler) CreateMonitorScrape(c echo.Context) error {
 	tenantID, err := middleware.GetTenantID(c)
 	if err != nil {
