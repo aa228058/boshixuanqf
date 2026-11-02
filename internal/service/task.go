@@ -352,22 +352,16 @@ func (s *TaskService) CreateScheduledBroadcast(ctx context.Context, tenantID uui
 		return nil, err
 	}
 	now := time.Now()
-	task, err := s.CreateBroadcast(ctx, tenantID, accountIDs, targetIDs, message, &now, intervalMin, intervalMax, nil)
-	if err != nil {
-		return nil, err
-	}
-	if err := s.repo.SetLoopConfig(ctx, tenantID, task.TaskID, isLoop, loopIntervalMinutes, intervalMin, intervalMax, domain.TaskTypeScheduledBroadcast); err != nil {
-		return nil, fmt.Errorf("set loop config: %w", err)
-	}
-	task.IsLoop = isLoop
-	task.LoopIntervalMinutes = loopIntervalMinutes
-	task.Type = domain.TaskTypeScheduledBroadcast
-	return task, nil
+	return s.createBroadcastWithMappingTask(ctx, tenantID, nil, accountIDs, targetIDs, message, &now, intervalMin, intervalMax, nil, domain.TaskTypeScheduledBroadcast, isLoop, loopIntervalMinutes)
 }
 
 // CreateBroadcastWithMapping creates a broadcast task with account-target mapping.
 // If mappings is nil, falls back to cartesian mode (all accounts × all targets).
 func (s *TaskService) CreateBroadcastWithMapping(ctx context.Context, tenantID uuid.UUID, mappings []domain.AccountTargetMapping, accountIDs []uuid.UUID, targetIDs []string, message string, scheduledAt *time.Time, intervalMin, intervalMax int, extraPayload map[string]any) (*domain.Task, error) {
+	return s.createBroadcastWithMappingTask(ctx, tenantID, mappings, accountIDs, targetIDs, message, scheduledAt, intervalMin, intervalMax, extraPayload, domain.TaskTypeBroadcast, false, 0)
+}
+
+func (s *TaskService) createBroadcastWithMappingTask(ctx context.Context, tenantID uuid.UUID, mappings []domain.AccountTargetMapping, accountIDs []uuid.UUID, targetIDs []string, message string, scheduledAt *time.Time, intervalMin, intervalMax int, extraPayload map[string]any, taskType domain.TaskType, isLoop bool, loopIntervalMinutes int) (*domain.Task, error) {
 	mode := domain.BroadcastModeCartesian
 	var totalMsgs int
 
@@ -491,7 +485,7 @@ func (s *TaskService) CreateBroadcastWithMapping(ctx context.Context, tenantID u
 	task := &domain.Task{
 		TaskID:      uuid.New(),
 		TenantID:    tenantID,
-		Type:        domain.TaskTypeBroadcast,
+		Type:        taskType,
 		Status:      domain.TaskStatusQueued,
 		Priority:    priority,
 		AccountIDs:  accountIDs,
@@ -499,6 +493,8 @@ func (s *TaskService) CreateBroadcastWithMapping(ctx context.Context, tenantID u
 		Payload:     payload,
 		Progress:    domain.TaskProgress{Total: totalMsgs},
 		ScheduledAt: scheduledAt,
+		IsLoop:      isLoop,
+		LoopIntervalMinutes: loopIntervalMinutes,
 		CreatedAt:   time.Now(),
 	}
 	if scheduledAt == nil || scheduledAt.Before(time.Now()) {
