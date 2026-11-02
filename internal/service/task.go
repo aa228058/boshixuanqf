@@ -148,6 +148,11 @@ func (s *TaskService) validateAccountOwnership(ctx context.Context, tenantID uui
 	if len(found) != len(accountIDs) {
 		return fmt.Errorf("some accounts not found or not owned by tenant")
 	}
+	for _, acc := range found {
+		if acc.PoolStatus == "standby" {
+			return fmt.Errorf("account %s is in standby pool and cannot execute tasks", acc.AccountID)
+		}
+	}
 	return nil
 }
 
@@ -222,6 +227,9 @@ func (s *TaskService) Create(ctx context.Context, tenantID uuid.UUID, taskType d
 		return nil, fmt.Errorf("some accounts not found (expected %d, got %d)", len(accountIDs), len(accounts))
 	}
 	for _, acc := range accounts {
+		if acc.PoolStatus == "standby" {
+			return nil, fmt.Errorf("account %s is in standby pool and cannot execute tasks", acc.AccountID)
+		}
 		if acc.Status == domain.AccountStatusBanned {
 			return nil, fmt.Errorf("account %s is banned", acc.AccountID)
 		}
