@@ -15,7 +15,7 @@
       richColors
       :toastOptions="{
         style: { fontSize: '13px' },
-        classNames: { toast: 'ts-toast', title: 'ts-toast-title' }
+        classes: { toast: 'ts-toast', title: 'ts-toast-title' }
       }"
     />
     <!-- 全局请求进度条: 任何 API 请求进行中顶部滑动显示(200ms防抖), 内联动画不依赖Tailwind自定义类 -->
@@ -124,7 +124,7 @@ const bindIslandAnim = () => {
   toaster.querySelectorAll('[data-sonner-toast]').forEach(playIslandDrop)
   islandObserver = new MutationObserver((muts) => {
     muts.forEach((m) => m.addedNodes.forEach((n) => {
-      if (n.nodeType === 1 && (n as Element).hasAttribute?.('data-sonner-toast')) playIslandDrop(n)
+      if (n.nodeType === 1 && (n as Element).hasAttribute?.('data-sonner-toast')) if (n instanceof Element) playIslandDrop(n)
     }))
   })
   islandObserver.observe(toaster, { childList: true })

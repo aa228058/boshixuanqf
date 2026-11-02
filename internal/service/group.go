@@ -46,6 +46,11 @@ func (s *GroupService) CountByAccount(ctx context.Context, tenantID, accountID u
 	return s.repo.CountByAccount(ctx, tenantID, accountID)
 }
 
+// Count returns the total number of groups owned by a tenant, independent of pagination.
+func (s *GroupService) Count(ctx context.Context, tenantID uuid.UUID) (int, error) {
+	return s.repo.CountByTenant(ctx, tenantID)
+}
+
 // Create creates a new group.
 func (s *GroupService) Create(ctx context.Context, tenantID uuid.UUID, tgChatID int64, title, username, gtype string) (*domain.Group, error) {
 	g := &domain.Group{

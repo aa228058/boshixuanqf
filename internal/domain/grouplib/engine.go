@@ -7,12 +7,14 @@ package grouplib
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"regexp"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"tg-sender/internal/domain"
 	"tg-sender/internal/repository"
@@ -40,9 +42,12 @@ type Engine struct {
 	wg       sync.WaitGroup
 
 	mu  sync.Mutex
-	slW time.Time // scraped_links 水位
-	gW  time.Time // groups 水位
-	mW  time.Time // members 水位
+	slW   time.Time // scraped_links 水位时间
+	slWID uuid.UUID // 同一时间戳下的链接主键游标
+	gW    time.Time // groups 水位时间
+	gWID  uuid.UUID // 同一时间戳下的群组主键游标
+	mW    time.Time // members 水位时间
+	mWID  uuid.UUID // 同一时间戳下的成员主键游标
 }
 
 func NewEngine(pool *pgxpool.Pool, repo *repository.SystemGroupRepository, acc accountEngine) *Engine {
@@ -98,31 +103,30 @@ func (e *Engine) runOnce() {
 // aggregateScrapedLinks 增量聚合链接采集结果
 func (e *Engine) aggregateScrapedLinks(ctx context.Context) error {
 	e.mu.Lock()
-	wm := e.slW
+	wm, wmID := e.slW, e.slWID
 	e.mu.Unlock()
-	// V27 审计修复: 原水位是裸 created_at 严格大于——并发写入同毫秒的行在
-	// 水位推进后会被永久漏掉。聚合是逐行 Upsert(幂等), 故采用 at-least-once
-	// 语义: 查询窗口回退 1 秒, 每轮最多重复归并最近 1 秒的行, 换取零漏单。
+	// 用 (created_at, link_id) 复合游标，既不漏同时间戳记录，也不会每轮
+	// 回看最近 1 秒导致相同来源反复入库、热度被重复累加。
 	rows, err := e.pool.Query(ctx, `
-		SELECT full_url, link_type, COALESCE(NULLIF(resolved_title,''), NULLIF(source_chat_title,''), ''),
+		SELECT link_id, full_url, link_type, COALESCE(NULLIF(resolved_title,''), NULLIF(source_chat_title,''), ''),
 		       member_count, status, created_at
-		FROM scraped_links WHERE created_at > $1
-		ORDER BY created_at ASC LIMIT 5000`, wm.Add(-time.Second))
+		FROM scraped_links
+		WHERE (created_at, link_id) > ($1, $2)
+		ORDER BY created_at ASC, link_id ASC LIMIT 5000`, wm, wmID)
 	if err != nil {
 		return err
 	}
 	defer rows.Close()
 	var maxT time.Time
+	var maxID uuid.UUID
 	n := 0
 	for rows.Next() {
+		var linkID uuid.UUID
 		var url, linkType, title, status string
 		var mc int
 		var ct time.Time
-		if err := rows.Scan(&url, &linkType, &title, &mc, &status, &ct); err != nil {
+		if err := rows.Scan(&linkID, &url, &linkType, &title, &mc, &status, &ct); err != nil {
 			return err
-		}
-		if ct.After(maxT) {
-			maxT = ct
 		}
 		username := extractTmeUsername(url)
 		gt := "public"
@@ -133,11 +137,12 @@ func (e *Engine) aggregateScrapedLinks(ctx context.Context) error {
 		if status == "joined" {
 			st = "joined"
 		}
-		sg := &domain.SystemGroup{Source: "scraped", Title: firstNonEmpty(title, url), Username: username, TmeLink: url, GType: gt, MemberCount: mc, Status: st}
+		sg := &domain.SystemGroup{Source: "scraped", Title: firstNonEmpty(title, url), Username: username, TmeLink: url, GType: gt, MemberCount: mc, Status: st, LastSeenAt: ct}
 		if err := e.repo.Upsert(ctx, sg); err != nil {
-			log.Printf("[grouplib] scraped upsert %s: %v", url, err)
-			continue
+			log.Printf("[grouplib] scraped upsert %s: %v; cursor will retry this row", url, err)
+			break
 		}
+		maxT, maxID = ct, linkID
 		n++
 	}
 	if err := rows.Err(); err != nil {
@@ -145,7 +150,7 @@ func (e *Engine) aggregateScrapedLinks(ctx context.Context) error {
 	}
 	if !maxT.IsZero() {
 		e.mu.Lock()
-		e.slW = maxT
+		e.slW, e.slWID = maxT, maxID
 		e.mu.Unlock()
 	}
 	if n > 0 {
@@ -157,37 +162,33 @@ func (e *Engine) aggregateScrapedLinks(ctx context.Context) error {
 // aggregateJoinedGroups 增量聚合所有租户已加入的公开群(私有群无 username, 别人也进不去, 不入库)
 func (e *Engine) aggregateJoinedGroups(ctx context.Context) error {
 	e.mu.Lock()
-	wm := e.gW
+	wm, wmID := e.gW, e.gWID
 	e.mu.Unlock()
-	// V26 审计修复: 原水位只看 created_at——群改标题/人数或重新入群时 created_at
-	// 不变, 永不重新聚合, 群库永远是最初值。现用 updated_at(065 迁移 + trigger
-	// 自动维护), 查询条件与水位推进都取 GREATEST(created_at, updated_at)。
-	// V27 同款修复: 窗口回退 1 秒做 at-least-once 聚合(逐群 Upsert 幂等),
-	// 消除同毫秒并发写入被水位漏掉的可能。
+	// 用 (GREATEST(created_at, updated_at), group_id) 复合游标，标题/人数更新
+	// 会进入增量窗口，同一时间戳的群也不会遗漏或被每轮重复归并。
 	rows, err := e.pool.Query(ctx, `
-		SELECT title, username, type, member_count, created_at, updated_at
+		SELECT group_id, title, username, type, member_count, created_at, updated_at
 		FROM groups
 		WHERE is_joined = TRUE AND username IS NOT NULL AND username <> ''
-		  AND GREATEST(created_at, updated_at) > $1
-		ORDER BY GREATEST(created_at, updated_at) ASC LIMIT 5000`, wm.Add(-time.Second))
+		  AND (GREATEST(created_at, updated_at), group_id) > ($1, $2)
+		ORDER BY GREATEST(created_at, updated_at) ASC, group_id ASC LIMIT 5000`, wm, wmID)
 	if err != nil {
 		return err
 	}
 	defer rows.Close()
 	var maxT time.Time
+	var maxID uuid.UUID
 	n := 0
 	for rows.Next() {
+		var groupID uuid.UUID
 		var title, username, gtype string
 		var mc int
 		var ct, ut time.Time
-		if err := rows.Scan(&title, &username, &gtype, &mc, &ct, &ut); err != nil {
+		if err := rows.Scan(&groupID, &title, &username, &gtype, &mc, &ct, &ut); err != nil {
 			return err
 		}
 		if ut.After(ct) {
 			ct = ut
-		}
-		if ct.After(maxT) {
-			maxT = ct
 		}
 		gt := "public"
 		if gtype == "channel" {
@@ -195,12 +196,13 @@ func (e *Engine) aggregateJoinedGroups(ctx context.Context) error {
 		}
 		sg := &domain.SystemGroup{
 			Source: "joined", Title: firstNonEmpty(title, "@"+username), Username: username,
-			TmeLink: "https://t.me/" + username, GType: gt, MemberCount: mc, Status: "joined",
+			TmeLink: "https://t.me/" + username, GType: gt, MemberCount: mc, Status: "joined", LastSeenAt: ct,
 		}
 		if err := e.repo.Upsert(ctx, sg); err != nil {
-			log.Printf("[grouplib] joined upsert %s: %v", username, err)
-			continue
+			log.Printf("[grouplib] joined upsert %s: %v; cursor will retry this row", username, err)
+			break
 		}
+		maxT, maxID = ct, groupID
 		n++
 	}
 	if err := rows.Err(); err != nil {
@@ -208,7 +210,7 @@ func (e *Engine) aggregateJoinedGroups(ctx context.Context) error {
 	}
 	if !maxT.IsZero() {
 		e.mu.Lock()
-		e.gW = maxT
+		e.gW, e.gWID = maxT, maxID
 		e.mu.Unlock()
 	}
 	if n > 0 {
@@ -220,36 +222,41 @@ func (e *Engine) aggregateJoinedGroups(ctx context.Context) error {
 // aggregateMemberBios 简介挖掘: 从成员 bio 里解析 t.me 链接和 @用户名
 func (e *Engine) aggregateMemberBios(ctx context.Context) error {
 	e.mu.Lock()
-	wm := e.mW
+	wm, wmID := e.mW, e.mWID
 	e.mu.Unlock()
 	rows, err := e.pool.Query(ctx, `
-		SELECT bio, scraped_at FROM members
-		WHERE scraped_at > $1 AND bio IS NOT NULL AND bio <> ''
-		  AND (bio ILIKE '%t.me%' OR bio ILIKE '%telegram%')
-		ORDER BY scraped_at ASC LIMIT 5000`, wm)
+		SELECT member_id, bio, scraped_at FROM members
+		WHERE (scraped_at, member_id) > ($1, $2) AND bio IS NOT NULL AND bio <> ''
+		  AND (bio ILIKE '%t.me%' OR bio ILIKE '%telegram%' OR bio ILIKE '%@%')
+		ORDER BY scraped_at ASC, member_id ASC LIMIT 5000`, wm, wmID)
 	if err != nil {
 		return err
 	}
 	defer rows.Close()
 	var maxT time.Time
+	var maxID uuid.UUID
 	n := 0
 	for rows.Next() {
+		var memberID uuid.UUID
 		var bio string
 		var ct time.Time
-		if err := rows.Scan(&bio, &ct); err != nil {
+		if err := rows.Scan(&memberID, &bio, &ct); err != nil {
 			return err
 		}
-		if ct.After(maxT) {
-			maxT = ct
+		processed, upsertErr := e.upsertBioLinks(ctx, bio, ct)
+		if upsertErr != nil {
+			log.Printf("[grouplib] bio upsert member=%s failed; cursor will retry this row: %v", memberID, upsertErr)
+			break
 		}
-		n += e.upsertBioLinks(ctx, bio)
+		n += processed
+		maxT, maxID = ct, memberID
 	}
 	if err := rows.Err(); err != nil {
 		return err
 	}
 	if !maxT.IsZero() {
 		e.mu.Lock()
-		e.mW = maxT
+		e.mW, e.mWID = maxT, maxID
 		e.mu.Unlock()
 	}
 	if n > 0 {
@@ -258,7 +265,7 @@ func (e *Engine) aggregateMemberBios(ctx context.Context) error {
 	return nil
 }
 
-func (e *Engine) upsertBioLinks(ctx context.Context, bio string) int {
+func (e *Engine) upsertBioLinks(ctx context.Context, bio string, seenAt time.Time) (int, error) {
 	n := 0
 	seen := map[string]bool{}
 	for _, m := range tmeRe.FindAllStringSubmatch(bio, -1) {
@@ -268,7 +275,7 @@ func (e *Engine) upsertBioLinks(ctx context.Context, bio string) int {
 			continue
 		}
 		seen[key] = true
-		sg := &domain.SystemGroup{Source: "bio"}
+		sg := &domain.SystemGroup{Source: "bio", LastSeenAt: seenAt}
 		if isJoin {
 			sg.TmeLink = "https://t.me/joinchat/" + key
 			sg.GType = "private"
@@ -280,8 +287,7 @@ func (e *Engine) upsertBioLinks(ctx context.Context, bio string) int {
 			sg.Title = "@" + key
 		}
 		if err := e.repo.Upsert(ctx, sg); err != nil {
-			log.Printf("[grouplib] bio upsert %s: %v", key, err)
-			continue
+			return n, fmt.Errorf("upsert bio link %s: %w", key, err)
 		}
 		n++
 	}
@@ -311,13 +317,13 @@ func (e *Engine) upsertBioLinks(ctx context.Context, bio string) int {
 			continue
 		}
 		seen[key] = true
-		sg := &domain.SystemGroup{Source: "bio", Username: key, TmeLink: "https://t.me/" + key, GType: "public", Title: "@" + key}
+		sg := &domain.SystemGroup{Source: "bio", Username: key, TmeLink: "https://t.me/" + key, GType: "public", Title: "@" + key, LastSeenAt: seenAt}
 		if err := e.repo.Upsert(ctx, sg); err != nil {
-			continue
+			return n, fmt.Errorf("upsert bio username %s: %w", key, err)
 		}
 		n++
 	}
-	return n
+	return n, nil
 }
 
 // extractTmeUsername 从任意 url/文本里提取 t.me 用户名(私密链接返回空, 走 l: 链接键归并)

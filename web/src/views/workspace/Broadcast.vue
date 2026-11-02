@@ -314,7 +314,7 @@ const accName = (a: any) => a?.first_name || a?.remark || a?.phone || (a?.accoun
 // ===== tab 与发送模式状态(2026-10-20: 此前多轮编辑事故把这块定义整体冲丢, 模板引用 undefined
 // 导致 tab 栏/循环开关静默不显示。此处集中补回, 以后动这个文件先看这里) =====
 const activeTab = ref<'tasks' | 'calendar'>('tasks')
-const pageTabs = [{ key: 'tasks', label: '任务列表' }, { key: 'calendar', label: '发送日历' }]
+const pageTabs = [{ key: 'tasks', label: '任务列表' }, { key: 'calendar', label: '发送日历' }] as const
 const isLoop = ref(false)
 const loopIntervalMin = ref(60)
 const authStore = useAuthStore()
@@ -688,6 +688,7 @@ async function submit() {
       interval_min: intervalMin.value,
       interval_max: intervalMax.value,
       auto_vary: autoVary.value, // 每条消息自动变化(同义词+标点抖动)
+      obfuscate: obfuscate.value, // 消息混淆
     }
     // 富媒体 + 链接按钮(带校验, 防止"选了类型没传文件"被静默丢弃)
     const mediaSource = (mediaPath.value || mediaUrl.value.trim())

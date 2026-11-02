@@ -55,6 +55,7 @@ export const taskApi = {
   batchCancel: (taskIds: string[]) => api.post<{ cancelled: number }>('/tasks/batch/cancel', { task_ids: taskIds }),
   batchDelete: (taskIds: string[]) => api.post<{ deleted: number }>('/tasks/batch/delete', { task_ids: taskIds }),
   getLogs: (id: string) => api.get<TaskLog[]>(`/tasks/${id}/logs`),
+  getStatsByAccount: (id: string) => api.get<Record<string, { success: number; failed: number; skipped: number }>>(`/tasks/${id}/stats-by-account`),
   getAccountLogs: (accountId: string, page = 1, pageSize = 50) =>
     api.get<ListResponse<TaskLog>>(`/tasks/logs${toQueryString({ account_id: accountId, page, page_size: pageSize })}`),
   getProgress: (id: string) => api.get<{ progress: number; status: string; total: number; completed: number }>(`/tasks/${id}/progress`),

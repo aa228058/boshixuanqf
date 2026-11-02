@@ -65,6 +65,13 @@ type LinkScraper struct {
 	wg         sync.WaitGroup
 }
 
+// linkDedupKey keeps the in-memory cache aligned with the database's
+// UNIQUE(tenant_id, link_hash) constraint. A hash seen by one tenant must not
+// suppress the same link for another tenant.
+func linkDedupKey(tenantID uuid.UUID, linkHash string) string {
+	return tenantID.String() + ":" + linkHash
+}
+
 // NewLinkScraper creates a new persistent link scraper.
 func NewLinkScraper(cfg *config.Config, accEngine AccountEngine, linkRepo domain.ScrapedLinkRepository, groupRepo *repository.GroupRepository, accountRepo AccountLister) *LinkScraper {
 	return &LinkScraper{
@@ -115,6 +122,11 @@ func (ls *LinkScraper) Stop() {
 		return true
 	})
 	ls.wg.Wait()
+	// consumer 退出后再做一次最终 flush，确保 shutdown 时从 linkQueue
+	// 转入 batchLinks 的记录不会因 batchWriter 先退出而滞留在内存。
+	flushCtx, flushCancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer flushCancel()
+	ls.flushBatch(flushCtx)
 	log.Printf("[link-scraper] 常驻链接采集服务已停止")
 }
 
@@ -279,8 +291,10 @@ func (ls *LinkScraper) consumerLoop(ctx context.Context) {
 	for {
 		select {
 		case <-ls.stopCh:
+			ls.drainQueueWithoutResolve()
 			return
 		case <-ctx.Done():
+			ls.drainQueueWithoutResolve()
 			return
 		case <-ticker.C:
 			// 消费节奏由 ticker 门控：200ms 一条 = 每秒最多 5 次 ResolvePeer，
@@ -294,6 +308,24 @@ func (ls *LinkScraper) consumerLoop(ctx context.Context) {
 	}
 }
 
+// drainQueueWithoutResolve 将关机时尚未处理的消息链接转成待落库记录。
+// 使用已取消的 context 使 public ResolvePeer 快速跳过，优先保存原始链接，
+// 避免服务重启后 linkQueue 中的采集结果直接丢失。
+func (ls *LinkScraper) drainQueueWithoutResolve() {
+	drainCtx, cancel := context.WithCancel(context.Background())
+	cancel()
+	for {
+		select {
+		case raw := <-ls.linkQueue:
+			if raw != nil {
+				ls.processLink(drainCtx, raw)
+			}
+		default:
+			return
+		}
+	}
+}
+
 // processLink handles a single raw link: dedup, resolve (public), store.
 func (ls *LinkScraper) processLink(ctx context.Context, raw *rawLink) {
 	defer func() {
@@ -302,9 +334,10 @@ func (ls *LinkScraper) processLink(ctx context.Context, raw *rawLink) {
 		}
 	}()
 
-	// Memory dedup check (24h window)
+	// Memory dedup check (24h window), scoped to tenant just like the DB unique key.
+	dedupKey := linkDedupKey(raw.TenantID, raw.LinkHash)
 	ls.dedupMu.RLock()
-	if lastSeen, ok := ls.dedupMap[raw.LinkHash]; ok && time.Since(lastSeen) < 24*time.Hour {
+	if lastSeen, ok := ls.dedupMap[dedupKey]; ok && time.Since(lastSeen) < 24*time.Hour {
 		ls.dedupMu.RUnlock()
 		return
 	}
@@ -312,7 +345,7 @@ func (ls *LinkScraper) processLink(ctx context.Context, raw *rawLink) {
 
 	// Mark as seen in memory
 	ls.dedupMu.Lock()
-	ls.dedupMap[raw.LinkHash] = time.Now()
+	ls.dedupMap[dedupKey] = time.Now()
 	ls.dedupMu.Unlock()
 
 	// Build domain link
@@ -334,7 +367,9 @@ func (ls *LinkScraper) processLink(ctx context.Context, raw *rawLink) {
 		client, err := ls.accEngine.GetClient(ctx, raw.TenantID, raw.AccountID)
 		if err == nil {
 			defer ls.accEngine.ReleaseClient(raw.TenantID, raw.AccountID, client)
-			peer, resolveErr := client.ResolvePeer(ctx, raw.LinkHash)
+			resolveCtx, resolveCancel := context.WithTimeout(ctx, 20*time.Second)
+			peer, resolveErr := client.ResolvePeer(resolveCtx, raw.LinkHash)
+			resolveCancel()
 			if resolveErr == nil {
 				switch p := peer.(type) {
 				case *tg.InputPeerChat:
@@ -347,7 +382,9 @@ func (ls *LinkScraper) processLink(ctx context.Context, raw *rawLink) {
 					// Try to get dialog info for title/member count
 					// 原来 limit=1 只取最近1个会话, 目标群几乎永远不在其中,
 					// 导致标题/成员数永远拿不到。放宽到 50 个基本覆盖已加入的群。
-					dialogs, dlgErr := client.GetDialogs(ctx, 50, 0)
+					dialogCtx, dialogCancel := context.WithTimeout(ctx, 10*time.Second)
+					dialogs, dlgErr := client.GetDialogs(dialogCtx, 50, 0)
+					dialogCancel()
 					if dlgErr == nil {
 						for _, chat := range dialogs {
 							if chat != nil && chat.ID == link.ResolvedChatID {
@@ -400,8 +437,21 @@ func (ls *LinkScraper) flushBatch(ctx context.Context) {
 	ls.batchLinks = ls.batchLinks[:0]
 	ls.batchMu.Unlock()
 
-	if err := ls.linkRepo.CreateBatch(ctx, batch); err != nil {
-		log.Printf("[link-scraper] 批量写入链接失败: %v", err)
+	writeCtx := ctx
+	var cancel context.CancelFunc
+	if ctx.Err() != nil {
+		// Application shutdown must not make the final persistence attempt inherit
+		// an already-cancelled context.
+		writeCtx, cancel = context.WithTimeout(context.Background(), 15*time.Second)
+	}
+	if cancel != nil {
+		defer cancel()
+	}
+	if err := ls.linkRepo.CreateBatch(writeCtx, batch); err != nil {
+		log.Printf("[link-scraper] 批量写入链接失败，保留待重试数据(%d条): %v", len(batch), err)
+		ls.batchMu.Lock()
+		ls.batchLinks = append(batch, ls.batchLinks...)
+		ls.batchMu.Unlock()
 	} else {
 		log.Printf("[link-scraper] 已批量写入 %d 条链接", len(batch))
 	}
@@ -440,13 +490,24 @@ func (ls *LinkScraper) dedupCleanerLoop(ctx context.Context) {
 // accountWatcherLoop 每30秒同步: 上线账号注册监听, 下线注销(多租户全自动)。
 func (ls *LinkScraper) accountWatcherLoop(ctx context.Context) {
 	defer ls.wg.Done()
-	time.Sleep(10 * time.Second) // 等账号引擎完成首批连接
+	// 等账号引擎完成首批连接，但服务停止/应用退出时立即响应，不阻塞关机。
+	startupDelay := time.NewTimer(10 * time.Second)
+	defer startupDelay.Stop()
+	select {
+	case <-ls.stopCh:
+		return
+	case <-ctx.Done():
+		return
+	case <-startupDelay.C:
+	}
 	ls.syncOnlineAccounts(ctx)
 	ticker := time.NewTicker(30 * time.Second)
 	defer ticker.Stop()
 	for {
 		select {
 		case <-ls.stopCh:
+			return
+		case <-ctx.Done():
 			return
 		case <-ticker.C:
 			ls.syncOnlineAccounts(ctx)

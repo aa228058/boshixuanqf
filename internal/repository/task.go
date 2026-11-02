@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"sort"
 	"time"
 
 	"github.com/google/uuid"
@@ -197,8 +198,8 @@ func (r *TaskRepository) ClaimTimeoutTasks(ctx context.Context, workerID string,
 		WHERE task_id IN (
 			SELECT task_id FROM tasks
 			WHERE status = 'running'
-			  AND locked_at < NOW() - ($3 * INTERVAL '1 minute')
-			ORDER BY priority DESC, created_at ASC
+			  AND (locked_at IS NULL OR locked_at < NOW() - ($3 * INTERVAL '1 minute'))
+			ORDER BY priority DESC, created_at ASC, task_id ASC
 			FOR UPDATE SKIP LOCKED
 			LIMIT $2
 		)
@@ -210,7 +211,24 @@ func (r *TaskRepository) ClaimTimeoutTasks(ctx context.Context, workerID string,
 		return nil, fmt.Errorf("claim timeout tasks: %w", err)
 	}
 	defer rows.Close()
-	return r.scanTasks(rows)
+	tasks, err := r.scanTasks(rows)
+	if err != nil {
+		return nil, err
+	}
+	sortClaimedTasks(tasks)
+	return tasks, nil
+}
+
+// RefreshTaskLock renews a running task lease only while this worker still owns it.
+func (r *TaskRepository) RefreshTaskLock(ctx context.Context, tenantID, taskID uuid.UUID, workerID string) (bool, error) {
+	cmd, err := r.db.Exec(ctx, `
+		UPDATE tasks SET locked_at = NOW()
+		WHERE tenant_id = $1 AND task_id = $2 AND status = 'running' AND worker_id = $3`,
+		tenantID, taskID, workerID)
+	if err != nil {
+		return false, fmt.Errorf("refresh task lock: %w", err)
+	}
+	return cmd.RowsAffected() == 1, nil
 }
 
 // CountRunningGlobal 全局 running 任务总数(内存自适应的全局并发上限检查用)
@@ -240,7 +258,26 @@ func (r *TaskRepository) claimTasksWithStatus(ctx context.Context, workerID stri
 		return nil, fmt.Errorf("claim tasks: %w", err)
 	}
 	defer rows.Close()
-	return r.scanTasks(rows)
+	tasks, err := r.scanTasks(rows)
+	if err != nil {
+		return nil, err
+	}
+	sortClaimedTasks(tasks)
+	return tasks, nil
+}
+
+// sortClaimedTasks preserves the priority order selected by the locking query.
+// PostgreSQL does not guarantee UPDATE ... RETURNING row order.
+func sortClaimedTasks(tasks []*domain.Task) {
+	sort.SliceStable(tasks, func(i, j int) bool {
+		if tasks[i].Priority != tasks[j].Priority {
+			return tasks[i].Priority > tasks[j].Priority
+		}
+		if !tasks[i].CreatedAt.Equal(tasks[j].CreatedAt) {
+			return tasks[i].CreatedAt.Before(tasks[j].CreatedAt)
+		}
+		return tasks[i].TaskID.String() < tasks[j].TaskID.String()
+	})
 }
 
 // ActivatePendingTasks converts pending tasks whose scheduled_at has passed to queued.
@@ -277,17 +314,32 @@ func (r *TaskRepository) CountOwnedAccounts(ctx context.Context, tenantID uuid.U
 	if len(accountIDs) == 0 {
 		return 0, nil
 	}
-	rows, err := r.db.Query(ctx,
-		`SELECT COUNT(*)::int FROM accounts WHERE tenant_id=$1 AND account_id = ANY($2)`, tenantID, accountIDs)
-	if err != nil {
-		return 0, err
-	}
-	defer rows.Close()
 	var n int
-	if rows.Next() {
-		_ = rows.Scan(&n)
+	if err := r.db.QueryRow(ctx,
+		`SELECT COUNT(*)::int FROM accounts WHERE tenant_id=$1 AND account_id = ANY($2)`, tenantID, accountIDs).Scan(&n); err != nil {
+		return 0, fmt.Errorf("count tenant-owned accounts: %w", err)
 	}
-	return n, rows.Err()
+	return n, nil
+}
+
+// UpdateProgressIfOwned increments progress only while this worker still owns
+// the running task lease. The ownership predicate is checked atomically by SQL.
+func (r *TaskRepository) UpdateProgressIfOwned(ctx context.Context, tenantID, taskID uuid.UUID, workerID string, progress domain.TaskProgress) (bool, error) {
+	res, err := r.db.Exec(ctx, `
+		UPDATE tasks
+		SET progress = jsonb_set(
+			jsonb_set(
+				jsonb_set(progress, '{done}', to_jsonb(COALESCE((progress->>'done')::int, 0) + $4)),
+				'{failed}', to_jsonb(COALESCE((progress->>'failed')::int, 0) + $5)
+			),
+			'{current_target}', to_jsonb($6::text)
+		)
+		WHERE tenant_id = $1 AND task_id = $2 AND status = 'running' AND worker_id = $3`,
+		tenantID, taskID, workerID, progress.Done, progress.Failed, progress.CurrentTarget)
+	if err != nil {
+		return false, err
+	}
+	return res.RowsAffected() == 1, nil
 }
 
 // UpdateProgress atomically increments task progress counters.
@@ -308,12 +360,61 @@ func (r *TaskRepository) UpdateProgress(ctx context.Context, tenantID, taskID uu
 }
 
 
+// UpdateProgressIfStopped applies a final progress delta only after a task has
+// paused, failed, or been cancelled. It cannot mutate a task after it is resumed.
+func (r *TaskRepository) UpdateProgressIfStopped(ctx context.Context, tenantID, taskID uuid.UUID, progress domain.TaskProgress) (bool, error) {
+	res, err := r.db.Exec(ctx, `
+		UPDATE tasks
+		SET progress = jsonb_set(
+			jsonb_set(
+				jsonb_set(progress, '{done}', to_jsonb(COALESCE((progress->>'done')::int, 0) + $3)),
+				'{failed}', to_jsonb(COALESCE((progress->>'failed')::int, 0) + $4)
+			),
+			'{current_target}', to_jsonb($5::text)
+		)
+		WHERE tenant_id = $1 AND task_id = $2 AND status IN ('paused', 'failed', 'cancelled') AND worker_id IS NULL`,
+		tenantID, taskID, progress.Done, progress.Failed, progress.CurrentTarget)
+	if err != nil {
+		return false, err
+	}
+	return res.RowsAffected() == 1, nil
+}
+
 // UpdateProgressExact sets progress to exact values (use only for final status).
 func (r *TaskRepository) UpdateProgressExact(ctx context.Context, tenantID, taskID uuid.UUID, progress domain.TaskProgress) error {
 	_, err := r.db.Exec(ctx, `
 		UPDATE tasks SET progress = $3 WHERE tenant_id = $1 AND task_id = $2`,
 		tenantID, taskID, progress)
 	return err
+}
+
+// UpdateProgressExactIfOwned updates progress only while the caller still owns the running task lease.
+func (r *TaskRepository) UpdateProgressExactIfOwned(ctx context.Context, tenantID, taskID uuid.UUID, workerID string, progress domain.TaskProgress) (bool, error) {
+	res, err := r.db.Exec(ctx, `
+		UPDATE tasks SET progress = $4
+		WHERE tenant_id = $1 AND task_id = $2 AND status = 'running' AND worker_id = $3`,
+		tenantID, taskID, workerID, progress)
+	if err != nil {
+		return false, err
+	}
+	return res.RowsAffected() == 1, nil
+}
+
+// UpdateStatusIfOwned changes task status only if the current worker still owns its running lease.
+func (r *TaskRepository) UpdateStatusIfOwned(ctx context.Context, tenantID, taskID uuid.UUID, workerID string, status domain.TaskStatus) (bool, error) {
+	var completedAt interface{}
+	if status == domain.TaskStatusCompleted || status == domain.TaskStatusFailed || status == domain.TaskStatusCancelled {
+		completedAt = time.Now()
+	}
+	res, err := r.db.Exec(ctx, `
+		UPDATE tasks SET status = $4, completed_at = $5, locked_at = NULL, worker_id = NULL
+		WHERE tenant_id = $1 AND task_id = $2 AND status = 'running' AND worker_id = $3
+			AND $4 IN ('queued', 'paused', 'completed', 'failed', 'cancelled')`,
+		tenantID, taskID, workerID, status, completedAt)
+	if err != nil {
+		return false, err
+	}
+	return res.RowsAffected() == 1, nil
 }
 
 // UpdateStatus updates task status.
@@ -328,11 +429,13 @@ func (r *TaskRepository) UpdateStatus(ctx context.Context, tenantID, taskID uuid
 	res, err := r.db.Exec(ctx, `
 		UPDATE tasks SET status = $3, completed_at = $4, locked_at = NULL, worker_id = NULL
 		WHERE tenant_id = $1 AND task_id = $2 AND (
-			$3 IN ('failed', 'cancelled', 'queued')
-			OR (status = 'scheduled' AND $3 IN ('queued', 'cancelled'))
-			OR (status = 'queued'   AND $3 IN ('running', 'cancelled'))
-			OR (status = 'running'  AND $3 IN ('paused', 'completed', 'failed', 'cancelled'))
-			OR (status = 'paused'   AND $3 IN ('running', 'cancelled'))
+			-- 失败/取消只能从非终态进入，不能被迟到的 worker 覆盖 completed/cancelled。
+			(status = 'pending'   AND $3 = 'cancelled')
+			OR (status = 'scheduled' AND $3 IN ('queued', 'paused', 'cancelled'))
+			OR (status = 'queued'    AND $3 IN ('paused', 'cancelled'))
+			OR (status = 'running'   AND $3 IN ('queued', 'paused', 'completed', 'failed', 'cancelled'))
+			OR (status = 'paused'    AND $3 IN ('queued', 'cancelled'))
+			OR (status = 'failed'    AND $3 = 'queued')
 		)`,
 		tenantID, taskID, status, completedAt)
 	if err != nil {
@@ -346,11 +449,52 @@ func (r *TaskRepository) UpdateStatus(ctx context.Context, tenantID, taskID uuid
 
 // ResetToQueued resets a failed task to queued for retry.
 func (r *TaskRepository) ResetToQueued(ctx context.Context, tenantID, taskID uuid.UUID) error {
-	_, err := r.db.Exec(ctx, `
+	res, err := r.db.Exec(ctx, `
 		UPDATE tasks SET status = 'queued', locked_at = NULL, worker_id = NULL,
 		                 retry_count = retry_count + 1, completed_at = NULL
-		WHERE tenant_id = $1 AND task_id = $2`, tenantID, taskID)
-	return err
+		WHERE tenant_id = $1 AND task_id = $2
+		  AND status IN ('paused', 'failed', 'pending', 'scheduled')`, tenantID, taskID)
+	if err != nil {
+		return err
+	}
+	if res.RowsAffected() == 0 {
+		return fmt.Errorf("task cannot be resumed or retried from its current status")
+	}
+	return nil
+}
+
+// ActivateBatchSubTasks makes all pending children runnable together, or leaves
+// them untouched if the batch is incomplete.
+func (r *TaskRepository) ActivateBatchSubTasks(ctx context.Context, tenantID, batchID uuid.UUID, scheduledAt *time.Time, expected int) error {
+	tx, err := r.db.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("begin batch activation: %w", err)
+	}
+	defer func() { _ = tx.Rollback(context.Background()) }()
+
+	status := domain.TaskStatusQueued
+	if scheduledAt != nil && scheduledAt.After(time.Now()) {
+		status = domain.TaskStatusPending
+	}
+	var scheduledValue any
+	if scheduledAt != nil {
+		scheduledValue = *scheduledAt
+	}
+	tag, err := tx.Exec(ctx, `
+		UPDATE tasks
+		SET status = $3, scheduled_at = $4
+		WHERE tenant_id = $1 AND status = 'pending' AND payload->>'batch_id' = $2`,
+		tenantID, batchID.String(), status, scheduledValue)
+	if err != nil {
+		return fmt.Errorf("activate batch sub-tasks: %w", err)
+	}
+	if tag.RowsAffected() != int64(expected) {
+		return fmt.Errorf("activate batch sub-tasks: expected %d children, updated %d", expected, tag.RowsAffected())
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("commit batch activation: %w", err)
+	}
+	return nil
 }
 
 // Delete removes a task.
@@ -563,7 +707,8 @@ func (r *TaskRepository) RescheduleLoopTask(ctx context.Context, tenantID, taskI
 		UPDATE tasks SET status = 'pending', next_run_at = $3, scheduled_at = $3,
 		                 completed_at = NULL, locked_at = NULL, worker_id = NULL,
 		                 progress = '{"total":0,"done":0,"failed":0}'
-		WHERE tenant_id = $1 AND task_id = $2`, tenantID, taskID, nextRunAt)
+		WHERE tenant_id = $1 AND task_id = $2
+		  AND is_loop = TRUE AND status = 'completed'`, tenantID, taskID, nextRunAt)
 	return err
 }
 

@@ -7,9 +7,23 @@ import (
 	"io"
 	"os"
 
-	_ "modernc.org/sqlite"
 	"github.com/mtgo-labs/storage"
+	_ "modernc.org/sqlite"
 )
+
+const maxTelethonSessionFileSize = 10 << 20 // 与账号会话上传入口的 10MB 限制保持一致。
+
+// copyTelethonSessionBounded 防止内部调用绕过上传层后复制超大文件耗尽临时磁盘。
+func copyTelethonSessionBounded(dst io.Writer, src io.Reader) error {
+	n, err := io.Copy(dst, io.LimitReader(src, maxTelethonSessionFileSize+1))
+	if err != nil {
+		return fmt.Errorf("读取文件失败: %w", err)
+	}
+	if n > maxTelethonSessionFileSize {
+		return fmt.Errorf("session 文件过大，最大允许 %d MB", maxTelethonSessionFileSize>>20)
+	}
+	return nil
+}
 
 // ParseTelethonSessionFile 从 Telethon 导出的 .session 文件（SQLite 格式）提取会话。
 // 卡密商常见的交付物是这种文件，解析后得到 auth_key + DC 信息，转成 mtgo 存储格式。
@@ -26,12 +40,18 @@ func ParseTelethonSessionFile(ctx context.Context, path string) (*storage.Sessio
 	if err != nil {
 		return nil, "", "", fmt.Errorf("打开文件失败: %w", err)
 	}
-	if _, err := io.Copy(tmp, src); err != nil {
-		src.Close()
-		return nil, "", "", fmt.Errorf("读取文件失败: %w", err)
+	if err := copyTelethonSessionBounded(tmp, src); err != nil {
+		_ = src.Close()
+		_ = tmp.Close()
+		return nil, "", "", err
 	}
-	src.Close()
-	tmp.Close()
+	if err := src.Close(); err != nil {
+		_ = tmp.Close()
+		return nil, "", "", fmt.Errorf("关闭源文件失败: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		return nil, "", "", fmt.Errorf("关闭临时文件失败: %w", err)
+	}
 
 	db, err := sql.Open("sqlite", tmp.Name())
 	if err != nil {

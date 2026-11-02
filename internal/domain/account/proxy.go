@@ -3,6 +3,7 @@ package account
 import (
 	"context"
 	"fmt"
+	"net"
 	"net/url"
 	"strings"
 	"time"
@@ -47,6 +48,15 @@ func ProxyDialer(proxyURL string) (proxy.Dialer, error) {
 	return d, nil
 }
 
+// dialProxyContext 保证 SOCKS5 建连和代理握手都受请求上下文约束。
+func dialProxyContext(ctx context.Context, dialer proxy.Dialer, network, address string) (net.Conn, error) {
+	contextDialer, ok := dialer.(proxy.ContextDialer)
+	if !ok {
+		return nil, fmt.Errorf("代理 Dialer 不支持 context 取消")
+	}
+	return contextDialer.DialContext(ctx, network, address)
+}
+
 // TestProxy 连通性检测: 经代理 TCP 连接 TG 服务器(默认 DC2), 返回耗时。
 // 不创建 MTProto 会话、不做 TLS 校验(避免证书 SAN 不匹配误报), 纯链路探测, 安全无副作用。
 func (e *Engine) TestProxy(ctx context.Context, tenantID, accountID uuid.UUID) (map[string]interface{}, error) {
@@ -62,8 +72,10 @@ func (e *Engine) TestProxy(ctx context.Context, tenantID, accountID uuid.UUID) (
 	if err != nil {
 		return map[string]interface{}{"ok": false, "error": err.Error()}, nil
 	}
-	// 注: proxy.Dialer.Dial 不接受 ctx, 超时由系统 TCP 连接超时兜底(通常 <75s)
-	conn, err := dialer.Dial("tcp", "149.154.167.51:443") // TG DC2 边缘
+	// 将拨号和 SOCKS5 握手限制在 8 秒内，并响应调用方取消。
+	dialCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
+	defer cancel()
+	conn, err := dialProxyContext(dialCtx, dialer, "tcp", "149.154.167.51:443") // TG DC2 边缘
 	if err != nil {
 		return map[string]interface{}{"ok": false, "error": "经代理连接 Telegram 失败: " + err.Error()}, nil
 	}

@@ -10,7 +10,7 @@ import (
 	"log"
 	"net"
 	"net/smtp"
-	"strings"
+	"strconv"
 	"sync"
 	"time"
 
@@ -71,16 +71,13 @@ func (m *Mailer) Send(cfg *domain.NotifySMTPConfig, to, subject, body string) (e
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	addr := fmt.Sprintf("%s:%d", cfg.Host, cfg.Port)
+	addr := net.JoinHostPort(cfg.Host, strconv.Itoa(cfg.Port))
 	msg := []byte(fmt.Sprintf("From: %s\r\nTo: %s\r\nSubject: %s\r\nContent-Type: text/plain; charset=utf-8\r\n\r\n%s", cfg.From, to, subject, body))
 
 	if cfg.Port == 465 {
+		// SMTP 凭据和邮件内容必须始终经过证书校验的 TLS 连接；
+		// 自签名或域名不匹配的证书应修复 SMTP 服务端配置，而不是降级为可被中间人攻击的连接。
 		conn, err := tls.DialWithDialer(&net.Dialer{Timeout: 15 * time.Second}, "tcp", addr, &tls.Config{ServerName: cfg.Host})
-		if err != nil && (strings.Contains(err.Error(), "x509") || strings.Contains(err.Error(), "certificate")) {
-			// R147: 小众 SMTP 服务(证书域名不匹配/自签)回退跳过校验重试; QQ/163/Gmail 证书有效, 严格校验路径不受影响
-			log.Printf("[notify] TLS 证书校验失败(%v), 回退 InsecureSkipVerify 重试", err)
-			conn, err = tls.DialWithDialer(&net.Dialer{Timeout: 15 * time.Second}, "tcp", addr, &tls.Config{InsecureSkipVerify: true}) //nolint:gosec
-		}
 		if err != nil {
 			return fmt.Errorf("TLS 连接失败: %w", err)
 		}

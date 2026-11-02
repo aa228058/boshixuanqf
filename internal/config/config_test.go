@@ -46,3 +46,22 @@ func defaultTestConfig() *Config {
 		TaskLockTimeoutMin: 5,
 	}
 }
+
+func TestGetInt32FallbackRejectsOverflow(t *testing.T) {
+	t.Setenv("TEST_INT32_VALUE", "2147483648")
+	if got := getInt32Fallback("TEST_INT32_VALUE", "", 2); got != 2 {
+		t.Fatalf("overflow value should use default 2, got %d", got)
+	}
+	t.Setenv("TEST_INT32_VALUE", "-2147483648")
+	if got := getInt32Fallback("TEST_INT32_VALUE", "", 2); got != -2147483648 {
+		t.Fatalf("minimum int32 should parse, got %d", got)
+	}
+}
+
+func TestValidateRejectsOutOfRangeTelegramAPIID(t *testing.T) {
+	c := defaultTestConfig()
+	c.TGAPIID = int(int64(1<<31))
+	if err := c.Validate(); err == nil {
+		t.Fatal("TG_API_ID above int32 range must be rejected")
+	}
+}

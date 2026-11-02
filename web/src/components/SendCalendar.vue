@@ -44,7 +44,7 @@
 
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue'
-import { request } from '@/utils/request'
+import { api } from '@/utils/request'
 
 const dayData = ref<Record<string, number>>({})
 const offset = ref(0)

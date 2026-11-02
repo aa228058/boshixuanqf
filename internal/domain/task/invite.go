@@ -28,24 +28,49 @@ func (e *Engine) executeInviteMembers(ctx context.Context, task *domain.Task) er
 	if err != nil || target == nil {
 		return fmt.Errorf("目标群不存在")
 	}
-	source, err := e.groupRepo.GetByID(ctx, task.TenantID, sourceID)
-	if err != nil || source == nil {
-		return fmt.Errorf("来源群不存在")
+	if target.TGChatID == 0 {
+		return fmt.Errorf("目标群缺少 Telegram Chat ID")
+	}
+	if !strings.EqualFold(target.Type, "group") && target.AccessHash == 0 {
+		return fmt.Errorf("目标频道缺少 AccessHash，请先同步群组")
 	}
 	if len(task.AccountIDs) == 0 {
 		return fmt.Errorf("无执行账号")
 	}
 	accID := task.AccountIDs[0]
-
+	joined, err := e.groupRepo.IsJoinedByAccount(ctx, task.TenantID, accID, targetID)
+	if err != nil {
+		return fmt.Errorf("检查执行账号是否已加入目标群失败: %w", err)
+	}
+	if !joined {
+		return fmt.Errorf("执行账号尚未加入目标群")
+	}
+	source, err := e.groupRepo.GetByID(ctx, task.TenantID, sourceID)
+	if err != nil || source == nil {
+		return fmt.Errorf("来源群不存在")
+	}
+	if e.memberRepo == nil {
+		return fmt.Errorf("成员仓库未就绪")
+	}
 	total, err := e.memberRepo.CountByGroup(ctx, task.TenantID, sourceID)
 	if err != nil {
 		return fmt.Errorf("统计成员失败: %w", err)
 	}
 	initProg := domain.TaskProgress{Total: total, Done: 0, Failed: 0}
-	_ = e.repo.UpdateProgress(ctx, task.TenantID, task.TaskID, initProg)
-	e.publishProgress(task.TenantID, task.TaskID, initProg)
+	if updated, err := e.repo.UpdateProgressExactIfOwned(ctx, task.TenantID, task.TaskID, e.workerID, initProg); err != nil {
+		return fmt.Errorf("初始化邀请进度失败: %w", err)
+	} else if updated {
+		e.publishProgress(task.TenantID, task.TaskID, initProg)
+	}
 	taskLog.Printf("[invite] 任务 %s: 邀请 %s 的 %d 名成员进 %s", task.TaskID, source.Title, total, target.Title)
 
+	acc, err := e.accEngine.GetByID(ctx, task.TenantID, accID)
+	if err != nil || acc == nil {
+		return fmt.Errorf("执行账号不存在")
+	}
+	if acc.PoolStatus == "standby" || acc.Status == domain.AccountStatusBanned || acc.Status == domain.AccountStatusRestricted || acc.Status == domain.AccountStatusPendingAuth {
+		return fmt.Errorf("执行账号不可用于邀请(当前状态: %s, 池状态: %s)", acc.Status, acc.PoolStatus)
+	}
 	client, err := e.accEngine.GetClient(ctx, task.TenantID, accID)
 	if err != nil {
 		return fmt.Errorf("取客户端失败: %w", err)
@@ -58,8 +83,19 @@ func (e *Engine) executeInviteMembers(ctx context.Context, task *domain.Task) er
 	const pageSize = 200
 	saveProgress := func() {
 		prog := domain.TaskProgress{Total: total, Done: invited, Failed: failed, CurrentTarget: fmt.Sprintf("已邀 %d / 失败 %d", invited, failed)}
-		_ = e.repo.UpdateProgress(ctx, task.TenantID, task.TaskID, prog)
-		e.publishProgress(task.TenantID, task.TaskID, prog)
+		progressCtx := ctx
+		var cancel context.CancelFunc
+		if ctx.Err() != nil {
+			progressCtx, cancel = context.WithTimeout(context.Background(), 10*time.Second)
+		}
+		if cancel != nil {
+			defer cancel()
+		}
+		if updated, err := e.repo.UpdateProgressExactIfOwned(progressCtx, task.TenantID, task.TaskID, e.workerID, prog); err == nil && updated {
+			e.publishProgress(task.TenantID, task.TaskID, prog)
+		} else if err != nil {
+			taskLog.Printf("[invite] 保存进度失败: %v", err)
+		}
 	}
 
 	for offset := 0; ; offset += pageSize {
@@ -69,8 +105,13 @@ func (e *Engine) executeInviteMembers(ctx context.Context, task *domain.Task) er
 			return ctx.Err()
 		default:
 		}
-		members, err := e.memberRepo.ListByGroup(ctx, task.TenantID, sourceID, pageSize, offset)
-		if err != nil || len(members) == 0 {
+		listCtx, listCancel := context.WithTimeout(ctx, 15*time.Second)
+		members, err := e.memberRepo.ListByGroup(listCtx, task.TenantID, sourceID, pageSize, offset)
+		listCancel()
+		if err != nil {
+			return fmt.Errorf("读取来源群成员失败: %w", err)
+		}
+		if len(members) == 0 {
 			break
 		}
 		for _, m := range members {
@@ -81,16 +122,35 @@ func (e *Engine) executeInviteMembers(ctx context.Context, task *domain.Task) er
 			default:
 			}
 			if m.TGUserID == 0 {
+				failed++
 				continue
 			}
 			if m.AccessHash == 0 {
 				failed++ // 无 access_hash 无法定向邀请
 				continue
 			}
-			_, err := client.Raw().ChannelsInviteToChannel(ctx, &tg.ChannelsInviteToChannelRequest{
-				Channel: channel,
-				Users:   []tg.InputUserClass{&tg.InputUser{UserID: m.TGUserID, AccessHash: m.AccessHash}},
-			})
+			invokeCtx, invokeCancel := context.WithTimeout(ctx, 60*time.Second)
+			var err error
+			if strings.EqualFold(target.Type, "group") {
+				// Basic groups use messages.addChatUser; channels/supergroups use
+				// channels.inviteToChannel with an InputChannel and AccessHash.
+				_, err = client.Raw().MessagesAddChatUser(invokeCtx, &tg.MessagesAddChatUserRequest{
+					ChatID:   target.TGChatID,
+					UserID:   &tg.InputUser{UserID: m.TGUserID, AccessHash: m.AccessHash},
+					FwdLimit: 0,
+				})
+			} else {
+				_, err = client.Raw().ChannelsInviteToChannel(invokeCtx, &tg.ChannelsInviteToChannelRequest{
+					Channel: channel,
+					Users:   []tg.InputUserClass{&tg.InputUser{UserID: m.TGUserID, AccessHash: m.AccessHash}},
+				})
+			}
+			invokeErr := invokeCtx.Err()
+			invokeCancel()
+			if invokeErr != nil {
+				saveProgress()
+				return fmt.Errorf("邀请请求超时或已取消: %w", invokeErr)
+			}
 			if err != nil {
 				errStr := strings.ToLower(err.Error())
 				// 账号级风险: 邀请过频/被封 → 停止任务并冷却账号

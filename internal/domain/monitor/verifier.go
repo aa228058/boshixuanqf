@@ -35,6 +35,17 @@ var (
 )
 
 // vstate 一次验证的状态机
+func waitContext(ctx context.Context, d time.Duration) bool {
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-timer.C:
+		return true
+	}
+}
+
 type vstate struct {
 	mu       sync.Mutex
 	logID    uuid.UUID
@@ -72,16 +83,26 @@ func (vs *verifierState) get(accountID uuid.UUID, chatID int64) *vstate {
 	return vs.byChat[vs.key(accountID, chatID)]
 }
 
-func (vs *verifierState) put(accountID uuid.UUID, chatID int64, s *vstate) {
+func (vs *verifierState) putIfActive(accountID uuid.UUID, chatID int64, s *vstate) bool {
 	vs.mu.Lock()
 	defer vs.mu.Unlock()
-	vs.byChat[vs.key(accountID, chatID)] = s
+	key := vs.key(accountID, chatID)
+	if current := vs.byChat[key]; current != nil && time.Now().Before(current.deadline) {
+		return false
+	}
+	vs.byChat[key] = s
+	return true
 }
 
-func (vs *verifierState) remove(accountID uuid.UUID, chatID int64) {
+func (vs *verifierState) remove(accountID uuid.UUID, chatID int64, expected *vstate) {
 	vs.mu.Lock()
 	defer vs.mu.Unlock()
-	delete(vs.byChat, vs.key(accountID, chatID))
+	key := vs.key(accountID, chatID)
+	// An expired verification may still be unwinding after a newer state has
+	// replaced it. Only the goroutine that owns the current pointer may delete it.
+	if vs.byChat[key] == expected {
+		delete(vs.byChat, key)
+	}
 }
 
 // SetVerifierDeps 注入验证依赖(container 接线)
@@ -121,24 +142,19 @@ type vbutton struct {
 
 // HandleVerification 消息入口: 判定是否为验证消息, 是则启动/推进验证状态机。
 func (e *Engine) HandleVerification(ctx context.Context, client *telegram.Client, tenantID, accountID uuid.UUID, msg *tg.Message, chatID int64, chatTitle string) {
-	if e.vstates == nil || e.aiKeyProvider == nil {
-		return
-	}
-	_, _, _, enabled := e.aiKeyProvider(tenantID)
-	if !enabled {
+	if e.vstates == nil {
 		return
 	}
 	cand := extractCandidate(msg)
 	cand.chatID = chatID // 会话定位(状态机 key)
-	e.resolvePeer(ctx, client, cand)
-	if cand.peer == nil {
-		return // 私聊类验证无 access_hash 来源, 暂不支持
-	}
+	// Most monitored messages are ordinary chat traffic. Detect a verification
+	// candidate before making the network request needed to resolve its channel peer.
 	if !looksLikeVerification(cand) {
 		return
 	}
-	if st := e.vstates.get(accountID, chatID); st != nil && time.Now().Before(st.deadline) {
-		return // 同群已有进行中验证
+	e.resolvePeer(ctx, client, cand)
+	if cand.peer == nil {
+		return // 私聊类验证无 access_hash 来源, 暂不支持
 	}
 	st := &vstate{
 		logID: uuid.New(), tenantID: tenantID, accID: accountID,
@@ -146,13 +162,17 @@ func (e *Engine) HandleVerification(ctx context.Context, client *telegram.Client
 		deadline: time.Now().Add(120 * time.Second),
 	}
 	st.addStep("detect", truncate(cand.text, 80))
+	// Claim the chat atomically: concurrent OnMessage callbacks must not start
+	// two verification flows for the same account and group.
+	if !e.vstates.putIfActive(accountID, chatID, st) {
+		return
+	}
 	if e.vlRepo != nil {
 		_ = e.vlRepo.Create(ctx, &domain.VerificationLog{
 			VLID: st.logID, TenantID: tenantID, AccountID: accountID,
 			GroupChatID: chatID, GroupTitle: chatTitle, Status: "pending", Steps: st.steps,
 		})
 	}
-	e.vstates.put(accountID, chatID, st)
 	safego.Go(func() { e.runVerification(ctx, client, st, cand) })
 }
 
@@ -179,7 +199,7 @@ func looksLikeVerification(c *vcandidate) bool {
 
 // runVerification 验证主流程: 执行一轮动作 → 复测发言 → 不行再一轮 → 结算
 func (e *Engine) runVerification(ctx context.Context, client *telegram.Client, st *vstate, cand *vcandidate) {
-	defer e.vstates.remove(st.accID, st.chatID)
+	defer e.vstates.remove(st.accID, st.chatID, st)
 
 	// 预下载验证图片(算式图/字符码, 供 AI 兜底)
 	e.loadCandidateMedia(ctx, client, cand)
@@ -307,8 +327,11 @@ func (e *Engine) executeRound(ctx context.Context, client *telegram.Client, st *
 
 	// 5. 图片/GIF: AI 识别(未配置 Key 则停止并说明)
 	if cand.hasImage && len(cand.imageData) > 0 {
-		provider, key, model, _ := e.aiKeyProvider(st.tenantID)
-		if key == "" {
+		if e.aiKeyProvider == nil {
+			return fmt.Errorf("图片验证需要 AI Key(设置页免费申请)")
+		}
+		provider, key, model, enabled := e.aiKeyProvider(st.tenantID)
+		if !enabled || key == "" {
 			return fmt.Errorf("图片验证需要 AI Key(设置页免费申请)")
 		}
 		ans, err := ai.AskImage(ctx, provider, key, model, cand.imageMime, cand.imageData,
@@ -338,7 +361,9 @@ func (e *Engine) retestSpeak(ctx context.Context, client *telegram.Client, st *v
 	if peer == nil {
 		return false
 	}
-	time.Sleep(time.Duration(6+rand.IntN(6)) * time.Second)
+	if !waitContext(ctx, time.Duration(6+rand.IntN(6))*time.Second) {
+		return false
+	}
 	testText := fmt.Sprintf("%d", rand.IntN(90)+10)
 	sctx, cancel := context.WithTimeout(ctx, 20*time.Second)
 	defer cancel()
@@ -350,7 +375,9 @@ func (e *Engine) retestSpeak(ctx context.Context, client *telegram.Client, st *v
 		return false
 	}
 	msgID := firstSentMsgID(sent)
-	time.Sleep(time.Duration(12+rand.IntN(10)) * time.Second)
+	if !waitContext(ctx, time.Duration(12+rand.IntN(10))*time.Second) {
+		return false
+	}
 	hctx, hcancel := context.WithTimeout(ctx, 20*time.Second)
 	defer hcancel()
 	// 返回类型为接口 tg.MessagesMessagesClass, 需断言取 .Messages
@@ -414,7 +441,9 @@ func (e *Engine) clickCallback(ctx context.Context, client *telegram.Client, can
 	if cand.peer == nil {
 		return fmt.Errorf("无会话 peer")
 	}
-	time.Sleep(time.Duration(1+rand.IntN(2)) * time.Second)
+	if !waitContext(ctx, time.Duration(1+rand.IntN(2))*time.Second) {
+		return ctx.Err()
+	}
 	cctx, cancel := context.WithTimeout(ctx, 20*time.Second)
 	defer cancel()
 	_, err := client.Raw().MessagesGetBotCallbackAnswer(cctx, &tg.MessagesGetBotCallbackAnswerRequest{

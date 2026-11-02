@@ -176,12 +176,19 @@ type CreateBroadcastRequest struct {
 	Buttons []map[string]any `json:"buttons,omitempty"` // [{"text":"...","url":"..."}]
 	// Priority 任务优先级 1-10(默认 5; 8=优先插队, ClaimTasks 按 priority DESC 排序)
 	Priority int `json:"priority,omitempty"`
+	AutoVary bool `json:"auto_vary"`
+	Obfuscate bool `json:"obfuscate"`
+	IsLoop bool `json:"is_loop"`
+	LoopIntervalMinutes int `json:"loop_interval_minutes,omitempty"`
 }
 
 // broadcastExtras 提取请求中的富媒体/URL按钮等扩展字段, 注入任务 payload
 func broadcastExtras(req *CreateBroadcastRequest) map[string]any {
 	log.Printf("[broadcast] 创建请求 media=%v buttons=%d", req.Media, len(req.Buttons))
-	extra := map[string]any{}
+	extra := map[string]any{
+		"auto_vary": req.AutoVary,
+		"obfuscate": req.Obfuscate,
+	}
 	if len(req.Media) > 0 {
 		extra["media"] = req.Media
 	}
@@ -288,6 +295,14 @@ func (h *TaskHandler) Create(c echo.Context) error {
 			if err := h.planChecker.CheckFeature(c, tenantID.String(), middleware.FeatureJoinGroups); err != nil {
 				return err
 			}
+		case "monitor_scrape":
+			if err := h.planChecker.CheckFeature(c, tenantID.String(), middleware.FeatureMonitor); err != nil {
+				return err
+			}
+		case "invite_members":
+			if err := h.planChecker.CheckFeature(c, tenantID.String(), middleware.FeatureInvite); err != nil {
+				return err
+			}
 		case "scheduled_broadcast":
 			if err := h.planChecker.CheckFeature(c, tenantID.String(), middleware.FeatureScheduledTasks); err != nil {
 				return err
@@ -312,6 +327,8 @@ func (h *TaskHandler) Create(c echo.Context) error {
 		return h.CreateJoinGroups(c)
 	case "monitor_scrape":
 		return h.CreateMonitorScrape(c)
+	case "invite_members":
+		return h.CreateInviteMembers(c)
 	case "scheduled_broadcast":
 		return h.CreateScheduledBroadcast(c)
 	default:
@@ -427,7 +444,12 @@ func (h *TaskHandler) CreateBroadcast(c echo.Context) error {
 				Targets:   m.Targets,
 			}
 		}
-		task, err := h.svc.CreateBroadcastWithMapping(c.Request().Context(), tenantID, mappings, nil, nil, req.Message, scheduledAt, req.IntervalMin, req.IntervalMax, broadcastExtras(&req))
+		var task *domain.Task
+		if req.IsLoop {
+			task, err = h.svc.CreateLoopBroadcastWithMapping(c.Request().Context(), tenantID, mappings, nil, nil, req.Message, scheduledAt, req.IntervalMin, req.IntervalMax, req.LoopIntervalMinutes, broadcastExtras(&req))
+		} else {
+			task, err = h.svc.CreateBroadcastWithMapping(c.Request().Context(), tenantID, mappings, nil, nil, req.Message, scheduledAt, req.IntervalMin, req.IntervalMax, broadcastExtras(&req))
+		}
 		if err != nil {
 			log.Printf("[handler] 创建精准映射群发任务失败: %v", err)
 			return echo.NewHTTPError(http.StatusBadRequest, "创建群发任务失败")
@@ -445,7 +467,12 @@ func (h *TaskHandler) CreateBroadcast(c echo.Context) error {
 		accountIDs = append(accountIDs, uid)
 	}
 
-	task, err := h.svc.CreateBroadcast(c.Request().Context(), tenantID, accountIDs, req.TargetIDs, req.Message, scheduledAt, req.IntervalMin, req.IntervalMax, broadcastExtras(&req))
+	var task *domain.Task
+	if req.IsLoop {
+		task, err = h.svc.CreateLoopBroadcastWithMapping(c.Request().Context(), tenantID, nil, accountIDs, req.TargetIDs, req.Message, scheduledAt, req.IntervalMin, req.IntervalMax, req.LoopIntervalMinutes, broadcastExtras(&req))
+	} else {
+		task, err = h.svc.CreateBroadcast(c.Request().Context(), tenantID, accountIDs, req.TargetIDs, req.Message, scheduledAt, req.IntervalMin, req.IntervalMax, broadcastExtras(&req))
+	}
 	if err != nil {
 		log.Printf("[handler] 创建群发任务失败: %v", err)
 		return echo.NewHTTPError(http.StatusBadRequest, "创建群发任务失败")
@@ -1395,7 +1422,49 @@ func (h *TaskHandler) StreamProgress(c echo.Context) error {
 // @Failure 400 {object} ErrorResponse
 // @Failure 500 {object} ErrorResponse
 // @Security BearerAuth
-// @Router /tasks/monitor-scrape [post]
+// @Router /tasks [post]
+// CreateInviteMembers creates a task that invites members collected from a source group.
+func (h *TaskHandler) CreateInviteMembers(c echo.Context) error {
+	tenantID, err := middleware.GetTenantID(c)
+	if err != nil {
+		return err
+	}
+	var req struct {
+		AccountID  string         `json:"account_id"`
+		AccountIDs []string       `json:"account_ids"`
+		Payload    map[string]any `json:"payload"`
+	}
+	if err := c.Bind(&req); err != nil {
+		return echo.NewHTTPError(http.StatusBadRequest, "请求参数错误")
+	}
+	if len(req.AccountIDs) > 1 {
+		return echo.NewHTTPError(http.StatusBadRequest, "邀请任务一次只能指定一个执行账号")
+	}
+	accountIDText := req.AccountID
+	if len(req.AccountIDs) > 0 {
+		accountIDText = req.AccountIDs[0]
+	}
+	accountID, err := uuid.Parse(accountIDText)
+	if err != nil {
+		return echo.NewHTTPError(http.StatusBadRequest, "账号ID格式错误")
+	}
+	targetText, _ := req.Payload["target_group_id"].(string)
+	sourceText, _ := req.Payload["source_group_id"].(string)
+	targetID, err := uuid.Parse(targetText)
+	if err != nil {
+		return echo.NewHTTPError(http.StatusBadRequest, "目标群ID格式错误")
+	}
+	sourceID, err := uuid.Parse(sourceText)
+	if err != nil {
+		return echo.NewHTTPError(http.StatusBadRequest, "来源群ID格式错误")
+	}
+	task, err := h.svc.CreateInviteMembers(c.Request().Context(), tenantID, accountID, targetID, sourceID)
+	if err != nil {
+		return echo.NewHTTPError(http.StatusBadRequest, err.Error())
+	}
+	return Success(c, task)
+}
+
 func (h *TaskHandler) CreateMonitorScrape(c echo.Context) error {
 	tenantID, err := middleware.GetTenantID(c)
 	if err != nil {

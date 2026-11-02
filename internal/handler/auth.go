@@ -78,6 +78,7 @@ func NewAuthHandler(
 		planRepo:    planRepo,
 		refreshRepo: refreshRepo,
 		auditRepo:   auditRepo,
+		taskEngine:  taskEngine,
 	}
 }
 
@@ -486,8 +487,8 @@ func (h *AuthHandler) Refresh(c echo.Context) error {
 
 // Logout revokes the current access token and clears the refresh token cookie.
 func (h *AuthHandler) Logout(c echo.Context) error {
-	// F-02: 无论请求是否携带合法 token，都必须清掉 refresh cookie，
-	// 否则前端调用 logout 后浏览器仍保留有效 refresh token。
+	// 无论 access token 是否还在前端内存中，都尝试从 HttpOnly refresh cookie
+	// 识别租户并撤销其 refresh tokens。前端会先清空 access token 再调用 logout。
 	defer func() {
 		c.SetCookie(&http.Cookie{
 			Name:     "refresh_token",
@@ -500,37 +501,45 @@ func (h *AuthHandler) Logout(c echo.Context) error {
 		})
 	}()
 
+	var tenantID uuid.UUID
+	if cookie, err := c.Cookie("refresh_token"); err == nil && cookie.Value != "" {
+		if refreshTenantID, _, parseErr := middleware.ParseRefreshToken(h.cfg, cookie.Value); parseErr == nil {
+			if parsed, parseErr := uuid.Parse(refreshTenantID); parseErr == nil {
+				tenantID = parsed
+			}
+		}
+	}
+
+	// Access token 存在且有效时，以签名校验后的租户 ID 为准，并撤销 access token。
 	auth := c.Request().Header.Get("Authorization")
-	if auth == "" {
-		return Success(c, map[string]string{"message": "logged out"})
-	}
-	parts := strings.SplitN(auth, " ", 2)
-	if len(parts) != 2 || strings.ToLower(parts[0]) != "bearer" {
-		return Success(c, map[string]string{"message": "logged out"})
-	}
-
-	token, err := jwt.ParseWithClaims(parts[1], &middleware.JWTClaims{}, func(token *jwt.Token) (interface{}, error) {
-		return []byte(h.cfg.JWTSecret), nil
-	}, jwt.WithValidMethods([]string{"HS256"}),
-		jwt.WithIssuer(middleware.TokenIssuer), jwt.WithAudience(middleware.TokenAudience)) // F-03
-	if err != nil || !token.Valid {
-		return Success(c, map[string]string{"message": "logged out"})
-	}
-
-	claims, ok := token.Claims.(*middleware.JWTClaims)
-	if !ok || claims.ID == "" {
-		return Success(c, map[string]string{"message": "logged out"})
-	}
-
-	tenantID, _ := uuid.Parse(claims.TenantID)
-	if err := middleware.RevokeToken(h.db, claims.ID, tenantID, claims.ExpiresAt.Time); err != nil {
-		log.Printf("[handler] revoke token failed: %v", err)
+	if auth != "" {
+		parts := strings.SplitN(auth, " ", 2)
+		if len(parts) == 2 && strings.ToLower(parts[0]) == "bearer" {
+			token, err := jwt.ParseWithClaims(parts[1], &middleware.JWTClaims{}, func(token *jwt.Token) (interface{}, error) {
+				return []byte(h.cfg.JWTSecret), nil
+			}, jwt.WithValidMethods([]string{"HS256"}),
+				jwt.WithIssuer(middleware.TokenIssuer), jwt.WithAudience(middleware.TokenAudience))
+			if err == nil && token.Valid {
+				if claims, ok := token.Claims.(*middleware.JWTClaims); ok && claims.TokenType == "access" && claims.ID != "" {
+					if parsed, parseErr := uuid.Parse(claims.TenantID); parseErr == nil {
+						tenantID = parsed
+					}
+					if tenantID != uuid.Nil {
+						if err := middleware.RevokeToken(h.db, claims.ID, tenantID, claims.ExpiresAt.Time); err != nil {
+							log.Printf("[handler] revoke access token failed: %v", err)
+						}
+					}
+				}
+			}
+		}
 	}
 
-	// F-02: 登出必须同时撤销该租户全部 refresh token，否则 refresh 接口
-	// 可在"登出"后继续签发 access token，登出形同虚设。
-	if err := h.refreshRepo.RevokeAllForTenant(c.Request().Context(), tenantID); err != nil {
-		log.Printf("[handler] revoke refresh tokens failed: %v", err)
+	// 保持既有语义：退出当前租户会话时，撤销该租户所有 refresh token。
+	// 即使 access token 已过期/已被前端清空，只要 refresh cookie 仍有效也能执行。
+	if tenantID != uuid.Nil {
+		if err := h.refreshRepo.RevokeAllForTenant(c.Request().Context(), tenantID); err != nil {
+			log.Printf("[handler] revoke refresh tokens failed: %v", err)
+		}
 	}
 
 	return Success(c, map[string]string{"message": "logged out"})

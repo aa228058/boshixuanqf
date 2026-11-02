@@ -167,7 +167,7 @@ const filteredTenants = computed(() => {
   if (statusFilter.value) list = list.filter(t => t.status === statusFilter.value)
   if (search.value) {
     const s = search.value.toLowerCase()
-    list = list.filter(t => t.name?.toLowerCase().includes(s) || t.tenant_name?.toLowerCase().includes(s))
+    list = list.filter(t => t.name?.toLowerCase().includes(s) || t.name?.toLowerCase().includes(s))
   }
   return list
 })

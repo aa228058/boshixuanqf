@@ -39,9 +39,11 @@ func (r *PlanRepository) List(ctx context.Context) ([]domain.Plan, error) {
 			&p.CanBroadcast, &p.CanScrapeMembers, &p.CanScrapeLinks, &p.CanJoinGroups, &p.CanMonitor, &p.CanExport, &p.CanUseTemplates,
 			&p.MaxDailyBroadcasts, &p.MaxDailyScrapes, &p.MaxMonitorRules, &p.DailySearchLimit)
 		if err != nil {
-			continue
+			return nil, fmt.Errorf("scan plan %q: %w", p.PlanID, err)
 		}
-		json.Unmarshal(featuresJSON, &p.Features)
+		if err := json.Unmarshal(featuresJSON, &p.Features); err != nil {
+			return nil, fmt.Errorf("decode features for plan %q: %w", p.PlanID, err)
+		}
 		plans = append(plans, p)
 	}
 	return plans, rows.Err()
@@ -62,10 +64,14 @@ func (r *PlanRepository) ListAll(ctx context.Context) ([]domain.Plan, error) {
 	var list []domain.Plan
 	for rows.Next() {
 		var p domain.Plan
-		if err := rows.Scan(&p.PlanID, &p.Name, &p.PriceMonthly, &p.MaxAccounts, &p.MaxConcurrent, &p.Description, &p.Features, &p.IsActive, &p.UpdatedAt,
+		var featuresJSON []byte
+		if err := rows.Scan(&p.PlanID, &p.Name, &p.PriceMonthly, &p.MaxAccounts, &p.MaxConcurrent, &p.Description, &featuresJSON, &p.IsActive, &p.UpdatedAt,
 			&p.CanBroadcast, &p.CanScrapeMembers, &p.CanScrapeLinks, &p.CanJoinGroups, &p.CanMonitor, &p.CanExport, &p.CanUseTemplates,
 			&p.MaxDailyBroadcasts, &p.MaxDailyScrapes, &p.MaxMonitorRules, &p.DailySearchLimit); err != nil {
-			return nil, fmt.Errorf("scan plan: %w", err)
+			return nil, fmt.Errorf("scan plan %q: %w", p.PlanID, err)
+		}
+		if err := json.Unmarshal(featuresJSON, &p.Features); err != nil {
+			return nil, fmt.Errorf("decode features for plan %q: %w", p.PlanID, err)
 		}
 		list = append(list, p)
 	}
@@ -87,7 +93,9 @@ func (r *PlanRepository) GetByID(ctx context.Context, planID string) (*domain.Pl
 	if err != nil {
 		return nil, fmt.Errorf("get plan: %w", err)
 	}
-	json.Unmarshal(featuresJSON, &p.Features)
+	if err := json.Unmarshal(featuresJSON, &p.Features); err != nil {
+		return nil, fmt.Errorf("decode features for plan %q: %w", p.PlanID, err)
+	}
 	return &p, nil
 }
 
@@ -128,8 +136,11 @@ func (r *PlanRepository) Update(ctx context.Context, planID string, updates map[
 
 // Create inserts a new plan (upsert on conflict).
 func (r *PlanRepository) Create(ctx context.Context, p *domain.Plan) error {
-	featuresJSON, _ := json.Marshal(p.Features)
-	_, err := r.db.Exec(ctx, `
+	featuresJSON, err := json.Marshal(p.Features)
+	if err != nil {
+		return fmt.Errorf("encode plan features: %w", err)
+	}
+	_, err = r.db.Exec(ctx, `
 		INSERT INTO plans (
 			plan_id, name, price_monthly, max_accounts, max_concurrent, description, features, is_active, updated_at,
 			can_broadcast, can_scrape_members, can_scrape_links, can_join_groups, can_monitor, can_export, can_use_templates,

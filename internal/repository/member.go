@@ -23,7 +23,7 @@ func NewMemberRepository(db *pgxpool.Pool) *MemberRepository {
 // ListByGroup retrieves members for a group.
 func (r *MemberRepository) ListByGroup(ctx context.Context, tenantID, groupID uuid.UUID, limit, offset int) ([]*domain.Member, error) {
 	rows, err := r.db.Query(ctx, `
-		SELECT member_id, tenant_id, group_id, tg_user_id, username, first_name, last_name, phone, bio, last_seen, scraped_at
+		SELECT member_id, tenant_id, group_id, tg_user_id, username, first_name, last_name, phone, bio, last_seen, scraped_at, access_hash
 		FROM members WHERE tenant_id = $1 AND group_id = $2 ORDER BY scraped_at DESC LIMIT $3 OFFSET $4`,
 		tenantID, groupID, limit, offset)
 	if err != nil {
@@ -48,7 +48,7 @@ func (r *MemberRepository) ListByGroup(ctx context.Context, tenantID, groupID uu
 // ListByTenant retrieves all members across all groups for a tenant.
 func (r *MemberRepository) ListByTenant(ctx context.Context, tenantID uuid.UUID, limit int) ([]*domain.Member, error) {
 	rows, err := r.db.Query(ctx, `
-		SELECT member_id, tenant_id, group_id, tg_user_id, username, first_name, last_name, phone, bio, last_seen, scraped_at
+		SELECT member_id, tenant_id, group_id, tg_user_id, username, first_name, last_name, phone, bio, last_seen, scraped_at, access_hash
 		FROM members WHERE tenant_id = $1 ORDER BY scraped_at DESC LIMIT $2`,
 		tenantID, limit)
 	if err != nil {
@@ -94,12 +94,12 @@ func (r *MemberRepository) BatchCreate(ctx context.Context, members []*domain.Me
 	// Use COPY FROM for optimal bulk insert performance
 	copyCount, err := r.db.CopyFrom(ctx, pgx.Identifier{"members"}, []string{
 		"member_id", "tenant_id", "group_id", "tg_user_id", "username",
-		"first_name", "last_name", "phone", "bio", "last_seen", "scraped_at", "access_hash",
+		"first_name", "last_name", "phone", "bio", "last_seen", "has_photo", "scraped_at", "access_hash",
 	}, pgx.CopyFromSlice(len(members), func(i int) ([]interface{}, error) {
 		m := members[i]
 		return []interface{}{
 			m.MemberID, m.TenantID, m.GroupID, m.TGUserID, m.Username,
-			m.FirstName, m.LastName, m.Phone, m.Bio, m.LastSeen, m.ScrapedAt, m.AccessHash,
+			m.FirstName, m.LastName, m.Phone, m.Bio, m.LastSeen, m.HasPhoto, m.ScrapedAt, m.AccessHash,
 		}, nil
 	}))
 	if err == nil && int(copyCount) == len(members) {

@@ -202,7 +202,9 @@ func (r *AccountRepository) GetByID(ctx context.Context, tenantID, accountID uui
 	).Scan(&a.AccountID, &a.TenantID, &a.Phone, &a.SessionName, &a.Status, &a.Source, &a.Level,
 		&a.HealthScore, &a.DeviceProfile, &lastOnline, &remark, &blockedUntil, &a.CreatedAt, &a.AvatarPath, &capsRaw, &a.ProxyURL, &a.RaffleEnabled, &a.PoolStatus, &a.DC)
 	if err == nil && len(capsRaw) > 0 {
-		_ = json.Unmarshal(capsRaw, &a.Capabilities)
+		if decodeErr := json.Unmarshal(capsRaw, &a.Capabilities); decodeErr != nil {
+			return nil, fmt.Errorf("decode account capabilities: %w", decodeErr)
+		}
 	}
 	if err != nil {
 		return nil, fmt.Errorf("get account: %w", err)
@@ -236,6 +238,12 @@ func (r *AccountRepository) Create(ctx context.Context, a *domain.Account) error
 func (r *AccountRepository) CountAndCreate(ctx context.Context, a *domain.Account, maxAccounts int) (*domain.Account, int, error) {
 	var count int
 	err := pgx.BeginFunc(ctx, r.db, func(tx pgx.Tx) error {
+		// 锁定租户行，串行化同一租户的并发创建/转正额度检查。
+		// 单纯在事务中 COUNT(*) 仍允许两个并发事务同时读到旧数量并双双插入。
+		var lockedTenantID uuid.UUID
+		if err := tx.QueryRow(ctx, `SELECT tenant_id FROM tenants WHERE tenant_id = $1 AND deleted_at IS NULL FOR UPDATE`, a.TenantID).Scan(&lockedTenantID); err != nil {
+			return fmt.Errorf("lock tenant for account quota: %w", err)
+		}
 		// 056: 备用池不占额度 —— 只统计"启用"状态的账号
 		if err := tx.QueryRow(ctx, `SELECT COUNT(*) FROM accounts WHERE tenant_id = $1 AND pool_status = 'active'`, a.TenantID).Scan(&count); err != nil {
 			return err
@@ -512,6 +520,35 @@ func (r *AccountRepository) UpdatePoolStatus(ctx context.Context, tenantID, acco
 	return err
 }
 
+// UpdatePoolStatusWithLimit 原子切换账号池状态。
+// 转正与新建账号使用相同的租户行锁，防止并发操作突破启用账号额度。
+func (r *AccountRepository) UpdatePoolStatusWithLimit(ctx context.Context, tenantID, accountID uuid.UUID, status string, maxAccounts int) error {
+	return pgx.BeginFunc(ctx, r.db, func(tx pgx.Tx) error {
+		var lockedTenantID uuid.UUID
+		if err := tx.QueryRow(ctx, `SELECT tenant_id FROM tenants WHERE tenant_id = $1 AND deleted_at IS NULL FOR UPDATE`, tenantID).Scan(&lockedTenantID); err != nil {
+			return fmt.Errorf("lock tenant for pool status: %w", err)
+		}
+
+		var currentStatus string
+		if err := tx.QueryRow(ctx, `SELECT pool_status FROM accounts WHERE tenant_id = $1 AND account_id = $2 FOR UPDATE`, tenantID, accountID).Scan(&currentStatus); err != nil {
+			return fmt.Errorf("get account pool status: %w", err)
+		}
+
+		if status == "active" && currentStatus != "active" && maxAccounts > 0 {
+			var count int
+			if err := tx.QueryRow(ctx, `SELECT COUNT(*) FROM accounts WHERE tenant_id = $1 AND pool_status = 'active'`, tenantID).Scan(&count); err != nil {
+				return err
+			}
+			if count >= maxAccounts {
+				return fmt.Errorf("account limit reached: %d/%d", count, maxAccounts)
+			}
+		}
+
+		_, err := tx.Exec(ctx, `UPDATE accounts SET pool_status = $3 WHERE tenant_id = $1 AND account_id = $2`, tenantID, accountID, status)
+		return err
+	})
+}
+
 // CountActive 统计租户"启用"状态的账号数(备用池不占额度, 只数 active)
 func (r *AccountRepository) CountActive(ctx context.Context, tenantID uuid.UUID) (int, error) {
 	var n int
@@ -566,9 +603,10 @@ func (r *AccountRepository) GetSessionProfiles(ctx context.Context, sessionNames
 	for rows.Next() {
 		var id string
 		var p SessionProfile
-		if err := rows.Scan(&id, &p.FirstName, &p.LastName, &p.Username); err == nil {
-			out[id] = &p
+		if err := rows.Scan(&id, &p.FirstName, &p.LastName, &p.Username); err != nil {
+			return nil, fmt.Errorf("scan session profile: %w", err)
 		}
+		out[id] = &p
 	}
 	return out, rows.Err()
 }

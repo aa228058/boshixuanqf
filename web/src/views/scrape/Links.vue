@@ -243,7 +243,7 @@ const linksLoading = ref<Record<string, boolean>>({})
 // R108: 视图级账号切换 —— 监听配置按账号独立, 下拉选择管理哪个号(不依赖顶栏切换器)
 const linksAccId = ref('')
 watch(accountStore.currentAccount, (acc: any) => { if (acc?.account_id && !linksAccId.value) linksAccId.value = acc.account_id }, { immediate: true })
-watch(linksAccId, () => { fetchTasks(); fetchLinks(); fetchAllLinks() })
+watch(linksAccId, () => { fetchTasks(); loadAllLinks() })
 
 async function fetchTasks() {
   const accId = linksAccId.value

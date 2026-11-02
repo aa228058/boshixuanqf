@@ -16,6 +16,7 @@ import (
 	"tg-sender/internal/domain"
 	"tg-sender/internal/middleware"
 	"tg-sender/internal/repository"
+	"tg-sender/internal/safego"
 )
 
 // AIConfigHandler AI 配置 + 入群验证开关 + 验证记录 + 抽奖助手开关
@@ -227,27 +228,36 @@ func (h *AIConfigHandler) RaffleToggle(c echo.Context) error {
 		return err
 	}
 	ctx := c.Request().Context()
-	current, _ := h.tenantRepo.IsRaffleEnabled(ctx, tenantID)
-	next := !current
-	if c.Request().Body != nil {
-		body, _ := io.ReadAll(c.Request().Body)
-		trimmed := strings.TrimSpace(string(body))
-		if trimmed != "" && trimmed != "{}" {
-			var req struct {
-				Enabled bool `json:"enabled"`
-			}
-			if err := json.Unmarshal(body, &req); err != nil {
-				return echo.NewHTTPError(http.StatusBadRequest, "invalid body")
-			}
-			next = req.Enabled
+	var next bool
+	body, err := io.ReadAll(c.Request().Body)
+	if err != nil {
+		return echo.NewHTTPError(http.StatusBadRequest, "读取请求内容失败")
+	}
+	trimmed := strings.TrimSpace(string(body))
+	if trimmed != "" && trimmed != "{}" {
+		var req struct {
+			Enabled *bool `json:"enabled"`
 		}
+		if err := json.Unmarshal(body, &req); err != nil {
+			return echo.NewHTTPError(http.StatusBadRequest, "invalid body")
+		}
+		if req.Enabled == nil {
+			return echo.NewHTTPError(http.StatusBadRequest, "enabled is required")
+		}
+		next = *req.Enabled
+	} else {
+		current, err := h.tenantRepo.IsRaffleEnabled(ctx, tenantID)
+		if err != nil {
+			return echo.NewHTTPError(http.StatusInternalServerError, "抽奖开关读取失败，未修改状态")
+		}
+		next = !current
 	}
 	if err := h.tenantRepo.SetRaffleEnabled(ctx, tenantID, next); err != nil {
 		return echo.NewHTTPError(http.StatusInternalServerError, err.Error())
 	}
 	// 开启后异步拉起勾选账号的监听会话(不等 60 秒对账周期), 失败不影响开关响应
 	if next && h.watchSync != nil {
-		go h.watchSync(context.Background(), tenantID)
+		safego.Go(func() { h.watchSync(context.Background(), tenantID) })
 	}
 	// 必须回传最新状态: 前端依此更新开关 UI, 缺省 undefined 会被判 false("点开启却提示已关闭"的元凶)
 	return c.JSON(http.StatusOK, map[string]interface{}{"ok": true, "enabled": next})

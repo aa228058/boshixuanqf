@@ -357,7 +357,7 @@ func Load() *Config {
 		TGMTPProxySecret: getEnv("TG_MTPROXY_SECRET", ""),
 
 		TGAutoMigrateFrom: getEnv("TG_AUTO_MIGRATE_FROM", ""),
-		TGAutoMigrateTo:   int32(getIntFallback("TG_AUTO_MIGRATE_TO", "", 2)),
+		TGAutoMigrateTo:   getInt32Fallback("TG_AUTO_MIGRATE_TO", "", 2),
 	// 批次2(v1.19/1.27): 默认代理——新注册/导入的账号未指定代理时自动挂这个
 	// 支持 socks5://user:pass@host:port / http://... 格式
 	DefaultProxy: getEnv("DEFAULT_PROXY", ""),
@@ -459,8 +459,11 @@ func (c *Config) Validate() error {
 	if entropy < 2.0 {
 		return fmt.Errorf("JWT_SECRET entropy too low, use a more random string")
 	}
-	if c.TGAPIID == 0 {
-		return fmt.Errorf("TG_API_ID is required")
+	if c.TGAPIID <= 0 || int64(c.TGAPIID) > 1<<31-1 {
+		return fmt.Errorf("TG_API_ID must be between 1 and %d", int64(1<<31-1))
+	}
+	if int64(c.DBMaxConns) > 1<<31-1 || int64(c.DBMaxIdle) > 1<<31-1 {
+		return fmt.Errorf("DB_MAX_CONNS and DB_MAX_IDLE must not exceed %d", int64(1<<31-1))
 	}
 	if c.TGAPIHash == "" {
 		return fmt.Errorf("TG_API_HASH is required")
@@ -664,6 +667,31 @@ func getIntFallback(key, fallbackKey string, defaultVal int) int {
 			if n, err := strconv.Atoi(v); err == nil {
 				return n
 			}
+		}
+	}
+	return defaultVal
+}
+
+// getInt32Fallback parses an environment value directly at 32-bit width so
+// invalid or out-of-range values cannot wrap during a later int32 conversion.
+func getInt32Fallback(key, fallbackKey string, defaultVal int32) int32 {
+	parse := func(value string) (int32, bool) {
+		n, err := strconv.ParseInt(strings.TrimSpace(value), 10, 32)
+		return int32(n), err == nil
+	}
+	if value := os.Getenv(key); value != "" {
+		if n, ok := parse(value); ok {
+			return n
+		}
+		log.Printf("[config] 警告：32 位整数配置无效或超出范围，使用默认值 %d", defaultVal)
+		return defaultVal
+	}
+	if fallbackKey != "" {
+		if value := os.Getenv(fallbackKey); value != "" {
+			if n, ok := parse(value); ok {
+				return n
+			}
+			log.Printf("[config] 警告：备用 32 位整数配置无效或超出范围，使用默认值 %d", defaultVal)
 		}
 	}
 	return defaultVal

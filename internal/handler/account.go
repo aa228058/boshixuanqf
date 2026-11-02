@@ -813,6 +813,14 @@ func (h *AccountHandler) ImportSessionFiles(c echo.Context) error {
 	// 落盘临时文件（SQLite 驱动需要可寻址路径）
 	// (2026-10-20) 支持 .zip 压缩包: 自动解压包内全部 .session 逐个导入
 	var paths []string
+	// 临时 session 和同 stem 的 sidecar JSON(可能含明文 2FA 密码)必须在所有退出路径清理。
+	// 清理 defer 放在解压循环前，确保中途报错也不会留下敏感临时文件。
+	defer func() {
+		for _, p := range paths {
+			_ = os.Remove(p)
+			_ = os.Remove(strings.TrimSuffix(p, filepath.Ext(p)) + ".json")
+		}
+	}()
 	for _, fh := range files {
 		src, err := fh.Open()
 		if err != nil {
@@ -832,6 +840,7 @@ func (h *AccountHandler) ImportSessionFiles(c echo.Context) error {
 			// R182 两遍式: 第一遍收集同 stem 的 .json(常含 2FA 密码/手机号, 号商导出惯例),
 			// 第二遍落 session 时按同 stem 写出 sidecar json, service 端 readSidecarJSON 读取。
 			sidecars := map[string][]byte{}
+			sidecarCount := 0
 			var sessionFiles []*zip.File
 			for _, zf := range zr.File {
 				if zf.FileInfo().IsDir() {
@@ -839,12 +848,21 @@ func (h *AccountHandler) ImportSessionFiles(c echo.Context) error {
 				}
 				lowerName := strings.ToLower(zf.Name)
 				if strings.HasSuffix(lowerName, ".json") {
-					if rc, err := zf.Open(); err == nil {
-						data, _ := io.ReadAll(io.LimitReader(rc, 1<<20))
-						rc.Close()
-						if stem := sanitizeStem(zf.Name); stem != "" {
-							sidecars[stem] = data
-						}
+					sidecarCount++
+					if sidecarCount > 50 || zf.UncompressedSize64 > 1<<20 {
+						return echo.NewHTTPError(http.StatusBadRequest, "压缩包 sidecar JSON 数量或大小超限")
+					}
+					rc, openErr := zf.Open()
+					if openErr != nil {
+						return echo.NewHTTPError(http.StatusBadRequest, "压缩包 sidecar JSON 无法读取")
+					}
+					data, readErr := io.ReadAll(io.LimitReader(rc, (1<<20)+1))
+					rc.Close()
+					if readErr != nil || len(data) > 1<<20 {
+						return echo.NewHTTPError(http.StatusBadRequest, "压缩包 sidecar JSON 超过 1MB")
+					}
+					if stem := sanitizeStem(zf.Name); stem != "" {
+						sidecars[stem] = data
 					}
 					continue
 				}
@@ -916,22 +934,32 @@ func (h *AccountHandler) ImportSessionFiles(c echo.Context) error {
 				return echo.NewHTTPError(http.StatusBadRequest, ext+" 解压失败: "+err.Error())
 			}
 			defer os.RemoveAll(outDir)
+			// 限定文件访问在解压目录内，并拒绝归档中的符号链接，防止借助链接读取目录外文件。
+			archiveRoot, rootErr := os.OpenRoot(outDir)
+			if rootErr != nil {
+				return echo.NewHTTPError(http.StatusInternalServerError, "打开解压目录失败")
+			}
+			defer archiveRoot.Close()
 			arcCount := 0
-			walkErr := filepath.Walk(outDir, func(p string, info os.FileInfo, werr error) error {
-				if werr != nil || info.IsDir() || !strings.HasSuffix(strings.ToLower(info.Name()), ".session") {
+			walkErr := filepath.WalkDir(outDir, func(p string, entry os.DirEntry, werr error) error {
+				if werr != nil || entry.IsDir() || entry.Type()&os.ModeSymlink != 0 ||
+					!strings.HasSuffix(strings.ToLower(entry.Name()), ".session") {
 					return nil
 				}
 				if len(paths) >= 50 {
 					return echo.NewHTTPError(http.StatusBadRequest, "解压后文件超 50 个上限, 请分包导入")
 				}
-				dest, derr := os.CreateTemp("", tempPrefixFromName(info.Name())+"*.session")
-				if derr != nil {
+				rel, relErr := filepath.Rel(outDir, p)
+				if relErr != nil {
 					return nil
 				}
-				in, ierr := os.Open(p)
+				in, ierr := archiveRoot.Open(rel)
 				if ierr != nil {
-					dest.Close()
-					os.Remove(dest.Name())
+					return nil
+				}
+				dest, derr := os.CreateTemp("", tempPrefixFromName(entry.Name())+"*.session")
+				if derr != nil {
+					in.Close()
 					return nil
 				}
 				written, cerr := io.Copy(dest, io.LimitReader(in, 10<<20+1))
@@ -941,9 +969,14 @@ func (h *AccountHandler) ImportSessionFiles(c echo.Context) error {
 					os.Remove(dest.Name())
 					return nil
 				}
-				// R182: 同 stem .json 跟随拷贝(rar/7z 包内 sidecar, 同 zip 规则)
-				if jdata, jerr := os.ReadFile(strings.TrimSuffix(p, ".session") + ".json"); jerr == nil {
-					_ = os.WriteFile(strings.TrimSuffix(dest.Name(), ".session")+".json", jdata, 0600)
+				// sidecar 同样通过 os.Root 读取，并限制大小。
+				sidecarRel := strings.TrimSuffix(rel, ".session") + ".json"
+				if jdata, jerr := archiveRoot.Open(sidecarRel); jerr == nil {
+					data, readErr := io.ReadAll(io.LimitReader(jdata, (1<<20)+1))
+					jdata.Close()
+					if readErr == nil && len(data) <= 1<<20 {
+						_ = os.WriteFile(strings.TrimSuffix(dest.Name(), ".session")+".json", data, 0600)
+					}
 				}
 				paths = append(paths, dest.Name())
 				arcCount++
@@ -981,12 +1014,6 @@ func (h *AccountHandler) ImportSessionFiles(c echo.Context) error {
 		tmp.Close()
 		paths = append(paths, tmp.Name())
 	}
-	defer func() {
-		for _, p := range paths {
-			os.Remove(p)
-		}
-	}()
-
 	result, err := h.svc.ImportSessionFiles(c.Request().Context(), tenantID, paths, remark)
 	if err != nil {
 		return echo.NewHTTPError(http.StatusInternalServerError, err.Error())
@@ -1326,6 +1353,9 @@ func (h *AccountHandler) TransferGroups(c echo.Context) error {
 	}
 	if target.Status == domain.AccountStatusBanned {
 		return echo.NewHTTPError(http.StatusBadRequest, "目标账号已被封禁, 不能作为转移目标")
+	}
+	if target.PoolStatus == "standby" {
+		return echo.NewHTTPError(http.StatusBadRequest, "目标账号处于备用池, 请先转正")
 	}
 
 	// 第一步: 源账号导出邀请链接

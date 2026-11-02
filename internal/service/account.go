@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -171,8 +172,11 @@ func (s *AccountService) Create(ctx context.Context, tenantID uuid.UUID, phone s
 		return nil, fmt.Errorf("create account: %w", err)
 	}
 
-	// Init quotas
+	// 初始化配额失败时回滚账号记录，避免留下一个永远缺少配额的半成品账号。
 	if err := s.quota.InitAccountQuotas(ctx, acc.AccountID, level); err != nil {
+		if rollbackErr := s.repo.Delete(ctx, tenantID, acc.AccountID); rollbackErr != nil {
+			return nil, fmt.Errorf("init quotas: %w (rollback account failed: %v)", err, rollbackErr)
+		}
 		return nil, fmt.Errorf("init quotas: %w", err)
 	}
 
@@ -249,7 +253,10 @@ func (s *AccountService) ImportSessions(ctx context.Context, tenantID uuid.UUID,
 			continue
 		}
 		if err := s.quota.InitAccountQuotas(ctx, acc.AccountID, acc.Level); err != nil {
-			log.Printf("[account] init quotas %s: %v", accountID, err)
+			_ = s.repo.Delete(ctx, tenantID, accountID)
+			result.Failed++
+			result.Errors = append(result.Errors, fmt.Sprintf("第%d行: 配额初始化失败(%v)", i+1, err))
+			continue
 		}
 		if err := s.engine.StoreImportedSession(ctx, acc.SessionName, serverAddr, sess); err != nil {
 			_ = s.repo.Delete(ctx, tenantID, accountID)
@@ -300,13 +307,12 @@ func (s *AccountService) UpdateAccountProfile(ctx context.Context, tenantID, acc
 			acc.DeviceProfile = map[string]any{}
 		}
 		if twoFA != "" {
-			// R182: 2FA 密码不明文落 JSONB(device_profile)——审计报告#11。
-			// 加密存 twofa_enc, 同时清掉历史明文遗留键。
-			if enc, err := crypto.Encrypt([]byte(twoFA)); err == nil {
-				acc.DeviceProfile["twofa_enc"] = enc
-			} else {
-				log.Printf("[account] 2FA 密码加密存储失败: %v", err)
+			// 加密失败必须中止更新，不能删除旧密码或保存不完整的资料。
+			enc, err := crypto.Encrypt([]byte(twoFA))
+			if err != nil {
+				return fmt.Errorf("2FA 密码加密存储失败: %w", err)
 			}
+			acc.DeviceProfile["twofa_enc"] = enc
 			delete(acc.DeviceProfile, "twofa")
 		}
 		// 空串=保持不变(2FA已不随API返回前端, 绝不能因空误清)
@@ -355,6 +361,9 @@ func (s *AccountService) Connect(ctx context.Context, tenantID, accountID uuid.U
 	acc, err := s.repo.GetByID(ctx, tenantID, accountID)
 	if err != nil {
 		return err
+	}
+	if acc == nil {
+		return fmt.Errorf("账号不存在")
 	}
 	return s.engine.ConnectAccount(ctx, tenantID, accountID, acc.Phone, acc.SessionName, acc.Level)
 }
@@ -560,10 +569,15 @@ func (s *AccountService) ImportSessionFiles(ctx context.Context, tenantID uuid.U
 			DeviceProfile: map[string]any{},
 		}
 		if twoFA != "" {
-			// R182: sidecar 2FA 密码加密入库(与 UpdateAccountProfile 同规则, 不明文落 JSONB)
-			if enc, err := crypto.Encrypt([]byte(twoFA)); err == nil {
-				acc.DeviceProfile["twofa_enc"] = enc
+			// R182: sidecar 2FA 密码加密入库(与 UpdateAccountProfile 同规则, 不明文落 JSONB)。
+			// 加密失败必须拒绝该文件，不能静默丢弃重登所需的二次验证密码。
+			enc, err := crypto.Encrypt([]byte(twoFA))
+			if err != nil {
+				result.Failed++
+				result.Errors = append(result.Errors, fmt.Sprintf("第%d个文件: 2FA 密码加密失败(%v)", i+1, err))
+				continue
 			}
+			acc.DeviceProfile["twofa_enc"] = enc
 		}
 		if _, _, err := s.repo.CountAndCreate(ctx, acc, maxAccounts); err != nil {
 			result.Failed++
@@ -571,7 +585,10 @@ func (s *AccountService) ImportSessionFiles(ctx context.Context, tenantID uuid.U
 			continue
 		}
 		if err := s.quota.InitAccountQuotas(ctx, acc.AccountID, acc.Level); err != nil {
-			log.Printf("[account] init quotas %s: %v", accountID, err)
+			_ = s.repo.Delete(ctx, tenantID, accountID)
+			result.Failed++
+			result.Errors = append(result.Errors, fmt.Sprintf("第%d个文件: 配额初始化失败(%v)", i+1, err))
+			continue
 		}
 		if err := s.engine.StoreImportedSession(ctx, acc.SessionName, serverAddr, sess); err != nil {
 			_ = s.repo.Delete(ctx, tenantID, accountID)
@@ -708,31 +725,32 @@ func (s *AccountService) SetPoolStatus(ctx context.Context, tenantID, accountID 
 	if target != "active" && target != "standby" {
 		return fmt.Errorf("无效的池状态: %s", target)
 	}
-	acc, err := s.repo.GetByID(ctx, tenantID, accountID)
-	if err != nil {
+	if _, err := s.repo.GetByID(ctx, tenantID, accountID); err != nil {
 		return err
 	}
-	if target == "active" && acc.PoolStatus != "active" {
-		// 转正: 启用数+1, 校验是否超套餐上限
+	maxAccounts := 0
+	if target == "active" {
+		// 与新建账号保持一致：套餐额度未设置时使用系统默认上限。
 		t, err := s.tenantRepo.GetByID(ctx, tenantID)
 		if err != nil {
 			return err
 		}
-		n, err := s.repo.CountActive(ctx, tenantID)
-		if err != nil {
-			return err
-		}
-		if t.MaxAccounts > 0 && n >= t.MaxAccounts {
-			return fmt.Errorf("套餐账号额度已满(%d/%d), 无法转正备用号; 可在管理端升级套餐或先转备用其他号", n, t.MaxAccounts)
+		maxAccounts = t.MaxAccounts
+		if maxAccounts <= 0 {
+			maxAccounts = s.cfg.MaxAccounts
 		}
 	}
-	if err := s.repo.UpdatePoolStatus(ctx, tenantID, accountID, target); err != nil {
+	if err := s.repo.UpdatePoolStatusWithLimit(ctx, tenantID, accountID, target, maxAccounts); err != nil {
 		return fmt.Errorf("切换池状态失败: %w", err)
 	}
 	if target == "standby" {
-		// 转备用: 断连接停业务, 标记离线
-		s.engine.DisconnectAccount(ctx, tenantID, accountID)
-		_ = s.repo.UpdateStatus(ctx, tenantID, accountID, "offline")
+		// 转备用: 即使断开连接失败，也继续尝试同步数据库离线状态；
+		// 两个操作的错误都必须返回，避免调用方误以为账号已完全停用。
+		disconnectErr := s.engine.DisconnectAccount(ctx, tenantID, accountID)
+		statusErr := s.repo.UpdateStatus(ctx, tenantID, accountID, "offline")
+		if err := errors.Join(disconnectErr, statusErr); err != nil {
+			return fmt.Errorf("账号已转备用，但停止账号业务未完全成功: %w", err)
+		}
 	}
 	return nil
 }

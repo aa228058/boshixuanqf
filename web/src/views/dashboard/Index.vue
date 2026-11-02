@@ -115,7 +115,7 @@
             <Activity class="w-5 h-5 text-cyan shrink-0" stroke-width="2" />
             <div class="flex-1 min-w-0">
               <p class="text-sm font-medium text-text-primary">{{ auditActionLabel(log.action) }}</p>
-              <p class="text-xs text-text-secondary">{{ targetLabel(log.target) }}</p>
+              <p class="text-xs text-text-secondary">{{ targetLabel(log.target || '') }}</p>
             </div>
             <span class="text-xs text-text-secondary">{{ formatRelativeTime(log.created_at) }}</span>
           </div>

@@ -208,7 +208,14 @@ func newEchoServer(cfg *config.Config, c *app.Container) *echo.Echo {
 		}
 	}
 
-	e.Use(echomiddleware.BodyLimit(defaultBodyLimit))
+	e.Use(echomiddleware.BodyLimitWithConfig(echomiddleware.BodyLimitConfig{
+		Limit: defaultBodyLimit,
+		// 上传端点由各自的 upload group 施加更大的限制；全局 10M 不能提前拦截它们。
+		Skipper: func(c echo.Context) bool {
+			path := c.Request().URL.Path
+			return path == "/api/v1/media" || path == "/api/v1/accounts/import-files"
+		},
+	}))
 
 	// Security headers
 	e.Use(func(next echo.HandlerFunc) echo.HandlerFunc {
@@ -270,7 +277,7 @@ func newEchoServer(cfg *config.Config, c *app.Container) *echo.Echo {
 	api.GET("/accounts/:id/auth-state", c.AccountHandler.GetAuthState)
 	api.POST("/accounts/:id/password", c.AccountHandler.Submit2FA)
 	api.POST("/accounts/import", c.AccountHandler.ImportSessions)
-	api.POST("/accounts/import-files", c.AccountHandler.ImportSessionFiles)
+
 	api.PUT("/accounts/:id/profile", c.AccountHandler.UpdateProfile)
 	api.PUT("/accounts/:id/pool", c.AccountHandler.SetPool)
 	api.POST("/accounts/pool-batch", c.AccountHandler.BatchSetPool)
@@ -279,7 +286,7 @@ func newEchoServer(cfg *config.Config, c *app.Container) *echo.Echo {
 	api.POST("/accounts/:id/reconnect", c.AccountHandler.Reconnect)
 	api.POST("/accounts/:id/leave-all-groups", c.TaskHandler.LeaveAllGroups)
 	// R181 群转移: 源号导出邀请链接 → 目标号创建 join_groups 任务(间隔租户可调)
-	api.POST("/accounts/:id/transfer-groups", c.AccountHandler.TransferGroups)
+	api.POST("/accounts/:id/transfer-groups", c.AccountHandler.TransferGroups, c.PlanChecker.RequirePlanFeature(middleware.FeatureJoinGroups))
 	api.PUT("/accounts/:id/raffle", c.PlanChecker.RequirePlanFeature(middleware.FeatureRaffle)(c.AccountHandler.SetRaffle))
 	api.POST("/accounts/:id/avatar", c.AccountHandler.UploadAvatar)
 	// R119: 账号能力探测(8 项矩阵, 管理端配置探测目标, 全部套餐可用)
@@ -288,21 +295,21 @@ func newEchoServer(cfg *config.Config, c *app.Container) *echo.Echo {
 	api.GET("/accounts/:id/avatar", c.AccountHandler.GetAvatar) // 拉取账号TG头像(前端走 axios blob)
 	// Echo v4: 中间件以"调用"方式包裹 handler —— mw(handler), 不是逗号并列
 	// 能力体检/SpamBot申诉 后端已随前端一并移除(2026-10-21)
-	api.PUT("/accounts/:id/proxy", c.AccountHandler.SetProxy)   // 设置账号代理
+	api.PUT("/accounts/:id/proxy", c.AccountHandler.SetProxy, c.PlanChecker.RequirePlanFeature(middleware.FeatureProxy)) // 设置账号代理(套餐功能门禁)
 	api.PUT("/accounts/:id/profile", c.AccountHandler.UpdateProfile) // 修改 TG 资料(名字/签名/用户名)
 	api.POST("/accounts/clone-profile", c.AccountHandler.CloneProfile) // 批量克隆他人资料
-	api.POST("/accounts/:id/proxy/test", c.AccountHandler.TestProxy) // 代理连通性检测
+	api.POST("/accounts/:id/proxy/test", c.AccountHandler.TestProxy, c.PlanChecker.RequirePlanFeature(middleware.FeatureProxy)) // 代理连通性检测(套餐功能门禁)
 	// 找群: 平台级群组库(所有租户采集汇总, 平台共享)
 	// 群库浏览平台共享(引流): 登录即可看; 批量加入(discover)与搜群(search)才需套餐权限
 	api.GET("/group-library", c.GroupLibraryHandler.List)
 	api.POST("/group-library/join", c.PlanChecker.RequirePlanFeature(middleware.FeatureDiscover)(c.GroupLibraryHandler.JoinSelected))
-	api.POST("/group-library/search", c.GroupLibraryHandler.Search) // 关键词搜群(借在线账号TG搜索, 入库)
+	api.POST("/group-library/search", c.GroupLibraryHandler.Search, c.PlanChecker.RequirePlanFeature(middleware.FeatureDiscover)) // 关键词搜群(借在线账号TG搜索, 入库; 套餐功能门禁)
 	// R116: /text-dicts 词典管理 API 七端点已删(前端词典管理 UI 消亡后零调用;
 	// 词典数据本身仍服务群发变量 {{词典名}} —— engine 直读 TextDictRepo, 不经过 HTTP 层)
 	// 入群验证: AI 配置(加密存储) + 总开关 + 验证记录
 	api.GET("/ai-config", c.PlanChecker.RequirePlanFeature(middleware.FeatureVerifier)(c.AIConfigHandler.Get))
 	api.PUT("/ai-config", c.PlanChecker.RequirePlanFeature(middleware.FeatureVerifier)(c.AIConfigHandler.Save))
-	api.POST("/ai-config/test", c.AIConfigHandler.Test)
+	api.POST("/ai-config/test", c.AIConfigHandler.Test, c.PlanChecker.RequirePlanFeature(middleware.FeatureVerifier))
 	api.POST("/verifier/toggle", c.PlanChecker.RequirePlanFeature(middleware.FeatureVerifier)(c.AIConfigHandler.Toggle))
 	// 抽奖助手: 群内抽奖公告自动参与
 	api.GET("/raffle/status", c.PlanChecker.RequirePlanFeature(middleware.FeatureRaffle)(c.AIConfigHandler.RaffleStatus))
@@ -333,10 +340,12 @@ func newEchoServer(cfg *config.Config, c *app.Container) *echo.Echo {
 	// 给 media 路由单独放宽到 52M(留 multipart 开销余量), 其他接口仍受 10M 保护。
 	mediaApi := api.Group("", echomiddleware.BodyLimit("52M"))
 	mediaApi.POST("/media", c.MediaHandler.Upload)
+	mediaApi.POST("/accounts/import-files", c.AccountHandler.ImportSessionFiles)
 	api.GET("/contacts", c.ContactHandler.List)
 	api.POST("/groups", c.GroupHandler.Create)
 	api.GET("/groups/:id", c.GroupHandler.GetByID)
 	api.PUT("/groups/:id", c.GroupHandler.Update)
+	api.DELETE("/groups/:id", c.GroupHandler.Delete)
 	api.GET("/groups/:id/members", c.GroupHandler.GetMembers)
 	api.GET("/members", c.GroupHandler.GetMembersGlobal)
 	// P1-1 审计修复: 原来无 RequirePlanFeature——免费版可绕过 scrape_members 限制
@@ -361,7 +370,7 @@ func newEchoServer(cfg *config.Config, c *app.Container) *echo.Echo {
 	// R116: /logs/cleanup 已删(前端封装零调用)
 	api.GET("/scrape-links", c.TaskHandler.ListScrapedLinks)
 	api.GET("/scrape-links/export", c.TaskHandler.ExportScrapedLinks)
-	api.POST("/scrape-links/toggle", c.TaskHandler.ToggleLinkScraping)
+	api.POST("/scrape-links/toggle", c.TaskHandler.ToggleLinkScraping, c.PlanChecker.RequirePlanFeature(middleware.FeatureScrapeLinks))
 	api.GET("/scrape-links/status", c.TaskHandler.LinkScrapingStatus)
 	api.GET("/tasks/logs", c.TaskHandler.GetAccountLogs)
 	api.GET("/tasks/:id/progress", c.TaskHandler.GetProgress)

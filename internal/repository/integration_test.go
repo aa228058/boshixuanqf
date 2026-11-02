@@ -7,11 +7,14 @@ package repository
 
 import (
 	"context"
+	"io"
 	"path/filepath"
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"tg-sender/internal/domain"
 	"github.com/jackc/pgx/v5/stdlib"
 	"github.com/pressly/goose/v3"
 	"github.com/testcontainers/testcontainers-go/modules/postgres"
@@ -21,26 +24,42 @@ import (
 func setupTestDB(t *testing.T) *pgxpool.Pool {
 	t.Helper()
 	ctx := context.Background()
-	// postgres.Run 自带就绪等待，无需显式 WaitStrategy
+	// postgres.Run 不会自动等待数据库 ready，必须使用官方 BasicWaitStrategies。
 	pg, err := postgres.Run(ctx, "postgres:16-alpine",
 		postgres.WithDatabase("testdb"),
 		postgres.WithUsername("test"),
 		postgres.WithPassword("test"),
+		postgres.BasicWaitStrategies(),
 	)
 	if err != nil {
 		t.Fatalf("start postgres container: %v", err)
 	}
 	t.Cleanup(func() { _ = pg.Terminate(ctx) })
 
-	dsn, err := pg.ConnectionString(ctx)
+	dsn, err := pg.ConnectionString(ctx, "sslmode=disable")
 	if err != nil {
 		t.Fatalf("connection string: %v", err)
 	}
-	pool, err := pgxpool.New(ctx, dsn+"&sslmode=disable")
+	pool, err := pgxpool.New(ctx, dsn)
 	if err != nil {
 		t.Fatalf("connect: %v", err)
 	}
 	t.Cleanup(pool.Close)
+	// postgres.Run 的端口就绪信号可能早于 PostgreSQL 完成初始化；
+	// 在执行迁移前轮询真实 SQL 连接，避免把容器启动竞态误判为迁移失败。
+	readyCtx, readyCancel := context.WithTimeout(ctx, 60*time.Second)
+	defer readyCancel()
+	var pingErr error
+	for {
+		if pingErr = pool.Ping(readyCtx); pingErr == nil {
+			break
+		}
+		select {
+		case <-readyCtx.Done():
+			t.Fatalf("postgres did not become SQL-ready: %v (last ping error: %v)", readyCtx.Err(), pingErr)
+		case <-time.After(250 * time.Millisecond):
+		}
+	}
 
 	// 应用全部迁移（与生产同路径）
 	migDir, err := filepath.Abs("../../migrations")
@@ -50,8 +69,17 @@ func setupTestDB(t *testing.T) *pgxpool.Pool {
 	if err := goose.SetDialect("postgres"); err != nil {
 		t.Fatalf("goose dialect: %v", err)
 	}
-	if err := goose.Up(stdlib.OpenDBFromPool(pool), migDir); err != nil {
-		t.Fatalf("apply migrations: %v", err)
+	sqlDB := stdlib.OpenDBFromPool(pool)
+	t.Cleanup(func() { _ = sqlDB.Close() })
+	if err := goose.Up(sqlDB, migDir); err != nil {
+		var logs string
+		if reader, logErr := pg.Logs(ctx); logErr == nil {
+			if data, readErr := io.ReadAll(reader); readErr == nil {
+				logs = string(data)
+			}
+			_ = reader.Close()
+		}
+		t.Fatalf("apply migrations: %v\npostgres container logs:\n%s", err, logs)
 	}
 	return pool
 }
@@ -66,12 +94,12 @@ func TestTenantSoftDeleteAndPurgeQueries(t *testing.T) {
 	_, err := pool.Exec(ctx, `
 		INSERT INTO tenants (tenant_id, username, password_hash, name, api_key_hash, plan_id)
 		VALUES ('11111111-1111-1111-1111-111111111111', 'integtest', 'x', 'Integ', 'integ-test-key-hash', 'free');
-		INSERT INTO accounts (account_id, tenant_id, phone, status)
-		VALUES ('22222222-2222-2222-2222-222222222222', '11111111-1111-1111-1111-111111111111', '+10000000000', 'active');
-		INSERT INTO campaigns (id, tenant_id, name, status)  -- 注意：主键是 id（D-00 教训）
-		VALUES ('33333333-3333-3333-3333-333333333333', '11111111-1111-1111-1111-111111111111', 'c1', 'running');
-		INSERT INTO campaign_accounts (campaign_id, account_id)
-		VALUES ('33333333-3333-3333-3333-333333333333', '22222222-2222-2222-2222-222222222222');
+		INSERT INTO accounts (account_id, tenant_id, phone, session_name, status)
+		VALUES ('22222222-2222-2222-2222-222222222222', '11111111-1111-1111-1111-111111111111', '+10000000000', 'integtest_session', 'offline');
+		INSERT INTO campaigns (id, tenant_id, name, status, objective)  -- 注意：主键是 id（D-00 教训）
+		VALUES ('33333333-3333-3333-3333-333333333333', '11111111-1111-1111-1111-111111111111', 'c1', 'running', '{}'::jsonb);
+		INSERT INTO campaign_accounts (campaign_id, account_id, role)
+		VALUES ('33333333-3333-3333-3333-333333333333', '22222222-2222-2222-2222-222222222222', 'broadcaster');
 	`)
 	if err != nil {
 		t.Fatalf("seed: %v", err)
@@ -130,37 +158,83 @@ func TestUpdateStatusGuardMatrix(t *testing.T) {
 	_, err := pool.Exec(ctx, `
 		INSERT INTO tenants (tenant_id, username, password_hash, name, api_key_hash, plan_id)
 		VALUES ('11111111-1111-1111-1111-111111111111', 'guardtest', 'x', 'G', 'guard-test-key-hash', 'free');
-		INSERT INTO tasks (tenant_id, task_id, task_type, name, status, target_type)
-		VALUES ('11111111-1111-1111-1111-111111111111', '44444444-4444-4444-4444-444444444444', 'broadcast', 't', 'running', 'group');
+		INSERT INTO tasks (tenant_id, task_id, type, status)
+		VALUES ('11111111-1111-1111-1111-111111111111', '44444444-4444-4444-4444-444444444444', 'broadcast', 'running');
 	`)
 	if err != nil {
 		t.Fatalf("seed: %v", err)
 	}
-	// 非法迁移 running->scheduled 应命中 0 行
-	res, err := pool.Exec(ctx, `
-		UPDATE tasks SET status='scheduled'
-		WHERE tenant_id=$1 AND task_id=$2 AND (
-			'scheduled' IN ('failed','cancelled','queued')
-			OR (status='queued' AND 'scheduled' IN ('running','cancelled'))
-			OR (status='running' AND 'scheduled' IN ('paused','completed','failed','cancelled')))`,
-		"11111111-1111-1111-1111-111111111111", "44444444-4444-4444-4444-444444444444")
+
+	repo := NewTaskRepository(pool)
+	tenantID := uuid.MustParse("11111111-1111-1111-1111-111111111111")
+	taskID := uuid.MustParse("44444444-4444-4444-4444-444444444444")
+
+	// 必须调用真实 repository 状态迁移守卫，而不是在测试里复制一份 SQL。
+	if err := repo.UpdateStatus(ctx, tenantID, taskID, domain.TaskStatusScheduled); err == nil {
+		t.Fatal("illegal transition running->scheduled should be rejected")
+	}
+	if err := repo.UpdateStatus(ctx, tenantID, taskID, domain.TaskStatusPaused); err != nil {
+		t.Fatalf("legal transition running->paused should succeed: %v", err)
+	}
+}
+
+func TestListFailedTargetsPreservesAccountPairsAndExcludesSuccessfulPairs(t *testing.T) {
+	pool := setupTestDB(t)
+	ctx := context.Background()
+	tenantID := uuid.New()
+	accountA := uuid.New()
+	accountB := uuid.New()
+	taskID := uuid.New()
+
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO tenants (tenant_id, username, password_hash, name, api_key_hash, plan_id)
+		VALUES ($1, 'retry-pairs-test', 'x', 'Retry pairs', 'retry-pairs-key', 'free')`, tenantID); err != nil {
+		t.Fatalf("seed tenant: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO accounts (account_id, tenant_id, phone, session_name, status)
+		VALUES ($2, $1, '+10000000011', 'retry_a', 'offline'),
+		       ($3, $1, '+10000000012', 'retry_b', 'offline')`, tenantID, accountA, accountB); err != nil {
+		t.Fatalf("seed accounts: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO tasks (task_id, tenant_id, type, status)
+		VALUES ($2, $1, 'broadcast', 'completed')`, tenantID, taskID); err != nil {
+		t.Fatalf("seed task: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO task_logs (log_id, task_id, tenant_id, account_id, target_id, action, status)
+		VALUES
+		  (gen_random_uuid(), $1, $2, $3, 'group-1', 'send_message', 'failed'),
+		  (gen_random_uuid(), $1, $2, $3, 'group-1', 'send_message', 'success'),
+		  (gen_random_uuid(), $1, $2, $3, 'group-2', 'send_message', 'failed'),
+		  (gen_random_uuid(), $1, $2, $4, 'group-1', 'send_message', 'failed'),
+		  (gen_random_uuid(), $1, $2, NULL, 'legacy-target', 'send_message', 'failed')`,
+		taskID, tenantID, accountA, accountB); err != nil {
+		t.Fatalf("seed task logs: %v", err)
+	}
+
+	got, err := NewTaskLogRepository(pool).ListFailedTargets(ctx, tenantID, taskID)
 	if err != nil {
-		t.Fatalf("guard query: %v", err)
+		t.Fatalf("ListFailedTargets: %v", err)
 	}
-	if res.RowsAffected() != 0 {
-		t.Fatal("illegal transition running->scheduled should affect 0 rows")
+	if len(got) != 3 {
+		t.Fatalf("got %d failed pairs, want 3: %#v", len(got), got)
 	}
-	// 合法迁移 running->paused 应命中 1 行
-	res, err = pool.Exec(ctx, `
-		UPDATE tasks SET status='paused'
-		WHERE tenant_id=$1 AND task_id=$2 AND (
-			'paused' IN ('failed','cancelled','queued')
-			OR (status='running' AND 'paused' IN ('paused','completed','failed','cancelled')))`,
-		"11111111-1111-1111-1111-111111111111", "44444444-4444-4444-4444-444444444444")
-	if err != nil {
-		t.Fatalf("legal query: %v", err)
+	seen := make(map[string]bool, len(got))
+	for _, item := range got {
+		account := "null"
+		if item.AccountID != nil {
+			account = item.AccountID.String()
+		}
+		seen[account+"|"+item.TargetID] = true
 	}
-	if res.RowsAffected() != 1 {
-		t.Fatal("legal transition running->paused should affect 1 row")
+	if seen[accountA.String()+"|group-1"] {
+		t.Fatal("pair with a later success was returned for retry")
+	}
+	for _, key := range []string{accountA.String()+"|group-2", accountB.String()+"|group-1", "null|legacy-target"} {
+		if !seen[key] {
+			t.Errorf("missing failed pair %q: %#v", key, seen)
+		}
 	}
 }

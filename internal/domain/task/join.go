@@ -17,6 +17,34 @@ import (
 
 
 // classifyJoinError 把 Telegram 拒绝原因细化成可读错误码（原 join_failed 吞掉真因）
+func systemGroupDedupKeyFromJoinLink(link string) string {
+	s := strings.TrimSpace(link)
+	s = strings.TrimPrefix(s, "https://")
+	s = strings.TrimPrefix(s, "http://")
+	s = strings.TrimPrefix(s, "www.")
+	s = strings.TrimPrefix(s, "t.me/")
+	s = strings.TrimPrefix(s, "/")
+	s = strings.SplitN(s, "?", 2)[0]
+	s = strings.TrimSuffix(s, "/")
+	if strings.HasPrefix(s, "+") {
+		return "l:https://t.me/joinchat/" + strings.TrimPrefix(s, "+")
+	}
+	if strings.HasPrefix(s, "joinchat/") {
+		return "l:https://t.me/" + s
+	}
+	s = strings.TrimPrefix(s, "@")
+	if s == "" || strings.HasPrefix(s, "c/") {
+		return ""
+	}
+	if i := strings.IndexByte(s, '/'); i >= 0 {
+		s = s[:i]
+	}
+	if s == "" {
+		return ""
+	}
+	return "u:" + strings.ToLower(s)
+}
+
 func classifyJoinError(err error) string {
 	if err == nil {
 		return ""
@@ -50,9 +78,10 @@ func (e *Engine) executeJoinGroups(ctx context.Context, task *domain.Task) {
 	total := len(task.TargetIDs)
 	done := 0
 	failed := 0
+	joinedTargets := make([]string, 0, total)
 
 	if len(task.AccountIDs) == 0 {
-		if err := e.repo.UpdateStatus(ctx, task.TenantID, task.TaskID, domain.TaskStatusFailed); err != nil {
+		if err := e.updateTaskStatusIfOwned(ctx, task, domain.TaskStatusFailed); err != nil {
 			taskLog.Printf("[task] UpdateStatus failed: %v", err)
 		}
 		return
@@ -83,20 +112,20 @@ func (e *Engine) executeJoinGroups(ctx context.Context, task *domain.Task) {
 
 	// Check account status before using it
 	acc, err := e.accEngine.GetByID(ctx, task.TenantID, accID)
-	if err != nil || acc == nil || (acc.Status == domain.AccountStatusBanned || acc.Status == domain.AccountStatusRestricted || acc.Status == domain.AccountStatusPendingAuth) {
+	if err != nil || acc == nil || (acc.Status == domain.AccountStatusBanned || acc.Status == domain.AccountStatusRestricted || acc.Status == domain.AccountStatusPendingAuth) || (acc != nil && acc.PoolStatus == "standby") {
 		status := "unknown"
 		if acc != nil {
 			status = string(acc.Status)
 		}
 		taskLog.Printf("[join] skip account %s: status=%s (not active)", accID, status)
-		if err := e.repo.UpdateStatus(ctx, task.TenantID, task.TaskID, domain.TaskStatusFailed); err != nil {
+		if err := e.updateTaskStatusIfOwned(ctx, task, domain.TaskStatusFailed); err != nil {
 			taskLog.Printf("[task] UpdateStatus failed: %v", err)
 		}
 		return
 	}
 	if acc.BlockedUntil != nil && acc.BlockedUntil.After(time.Now().UTC()) {
 		taskLog.Printf("[join] skip account %s: blocked_until=%s", accID, acc.BlockedUntil.Format(time.RFC3339))
-		if err := e.repo.UpdateStatus(ctx, task.TenantID, task.TaskID, domain.TaskStatusFailed); err != nil {
+		if err := e.updateTaskStatusIfOwned(ctx, task, domain.TaskStatusFailed); err != nil {
 			taskLog.Printf("[task] UpdateStatus failed: %v", err)
 		}
 		return
@@ -104,7 +133,7 @@ func (e *Engine) executeJoinGroups(ctx context.Context, task *domain.Task) {
 
 	client, err := e.accEngine.GetClient(ctx, task.TenantID, accID)
 	if err != nil {
-		if err := e.repo.UpdateStatus(ctx, task.TenantID, task.TaskID, domain.TaskStatusFailed); err != nil {
+		if err := e.updateTaskStatusIfOwned(ctx, task, domain.TaskStatusFailed); err != nil {
 			taskLog.Printf("[task] UpdateStatus failed: %v", err)
 		}
 		return
@@ -114,7 +143,7 @@ func (e *Engine) executeJoinGroups(ctx context.Context, task *domain.Task) {
 	for _, link := range task.TargetIDs {
 		select {
 		case <-e.stopCh:
-			if err := e.repo.UpdateStatus(ctx, task.TenantID, task.TaskID, domain.TaskStatusPaused); err != nil {
+			if err := e.updateTaskStatusIfOwned(ctx, task, domain.TaskStatusPaused); err != nil {
 				taskLog.Printf("[task] UpdateStatus failed: %v", err)
 			}
 			return
@@ -180,9 +209,13 @@ func (e *Engine) executeJoinGroups(ctx context.Context, task *domain.Task) {
 							log.Printf("[join] 创建群组失败: %v", err)
 						}
 					}
+				} else if isAlreadyMember(joinErr) {
+					status = "success"
+					errCode = "already_member"
 				} else {
 					status = "failed"
-					errCode = "join_failed"
+					errMsg = joinErr.Error()
+					errCode = classifyJoinError(joinErr)
 					if isGlobalFlood(joinErr) {
 						floodHit = true
 						floodWaitSec = extractFloodSeconds(strings.ToLower(joinErr.Error()))
@@ -201,10 +234,16 @@ func (e *Engine) executeJoinGroups(ctx context.Context, task *domain.Task) {
 			}
 		} else {
 			// Public group: ResolvePeer → get chat ID → JoinChannel
-			peer, resolveErr := client.ResolvePeer(ctx, link)
+			resolveCtx, resolveCancel := context.WithTimeout(ctx, 90*time.Second)
+			peer, resolveErr := client.ResolvePeer(resolveCtx, link)
+			resolveCancel()
 			if resolveErr != nil {
 				status = "failed"
-				errCode = "resolve_failed"
+				errMsg = resolveErr.Error()
+				errCode = classifyJoinError(resolveErr)
+				if errCode == "join_failed" {
+					errCode = "resolve_failed"
+				}
 			} else {
 				var chatID int64
 				var accessHash int64
@@ -225,30 +264,40 @@ func (e *Engine) executeJoinGroups(ctx context.Context, task *domain.Task) {
 				if chatID != 0 {
 					// Deduplication: skip if already joined this group
 					if e.groupRepo != nil {
-						if existing, _ := e.groupRepo.GetByTGChatID(ctx, task.TenantID, chatID); existing != nil && existing.IsJoined {
-							status = "success"
-							errCode = "already_joined"
-							goto logAndContinue
+						if existing, getErr := e.groupRepo.GetByTGChatID(ctx, task.TenantID, chatID); getErr == nil && existing != nil {
+							joined, joinCheckErr := e.groupRepo.IsJoinedByAccount(ctx, task.TenantID, accID, existing.GroupID)
+							if joinCheckErr == nil && joined {
+								status = "success"
+								errCode = "already_joined"
+								goto logAndContinue
+							}
+							if joinCheckErr != nil {
+								log.Printf("[join] 查询账号群关联失败，继续向 Telegram 确认加入状态: %v", joinCheckErr)
+							}
 						}
 					}
 					var joinErr error
 					switch p := peer.(type) {
 					case *tg.InputPeerChat:
 						// Regular group: treat as channel (public groups are usually channels/supergroups)
-						_, joinErr = client.Invoke(ctx, &tg.ChannelsJoinChannelRequest{
+						joinCtx, joinCancel := context.WithTimeout(ctx, 90*time.Second)
+						_, joinErr = client.Invoke(joinCtx, &tg.ChannelsJoinChannelRequest{
 							Channel: &tg.InputChannel{
 								ChannelID:  p.ChatID,
 								AccessHash: 0,
 							},
 						})
+						joinCancel()
 					case *tg.InputPeerChannel:
 						// Channel/supergroup: use channels.joinChannel
-						_, joinErr = client.Invoke(ctx, &tg.ChannelsJoinChannelRequest{
+						joinCtx, joinCancel := context.WithTimeout(ctx, 90*time.Second)
+						_, joinErr = client.Invoke(joinCtx, &tg.ChannelsJoinChannelRequest{
 							Channel: &tg.InputChannel{
 								ChannelID:  p.ChannelID,
 								AccessHash: p.AccessHash,
 							},
 						})
+						joinCancel()
 					}
 					if joinErr != nil {
 						if isInviteRequestSent(joinErr) {
@@ -269,6 +318,13 @@ func (e *Engine) executeJoinGroups(ctx context.Context, task *domain.Task) {
 						} else if isAlreadyMember(joinErr) {
 							status = "success"
 							errCode = "already_member"
+							if e.groupRepo != nil {
+								if existing, getErr := e.groupRepo.GetByTGChatID(ctx, task.TenantID, chatID); getErr == nil && existing != nil {
+								if err := e.associateJoinedGroup(ctx, task.TenantID, accID, existing.GroupID); err != nil {
+									log.Printf("[join] 关联已加入群到账号失败: %v", err)
+								}
+							}
+							}
 						} else {
 							status = "failed"
 							errMsg = joinErr.Error()
@@ -326,6 +382,11 @@ func (e *Engine) executeJoinGroups(ctx context.Context, task *domain.Task) {
 									log.Printf("[join] 创建群组失败: %v", err)
 								}
 							}
+							if saved, getErr := e.groupRepo.GetByTGChatID(ctx, task.TenantID, chatID); getErr == nil && saved != nil {
+								if err := e.associateJoinedGroup(ctx, task.TenantID, accID, saved.GroupID); err != nil {
+									log.Printf("[join] 关联新加入群到账号失败: %v", err)
+								}
+							}
 						}
 					}
 				}
@@ -350,22 +411,22 @@ func (e *Engine) executeJoinGroups(ctx context.Context, task *domain.Task) {
 		}
 		e.publishLog(task.TenantID, task.TaskID, joinLog)
 
-		// R87-M10: 加入失败 → 回写群库"已失效"状态(按 dedup_key 匹配, 已加入的群不降级)
-		if status == "failed" && e.systemGroupRepo != nil {
-			key := link
-			if strings.HasPrefix(key, "+") || strings.HasPrefix(key, "joinchat/") {
-				key = "l:t.me/" + strings.TrimPrefix(strings.TrimPrefix(key, "+"), "joinchat/")
-			} else if !strings.HasPrefix(key, "u:") && !strings.HasPrefix(key, "l:") {
-				key = "u:" + strings.ToLower(key)
-			}
-			if merr := e.systemGroupRepo.MarkInvalidByDedupKey(ctx, key); merr != nil {
-				log.Printf("[join] 标记群失效失败 %s: %v", key, merr)
+		// Only permanent link/username failures make a shared system-group entry invalid.
+		// Flood waits, account bans, membership limits and private-group access errors
+		// are account-specific or transient and must not poison the cross-tenant catalog.
+		if status == "failed" && e.systemGroupRepo != nil &&
+			(errCode == "invite_expired" || errCode == "invite_invalid" || errCode == "username_invalid") {
+			if key := systemGroupDedupKeyFromJoinLink(link); key != "" {
+				if merr := e.systemGroupRepo.MarkInvalidByDedupKey(ctx, key); merr != nil {
+					log.Printf("[join] 标记群失效失败 %s: %v", key, merr)
+				}
 			}
 		}
 
 		// Accumulate progress locally, flush at end of loop
 		progressDelta := domain.TaskProgress{Done: 0, Failed: 0, CurrentTarget: link}
 		if status == "success" {
+			joinedTargets = append(joinedTargets, link)
 			progressDelta.Done = 1
 		} else if status == "pending_approval" {
 			// pending_approval: join request sent successfully, awaiting admin approval
@@ -380,8 +441,12 @@ func (e *Engine) executeJoinGroups(ctx context.Context, task *domain.Task) {
 
 		// 实时进度: 每个目标处理完立即上报(前端进度面板实时可见)
 		liveProgress := domain.TaskProgress{Total: total, Done: done, Failed: failed, CurrentTarget: link}
-		if err := e.repo.UpdateProgressExact(ctx, task.TenantID, task.TaskID, liveProgress); err != nil {
+		updated, err := e.repo.UpdateProgressExactIfOwned(ctx, task.TenantID, task.TaskID, e.workerID, liveProgress)
+		if err != nil {
 			log.Printf("[join] 更新进度失败: %v", err)
+		} else if !updated {
+			taskLog.Printf("[join] 进度刷新时已失去任务租约，停止执行 task=%s", task.TaskID)
+			return
 		}
 		e.publishProgress(task.TenantID, task.TaskID, liveProgress)
 
@@ -423,34 +488,42 @@ func (e *Engine) executeJoinGroups(ctx context.Context, task *domain.Task) {
 		}
 	}
 
-	// Set final exact progress (single DB write instead of per-target)
-	// Use actual 'done' count (not total-failed) to correctly reflect pending_approval states
+	// Only links whose join operation succeeded (including already-member) may
+	// be persisted as joined. Failed and pending-approval links must not create
+	// false account-group memberships.
+	if e.groupRepo != nil && len(joinedTargets) > 0 {
+		e.syncJoinedGroups(ctx, task, accID, client, joinedTargets)
+	}
+
+	// Final persistence must survive a cancelled execution context and must not
+	// overwrite a task that was paused/cancelled or reclaimed by another worker.
+	persistCtx, persistCancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer persistCancel()
 	finalProgress := domain.TaskProgress{Total: total, Done: done, Failed: failed}
-	if err := e.repo.UpdateProgressExact(ctx, task.TenantID, task.TaskID, finalProgress); err != nil {
-		log.Printf("[join] 更新进度失败: %v", err)
-	}
-	e.publishProgress(task.TenantID, task.TaskID, finalProgress)
-
-	// Sync joined groups to groups table (always try, even if already_member or failed)
-	if e.groupRepo != nil && total > 0 {
-		e.syncJoinedGroups(ctx, task, accID, client)
+	if updated, err := e.repo.UpdateProgressExactIfOwned(persistCtx, task.TenantID, task.TaskID, e.workerID, finalProgress); err != nil {
+		log.Printf("[join] 更新最终进度失败: %v", err)
+	} else if updated {
+		e.publishProgress(task.TenantID, task.TaskID, finalProgress)
 	}
 
+	targetStatus := domain.TaskStatusCompleted
 	if failed == total && total > 0 {
-		if err := e.repo.UpdateStatus(ctx, task.TenantID, task.TaskID, domain.TaskStatusFailed); err != nil {
-			taskLog.Printf("[task] UpdateStatus failed: %v", err)
-		}
-	} else {
-		if err := e.repo.UpdateStatus(ctx, task.TenantID, task.TaskID, domain.TaskStatusCompleted); err != nil {
-			taskLog.Printf("[task] UpdateStatus failed: %v", err)
-		}
+		targetStatus = domain.TaskStatusFailed
+	}
+	if ctx.Err() != nil {
+		targetStatus = domain.TaskStatusPaused
+	}
+	if updated, err := e.repo.UpdateStatusIfOwned(persistCtx, task.TenantID, task.TaskID, e.workerID, targetStatus); err != nil {
+		taskLog.Printf("[task] final join status update failed: %v", err)
+	} else if !updated {
+		taskLog.Printf("[join] final status skipped: worker no longer owns task %s", task.TaskID)
 	}
 }
 
 // syncJoinedGroups resolves joined group info and upserts to groups table.
 // Saves access_hash for channels/supergroups to enable manual peer construction later.
-func (e *Engine) syncJoinedGroups(ctx context.Context, task *domain.Task, accID uuid.UUID, client *telegram.Client) {
-	for _, link := range task.TargetIDs {
+func (e *Engine) syncJoinedGroups(ctx context.Context, task *domain.Task, accID uuid.UUID, client *telegram.Client, targetIDs []string) {
+	for _, link := range targetIDs {
 		var chatID int64
 		var title string
 		var username string
@@ -471,7 +544,9 @@ func (e *Engine) syncJoinedGroups(ctx context.Context, task *domain.Task, accID 
 					case <-time.After(time.Duration(attempt) * 2 * time.Second):
 					}
 				}
-				peer, resolveErr = client.ResolvePeer(ctx, "t.me/+"+hash)
+				resolveCtx, resolveCancel := context.WithTimeout(ctx, 30*time.Second)
+				peer, resolveErr = client.ResolvePeer(resolveCtx, "t.me/+"+hash)
+				resolveCancel()
 				if resolveErr == nil {
 					break
 				}
@@ -490,7 +565,9 @@ func (e *Engine) syncJoinedGroups(ctx context.Context, task *domain.Task, accID 
 			}
 		} else {
 			// Public link: resolve to get chat ID and extract username
-			peer, err := client.ResolvePeer(ctx, link)
+			resolveCtx, resolveCancel := context.WithTimeout(ctx, 30*time.Second)
+			peer, err := client.ResolvePeer(resolveCtx, link)
+			resolveCancel()
 			if err != nil {
 				continue
 			}
@@ -524,7 +601,10 @@ func (e *Engine) syncJoinedGroups(ctx context.Context, task *domain.Task, accID 
 			fullReq := &tg.ChannelsGetFullChannelRequest{
 				Channel: &tg.InputChannel{ChannelID: chatID, AccessHash: accessHash},
 			}
-			if fullResult, err := client.Invoke(ctx, fullReq); err == nil {
+			invokeCtx, invokeCancel := context.WithTimeout(ctx, 30*time.Second)
+			fullResult, invokeErr := client.Invoke(invokeCtx, fullReq)
+			invokeCancel()
+			if invokeErr == nil {
 				if full, ok := fullResult.(*tg.MessagesChatFull); ok {
 					if _, ok := full.FullChat.(*tg.ChannelFull); ok {
 						// Title is in the Channel object, not ChannelFull
@@ -539,7 +619,10 @@ func (e *Engine) syncJoinedGroups(ctx context.Context, task *domain.Task, accID 
 			}
 		} else if gtype == "group" {
 			fullReq := &tg.MessagesGetFullChatRequest{ChatID: chatID}
-			if fullResult, err := client.Invoke(ctx, fullReq); err == nil {
+			invokeCtx, invokeCancel := context.WithTimeout(ctx, 30*time.Second)
+			fullResult, invokeErr := client.Invoke(invokeCtx, fullReq)
+			invokeCancel()
+			if invokeErr == nil {
 				if full, ok := fullResult.(*tg.MessagesChatFull); ok {
 					if _, ok := full.FullChat.(*tg.ChatFull); ok {
 						for _, chat := range full.Chats {
@@ -587,7 +670,28 @@ func (e *Engine) syncJoinedGroups(ctx context.Context, task *domain.Task, accID 
 				log.Printf("[join] 创建群组失败: %v", err)
 			}
 		}
+		if len(task.AccountIDs) > 0 {
+			if saved, getErr := e.groupRepo.GetByTGChatID(ctx, task.TenantID, chatID); getErr == nil && saved != nil {
+				if err := e.associateJoinedGroup(ctx, task.TenantID, task.AccountIDs[0], saved.GroupID); err != nil {
+					log.Printf("[join] 关联私有群到账号失败: %v", err)
+				}
+			}
+		}
 	}
+}
+
+// associateJoinedGroup persists per-account membership after a successful join.
+func (e *Engine) associateJoinedGroup(ctx context.Context, tenantID, accountID, groupID uuid.UUID) error {
+	if e.groupRepo == nil {
+		return fmt.Errorf("group repository is not configured")
+	}
+	if err := e.groupRepo.UpsertAccountGroup(ctx, accountID, groupID, true); err != nil {
+		return fmt.Errorf("upsert account-group relation: %w", err)
+	}
+	if err := e.groupRepo.RefreshJoinStatus(ctx, tenantID, groupID); err != nil {
+		return fmt.Errorf("refresh tenant group join status: %w", err)
+	}
+	return nil
 }
 
 // extractAndSaveGroupFromUpdates extracts group info from Updates (ImportChatInvite result)
@@ -605,8 +709,9 @@ func (e *Engine) extractAndSaveGroupFromUpdates(ctx context.Context, task *domai
 			title = c.Title
 			gtype = "group"
 		case *tg.Channel:
-			// Convert internal channel ID to external format (-100{channel_id})
-			chatID = -(1000000000000 + c.ID)
+			// Store the raw TL channel ID, matching InputPeerChannel.ChannelID
+			// and the IDs returned by GetDialogs/ResolvePeer throughout the app.
+			chatID = c.ID
 			title = c.Title
 			accessHash = c.AccessHash
 			if c.Megagroup {

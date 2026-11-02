@@ -151,6 +151,99 @@ func (s *TaskService) validateAccountOwnership(ctx context.Context, tenantID uui
 	return nil
 }
 
+// validateActiveAccountOwnership is used for Telegram write operations. Standby
+// accounts remain usable for read-only scraping/synchronization, but must not send,
+// join, or invite after being moved out of the active pool.
+func (s *TaskService) validateActiveAccountOwnership(ctx context.Context, tenantID uuid.UUID, accountIDs []uuid.UUID) error {
+	if err := s.validateAccountOwnership(ctx, tenantID, accountIDs); err != nil {
+		return err
+	}
+	if len(accountIDs) == 0 {
+		return nil
+	}
+	accounts, err := s.accountRepo.ListByIDs(ctx, tenantID, accountIDs)
+	if err != nil {
+		return fmt.Errorf("validate active accounts: %w", err)
+	}
+	for _, acc := range accounts {
+		if acc.PoolStatus == "standby" {
+			return fmt.Errorf("account %s is in standby pool; move it to active before sending/joining", acc.AccountID)
+		}
+	}
+	return nil
+}
+
+
+// validateTaskCreation applies the same tenant, plan, account and concurrency
+// guards to every task-creation entry point (including dedicated API handlers).
+// slots is the number of queued child tasks a split broadcast will create.
+func (s *TaskService) validateTaskCreation(ctx context.Context, tenantID uuid.UUID, taskType domain.TaskType, accountIDs []uuid.UUID, isLoop bool, slots int) error {
+	if feature, ok := taskTypeFeature[taskType]; ok {
+		if err := s.checkPlanFeature(ctx, tenantID, feature); err != nil {
+			return err
+		}
+	}
+	if isLoop {
+		if err := s.checkPlanFeature(ctx, tenantID, "loop_broadcast"); err != nil {
+			return err
+		}
+	}
+	if slots < 1 {
+		slots = 1
+	}
+	accounts, err := s.accountRepo.ListByIDs(ctx, tenantID, accountIDs)
+	if err != nil {
+		return fmt.Errorf("validate task accounts: %w", err)
+	}
+	if len(accounts) != len(accountIDs) {
+		return fmt.Errorf("some accounts not found or not owned by tenant")
+	}
+	requiresActive := taskType == domain.TaskTypeBroadcast ||
+		taskType == domain.TaskTypeScheduledBroadcast ||
+		taskType == domain.TaskTypeJoinGroups ||
+		taskType == domain.TaskTypeInviteMembers
+	for _, acc := range accounts {
+		if acc.Status == domain.AccountStatusBanned {
+			return fmt.Errorf("account %s is banned", acc.AccountID)
+		}
+		if acc.Status == domain.AccountStatusRestricted {
+			return fmt.Errorf("account %s is restricted", acc.AccountID)
+		}
+		if requiresActive && acc.PoolStatus == "standby" {
+			return fmt.Errorf("account %s is in standby pool; move it to active before sending/joining", acc.AccountID)
+		}
+	}
+	if s.tenantRepo == nil {
+		return fmt.Errorf("租户服务未就绪")
+	}
+	tenant, err := s.tenantRepo.GetByID(ctx, tenantID)
+	if err != nil {
+		return fmt.Errorf("读取租户订阅状态失败: %w", err)
+	}
+	if tenant == nil {
+		return fmt.Errorf("租户不存在")
+	}
+	if tenant.ExpiresAt != nil && !tenant.ExpiresAt.After(time.Now()) {
+		return fmt.Errorf("tenant subscription expired")
+	}
+	runningCount, err := s.repo.CountByStatus(ctx, tenantID, string(domain.TaskStatusRunning))
+	if err != nil {
+		return fmt.Errorf("count running tasks: %w", err)
+	}
+	queuedCount, err := s.repo.CountByStatus(ctx, tenantID, string(domain.TaskStatusQueued))
+	if err != nil {
+		return fmt.Errorf("count queued tasks: %w", err)
+	}
+	maxConcurrent := s.cfg.MaxConcurrent
+	if tenant.MaxConcurrentTasks > 0 {
+		maxConcurrent = tenant.MaxConcurrentTasks
+	}
+	if runningCount+queuedCount+slots > maxConcurrent {
+		return fmt.Errorf("max concurrent tasks reached for tenant: %d+%d+%d/%d", runningCount, queuedCount, slots, maxConcurrent)
+	}
+	return nil
+}
+
 // RaffleResultClear R128: 清空抽奖参与记录(调仓库 DeleteAll)
 func (s *TaskService) RaffleResultClear(ctx context.Context, tenantID uuid.UUID) error {
 	return s.raffleResultRepo.DeleteAll(ctx, tenantID)
@@ -179,18 +272,28 @@ var taskTypeFeature = map[domain.TaskType]string{
 
 // checkPlanFeature 校验租户套餐是否含指定功能(FeatureMap 单一数据源, ≤60s 缓存)
 func (s *TaskService) checkPlanFeature(ctx context.Context, tenantID uuid.UUID, feature string) error {
-	if s.planRepo == nil || feature == "" {
+	if feature == "" {
 		return nil
+	}
+	if s.tenantRepo == nil || s.planRepo == nil {
+		return fmt.Errorf("套餐功能校验服务未就绪")
 	}
 	t, err := s.tenantRepo.GetByID(ctx, tenantID)
-	if err != nil || t == nil {
-		return nil // 取不到租户不阻断(保守)
+	if err != nil {
+		return fmt.Errorf("读取租户套餐失败: %w", err)
+	}
+	if t == nil {
+		return fmt.Errorf("租户不存在")
 	}
 	plan, err := s.planRepo.GetByID(ctx, t.PlanID)
-	if err != nil || plan == nil {
-		return nil
+	if err != nil {
+		return fmt.Errorf("读取套餐配置失败: %w", err)
 	}
-	if v, ok := plan.FeatureMap()[feature]; !ok || v == false {
+	if plan == nil {
+		return fmt.Errorf("租户套餐不存在或已失效")
+	}
+	enabled, ok := plan.FeatureMap()[feature].(bool)
+	if !ok || !enabled {
 		return fmt.Errorf("当前套餐不含此功能(%s), 升级套餐后可用", feature)
 	}
 	return nil
@@ -213,6 +316,9 @@ func (s *TaskService) Create(ctx context.Context, tenantID uuid.UUID, taskType d
 		return nil, fmt.Errorf("some accounts not found (expected %d, got %d)", len(accountIDs), len(accounts))
 	}
 	for _, acc := range accounts {
+		if (taskType == domain.TaskTypeBroadcast || taskType == domain.TaskTypeScheduledBroadcast || taskType == domain.TaskTypeJoinGroups || taskType == domain.TaskTypeInviteMembers) && acc.PoolStatus == "standby" {
+			return nil, fmt.Errorf("account %s is in standby pool; move it to active before sending/joining", acc.AccountID)
+		}
 		if acc.Status == domain.AccountStatusBanned {
 			return nil, fmt.Errorf("account %s is banned", acc.AccountID)
 		}
@@ -221,13 +327,19 @@ func (s *TaskService) Create(ctx context.Context, tenantID uuid.UUID, taskType d
 		}
 	}
 
-	// Check tenant expiration
-	if s.tenantRepo != nil {
-		if tenant, err := s.tenantRepo.GetByID(ctx, tenantID); err == nil && tenant != nil {
-			if tenant.ExpiresAt != nil && tenant.ExpiresAt.Before(time.Now()) {
-				return nil, fmt.Errorf("tenant subscription expired")
-			}
-		}
+	// Check tenant expiration. A failed lookup must not silently bypass subscription expiry.
+	if s.tenantRepo == nil {
+		return nil, fmt.Errorf("租户服务未就绪")
+	}
+	tenant, err := s.tenantRepo.GetByID(ctx, tenantID)
+	if err != nil {
+		return nil, fmt.Errorf("读取租户订阅状态失败: %w", err)
+	}
+	if tenant == nil {
+		return nil, fmt.Errorf("租户不存在")
+	}
+	if tenant.ExpiresAt != nil && !tenant.ExpiresAt.After(time.Now()) {
+		return nil, fmt.Errorf("tenant subscription expired")
 	}
 
 	// Check tenant concurrent task limit
@@ -240,10 +352,8 @@ func (s *TaskService) Create(ctx context.Context, tenantID uuid.UUID, taskType d
 		return nil, fmt.Errorf("count queued tasks: %w", err)
 	}
 	maxConcurrent := s.cfg.MaxConcurrent
-	if s.tenantRepo != nil {
-		if tenant, err := s.tenantRepo.GetByID(ctx, tenantID); err == nil && tenant.MaxConcurrentTasks > 0 {
-			maxConcurrent = tenant.MaxConcurrentTasks
-		}
+	if tenant.MaxConcurrentTasks > 0 {
+		maxConcurrent = tenant.MaxConcurrentTasks
 	}
 	if runningCount+queuedCount >= maxConcurrent {
 		return nil, fmt.Errorf("max concurrent tasks reached for tenant: %d/%d", runningCount+queuedCount, maxConcurrent)
@@ -282,7 +392,7 @@ func (s *TaskService) Create(ctx context.Context, tenantID uuid.UUID, taskType d
 		if err != nil {
 			return nil, fmt.Errorf("群组ID格式错误: %w", err)
 		}
-		return s.CreateScrapeMembers(ctx, tenantID, accountIDs[0], groupID, nil)
+		return s.CreateScrapeMembers(ctx, tenantID, accountIDs[0], groupID, payload)
 	case domain.TaskTypeScrapeLinks:
 		groupIDStr, _ := payload["group_id"].(string)
 		groupID, err := uuid.Parse(groupIDStr)
@@ -334,22 +444,25 @@ func (s *TaskService) CreateBroadcast(ctx context.Context, tenantID uuid.UUID, a
 // loopIntervalMinutes until it is paused or cancelled.
 func (s *TaskService) CreateScheduledBroadcast(ctx context.Context, tenantID uuid.UUID, accountIDs []uuid.UUID, targetIDs []string, message string, loopIntervalMinutes, intervalMin, intervalMax int, isLoop bool) (*domain.Task, error) {
 	now := time.Now()
-	task, err := s.CreateBroadcast(ctx, tenantID, accountIDs, targetIDs, message, &now, intervalMin, intervalMax, nil)
-	if err != nil {
-		return nil, err
-	}
-	if err := s.repo.SetLoopConfig(ctx, tenantID, task.TaskID, isLoop, loopIntervalMinutes, intervalMin, intervalMax, domain.TaskTypeScheduledBroadcast); err != nil {
-		return nil, fmt.Errorf("set loop config: %w", err)
-	}
-	task.IsLoop = isLoop
-	task.LoopIntervalMinutes = loopIntervalMinutes
-	task.Type = domain.TaskTypeScheduledBroadcast
-	return task, nil
+	return s.createBroadcastWithMappingTask(ctx, tenantID, nil, accountIDs, targetIDs, message, &now, intervalMin, intervalMax, nil, domain.TaskTypeScheduledBroadcast, isLoop, loopIntervalMinutes)
 }
 
 // CreateBroadcastWithMapping creates a broadcast task with account-target mapping.
 // If mappings is nil, falls back to cartesian mode (all accounts × all targets).
 func (s *TaskService) CreateBroadcastWithMapping(ctx context.Context, tenantID uuid.UUID, mappings []domain.AccountTargetMapping, accountIDs []uuid.UUID, targetIDs []string, message string, scheduledAt *time.Time, intervalMin, intervalMax int, extraPayload map[string]any) (*domain.Task, error) {
+	return s.createBroadcastWithMappingTask(ctx, tenantID, mappings, accountIDs, targetIDs, message, scheduledAt, intervalMin, intervalMax, extraPayload, domain.TaskTypeBroadcast, false, 0)
+}
+
+// CreateLoopBroadcastWithMapping creates a broadcast/loop task while preserving
+// the same cartesian or account-target mapping semantics as a normal broadcast.
+func (s *TaskService) CreateLoopBroadcastWithMapping(ctx context.Context, tenantID uuid.UUID, mappings []domain.AccountTargetMapping, accountIDs []uuid.UUID, targetIDs []string, message string, scheduledAt *time.Time, intervalMin, intervalMax, loopIntervalMinutes int, extraPayload map[string]any) (*domain.Task, error) {
+	if loopIntervalMinutes <= 0 {
+		loopIntervalMinutes = 60
+	}
+	return s.createBroadcastWithMappingTask(ctx, tenantID, mappings, accountIDs, targetIDs, message, scheduledAt, intervalMin, intervalMax, extraPayload, domain.TaskTypeScheduledBroadcast, true, loopIntervalMinutes)
+}
+
+func (s *TaskService) createBroadcastWithMappingTask(ctx context.Context, tenantID uuid.UUID, mappings []domain.AccountTargetMapping, accountIDs []uuid.UUID, targetIDs []string, message string, scheduledAt *time.Time, intervalMin, intervalMax int, extraPayload map[string]any, taskType domain.TaskType, isLoop bool, loopIntervalMinutes int) (*domain.Task, error) {
 	mode := domain.BroadcastModeCartesian
 	var totalMsgs int
 
@@ -368,28 +481,25 @@ func (s *TaskService) CreateBroadcastWithMapping(ctx context.Context, tenantID u
 			return nil, fmt.Errorf("mappings exceeds limit: %d > %d", len(mappings), maxMappings)
 		}
 
-		// Deduplicate accounts in mappings (keep first occurrence)
-		seen := make(map[uuid.UUID]bool)
+		// 合并重复账号映射，而不是直接丢弃后续映射；同一账号的不同目标都必须保留。
+		accountIndex := make(map[uuid.UUID]int, len(mappings))
+		targetSeen := make(map[uuid.UUID]map[string]bool, len(mappings))
 		deduped := make([]domain.AccountTargetMapping, 0, len(mappings))
 		for _, m := range mappings {
-			if seen[m.AccountID] {
-				continue
+			idx, exists := accountIndex[m.AccountID]
+			if !exists {
+				idx = len(deduped)
+				accountIndex[m.AccountID] = idx
+				targetSeen[m.AccountID] = make(map[string]bool)
+				deduped = append(deduped, domain.AccountTargetMapping{AccountID: m.AccountID})
 			}
-			seen[m.AccountID] = true
-			// Also deduplicate targets within each mapping
-			if len(m.Targets) > 0 {
-				targetSeen := make(map[string]bool)
-				targetDeduped := make([]string, 0, len(m.Targets))
-				for _, t := range m.Targets {
-					if targetSeen[t] {
-						continue
-					}
-					targetSeen[t] = true
-					targetDeduped = append(targetDeduped, t)
+			for _, target := range m.Targets {
+				if targetSeen[m.AccountID][target] {
+					continue
 				}
-				m.Targets = targetDeduped
+				targetSeen[m.AccountID][target] = true
+				deduped[idx].Targets = append(deduped[idx].Targets, target)
 			}
-			deduped = append(deduped, m)
 		}
 		mappings = deduped
 		// Mapping mode: validate and count
@@ -401,14 +511,14 @@ func (s *TaskService) CreateBroadcastWithMapping(ctx context.Context, tenantID u
 			allTargetIDs = append(allTargetIDs, m.Targets...)
 			totalMsgs += len(m.Targets)
 		}
-		if err := s.validateAccountOwnership(ctx, tenantID, allAccIDs); err != nil {
+		if err := s.validateActiveAccountOwnership(ctx, tenantID, allAccIDs); err != nil {
 			return nil, err
 		}
 		accountIDs = allAccIDs
 		targetIDs = allTargetIDs
 	} else {
 		// Cartesian mode
-		if err := s.validateAccountOwnership(ctx, tenantID, accountIDs); err != nil {
+		if err := s.validateActiveAccountOwnership(ctx, tenantID, accountIDs); err != nil {
 			return nil, err
 		}
 		totalMsgs = len(targetIDs) * len(accountIDs)
@@ -437,6 +547,21 @@ func (s *TaskService) CreateBroadcastWithMapping(ctx context.Context, tenantID u
 		payload["mappings"] = mappingsData
 	}
 
+	if totalMsgs <= 0 {
+		return nil, fmt.Errorf("群发目标不能为空")
+	}
+	maxMsgsPerTask := s.cfg.MaxMsgsPerTask
+	if maxMsgsPerTask < 1 {
+		maxMsgsPerTask = 1
+	}
+	taskSlots := 1
+	if mode == domain.BroadcastModeMapping && totalMsgs > maxMsgsPerTask {
+		taskSlots = len(splitMappings(mappings, maxMsgsPerTask))
+	}
+	if err := s.validateTaskCreation(ctx, tenantID, taskType, accountIDs, isLoop, taskSlots); err != nil {
+		return nil, err
+	}
+
 	// 套餐日额度(051): 免费体验版限 50 条/天, 原子计数防并发超发; 付费档 0=不限
 	if s.planLimits != nil {
 		if dailyCap, _, err := s.planLimits.GetPlanLimits(ctx, tenantID); err == nil && dailyCap > 0 {
@@ -445,11 +570,9 @@ func (s *TaskService) CreateBroadcastWithMapping(ctx context.Context, tenantID u
 			}
 		}
 	}
-
 	// Auto-split: if total messages exceed threshold, split into multiple sub-tasks
-	maxMsgsPerTask := s.cfg.MaxMsgsPerTask
 	if mode == domain.BroadcastModeMapping && totalMsgs > maxMsgsPerTask {
-		return s.createSplitBroadcast(ctx, tenantID, mappings, message, scheduledAt, totalMsgs, maxMsgsPerTask, intervalMin, intervalMax, extraPayload)
+		return s.createSplitBroadcast(ctx, tenantID, mappings, message, scheduledAt, totalMsgs, maxMsgsPerTask, intervalMin, intervalMax, extraPayload, taskType, isLoop, loopIntervalMinutes)
 	}
 
 	// 优先级: 默认 5, 前端可传 1-10(8=优先插队, ClaimTasks 按 priority DESC 排序)
@@ -460,7 +583,7 @@ func (s *TaskService) CreateBroadcastWithMapping(ctx context.Context, tenantID u
 	task := &domain.Task{
 		TaskID:      uuid.New(),
 		TenantID:    tenantID,
-		Type:        domain.TaskTypeBroadcast,
+		Type:        taskType,
 		Status:      domain.TaskStatusQueued,
 		Priority:    priority,
 		AccountIDs:  accountIDs,
@@ -468,6 +591,8 @@ func (s *TaskService) CreateBroadcastWithMapping(ctx context.Context, tenantID u
 		Payload:     payload,
 		Progress:    domain.TaskProgress{Total: totalMsgs},
 		ScheduledAt: scheduledAt,
+		IsLoop:      isLoop,
+		LoopIntervalMinutes: loopIntervalMinutes,
 		CreatedAt:   time.Now(),
 	}
 	if scheduledAt == nil || scheduledAt.Before(time.Now()) {
@@ -482,13 +607,17 @@ func (s *TaskService) CreateBroadcastWithMapping(ctx context.Context, tenantID u
 }
 
 // createSplitBroadcast splits a large broadcast into multiple sub-tasks.
-func (s *TaskService) createSplitBroadcast(ctx context.Context, tenantID uuid.UUID, mappings []domain.AccountTargetMapping, message string, scheduledAt *time.Time, totalMsgs, maxMsgsPerTask, intervalMin, intervalMax int, extraPayload map[string]any) (*domain.Task, error) {
-	// 2026-10-22 审计修复: maxMsgsPerTask<=0 时 splitMappings 会死循环/除零——入口护栏
+func (s *TaskService) createSplitBroadcast(ctx context.Context, tenantID uuid.UUID, mappings []domain.AccountTargetMapping, message string, scheduledAt *time.Time, totalMsgs, maxMsgsPerTask, intervalMin, intervalMax int, extraPayload map[string]any, taskType domain.TaskType, isLoop bool, loopIntervalMinutes int) (*domain.Task, error) {
 	if maxMsgsPerTask < 1 {
 		maxMsgsPerTask = 1
 	}
-	// Split mappings into chunks where each chunk has ≤ maxMsgsPerTask messages
+	if s.batchRepo == nil {
+		return nil, fmt.Errorf("batch repository is not configured")
+	}
 	chunks := splitMappings(mappings, maxMsgsPerTask)
+	if len(chunks) == 0 {
+		return nil, fmt.Errorf("no valid sub-tasks created (all chunks empty)")
+	}
 
 	batch := &domain.BatchTask{
 		BatchID:   uuid.New(),
@@ -498,21 +627,40 @@ func (s *TaskService) createSplitBroadcast(ctx context.Context, tenantID uuid.UU
 		SubTasks:  make([]uuid.UUID, 0, len(chunks)),
 		CreatedAt: time.Now(),
 	}
-
-	// Create batch record
-	if s.batchRepo != nil {
-		if err := s.batchRepo.Create(ctx, batch); err != nil {
-			log.Printf("[batch] failed to create batch record: %v", err)
-		}
+	if err := s.batchRepo.Create(ctx, batch); err != nil {
+		return nil, fmt.Errorf("create batch record: %w", err)
 	}
 
-	// Create sub-tasks
+	rollback := func(cause error) error {
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cleanupCancel()
+		for _, subTaskID := range batch.SubTasks {
+			if err := s.repo.Delete(cleanupCtx, tenantID, subTaskID); err != nil {
+				log.Printf("[batch] rollback sub-task %s failed: %v", subTaskID, err)
+			}
+		}
+		if deleter, ok := s.batchRepo.(interface {
+			Delete(context.Context, uuid.UUID, uuid.UUID) error
+		}); ok {
+			if err := deleter.Delete(cleanupCtx, tenantID, batch.BatchID); err != nil {
+				log.Printf("[batch] rollback batch %s failed: %v", batch.BatchID, err)
+			}
+		} else {
+			log.Printf("[batch] batch repository does not support rollback for %s", batch.BatchID)
+		}
+		return cause
+	}
+
+	priority := 5
+	if p, ok := extraPayload["priority"].(float64); ok && p >= 1 && p <= 10 {
+		priority = int(p)
+	}
+	var firstTask *domain.Task
 	for i, chunk := range chunks {
 		chunkMsgs := 0
 		for _, m := range chunk {
 			chunkMsgs += len(m.Targets)
 		}
-
 		payload := map[string]any{
 			"message":      message,
 			"mode":         string(domain.BroadcastModeMapping),
@@ -533,36 +681,37 @@ func (s *TaskService) createSplitBroadcast(ctx context.Context, tenantID uuid.UU
 			accIDs = append(accIDs, m.AccountID)
 			allTargets = append(allTargets, m.Targets...)
 		}
-
-		task := &domain.Task{
-			TaskID:      uuid.New(),
-			TenantID:    tenantID,
-			Type:        domain.TaskTypeBroadcast,
-			Status:      domain.TaskStatusQueued,
-			Priority:    5,
-			AccountIDs:  accIDs,
-			TargetIDs:   allTargets,
-			Payload:     payload,
-			Progress:    domain.TaskProgress{Total: chunkMsgs},
-			ScheduledAt: scheduledAt,
+		subTask := &domain.Task{
+			TaskID:              uuid.New(),
+			TenantID:            tenantID,
+			Type:                taskType,
+			Status:              domain.TaskStatusPending,
+			Priority:            priority,
+			AccountIDs:          accIDs,
+			TargetIDs:           allTargets,
+			Payload:             payload,
+			Progress:            domain.TaskProgress{Total: chunkMsgs},
+			IsLoop:              isLoop,
+			LoopIntervalMinutes: loopIntervalMinutes,
 		}
-		if scheduledAt == nil || scheduledAt.Before(time.Now()) {
-			task.Status = domain.TaskStatusQueued
-		} else {
-			task.Status = domain.TaskStatusPending
+		if err := s.repo.Create(ctx, subTask); err != nil {
+			return nil, rollback(fmt.Errorf("create sub-task %d/%d: %w", i+1, len(chunks), err))
 		}
-		if err := s.repo.Create(ctx, task); err != nil {
-			return nil, fmt.Errorf("create sub-task %d/%d: %w", i+1, len(chunks), err)
+		if i == 0 {
+			firstTask = subTask
 		}
-		batch.SubTasks = append(batch.SubTasks, task.TaskID)
-		if s.batchRepo != nil {
-			if err := s.batchRepo.UpdateSubTask(ctx, tenantID, batch.BatchID, task.TaskID); err != nil {
-				log.Printf("[task] 更新子任务失败: %v", err)
-			}
+		batch.SubTasks = append(batch.SubTasks, subTask.TaskID)
+		if err := s.batchRepo.UpdateSubTask(ctx, tenantID, batch.BatchID, subTask.TaskID); err != nil {
+			return nil, rollback(fmt.Errorf("register sub-task %d/%d: %w", i+1, len(chunks), err))
 		}
 	}
 
-	// Notify tenant via SSE（走租户隔离广播， previously 全局 Broadcast 发到无人订阅的 topic）
+	// Activate all children in one transaction only after the complete batch
+	// and every child-to-batch relation have been persisted.
+	if err := s.repo.ActivateBatchSubTasks(ctx, tenantID, batch.BatchID, scheduledAt, len(chunks)); err != nil {
+		return nil, rollback(fmt.Errorf("activate batch sub-tasks: %w", err))
+	}
+
 	if s.sseBroker != nil {
 		s.sseBroker.BroadcastToTenant(tenantID, "task_split", map[string]any{
 			"batch_id":     batch.BatchID,
@@ -573,33 +722,50 @@ func (s *TaskService) createSplitBroadcast(ctx context.Context, tenantID uuid.UU
 			"time":         time.Now().UTC(),
 		})
 	}
-
 	log.Printf("[batch] created batch %s with %d sub-tasks (%d total msgs)", batch.BatchID, len(chunks), totalMsgs)
-
-	if len(batch.SubTasks) == 0 {
-		return nil, fmt.Errorf("no valid sub-tasks created (all chunks empty)")
+	if firstTask == nil {
+		return nil, fmt.Errorf("batch %s created without a first sub-task", batch.BatchID)
 	}
-
-	// Return the first sub-task as the "main" task (frontend can poll all via batch_id)
-	return s.repo.GetByID(ctx, tenantID, batch.SubTasks[0])
+	firstTask.ScheduledAt = scheduledAt
+	if scheduledAt == nil || !scheduledAt.After(time.Now()) {
+		firstTask.Status = domain.TaskStatusQueued
+	} else {
+		firstTask.Status = domain.TaskStatusPending
+	}
+	return firstTask, nil
 }
 
 // splitMappings splits account-target mappings into chunks where each chunk has ≤ maxMsgs messages.
 func splitMappings(mappings []domain.AccountTargetMapping, maxMsgs int) [][]domain.AccountTargetMapping {
+	if maxMsgs < 1 {
+		maxMsgs = 1
+	}
 	var chunks [][]domain.AccountTargetMapping
 	var current []domain.AccountTargetMapping
 	currentMsgs := 0
-
-	for _, m := range mappings {
-		// If adding this mapping would exceed limit, start a new chunk
-		// (but always include at least one mapping per chunk)
-		if currentMsgs > 0 && currentMsgs+len(m.Targets) > maxMsgs {
-			chunks = append(chunks, current)
-			current = nil
-			currentMsgs = 0
+	for _, mapping := range mappings {
+		for offset := 0; offset < len(mapping.Targets); {
+			available := maxMsgs - currentMsgs
+			if available <= 0 {
+				chunks = append(chunks, current)
+				current = nil
+				currentMsgs = 0
+				available = maxMsgs
+			}
+			take := len(mapping.Targets) - offset
+			if take > available {
+				take = available
+			}
+			targets := append([]string(nil), mapping.Targets[offset:offset+take]...)
+			current = append(current, domain.AccountTargetMapping{AccountID: mapping.AccountID, Targets: targets})
+			currentMsgs += take
+			offset += take
+			if currentMsgs == maxMsgs {
+				chunks = append(chunks, current)
+				current = nil
+				currentMsgs = 0
+			}
 		}
-		current = append(current, m)
-		currentMsgs += len(m.Targets)
 	}
 	if len(current) > 0 {
 		chunks = append(chunks, current)
@@ -621,7 +787,7 @@ func mappingsToPayload(mappings []domain.AccountTargetMapping) []map[string]any 
 
 // CreateScrapeMembers creates a scrape members task.
 func (s *TaskService) CreateScrapeMembers(ctx context.Context, tenantID uuid.UUID, accountID uuid.UUID, groupID uuid.UUID, extraPayload map[string]any) (*domain.Task, error) {
-	if err := s.validateAccountOwnership(ctx, tenantID, []uuid.UUID{accountID}); err != nil {
+	if err := s.validateTaskCreation(ctx, tenantID, domain.TaskTypeScrapeMembers, []uuid.UUID{accountID}, false, 1); err != nil {
 		return nil, err
 	}
 
@@ -651,6 +817,14 @@ func (s *TaskService) CreateScrapeMembers(ctx context.Context, tenantID uuid.UUI
 		},
 		CreatedAt: time.Now(),
 	}
+	// Keep user-selected filters (recent_days / has_photo) in the persisted task.
+	// Reserved routing fields always come from the tenant-scoped group lookup.
+	for key, value := range extraPayload {
+		if key == "group_id" || key == "fallback_id" {
+			continue
+		}
+		task.Payload[key] = value
+	}
 	if err := s.repo.Create(ctx, task); err != nil {
 		return nil, fmt.Errorf("create scrape task: %w", err)
 	}
@@ -667,7 +841,7 @@ func (s *TaskService) CreateJoinGroups(ctx context.Context, tenantID uuid.UUID, 
 // 否则退回全局 JOIN_INTERVAL_MINUTES(默认2分钟) + 0~50% 抖动。
 // 合法性: 1 ≤ min ≤ 60, min ≤ max ≤ 120。
 func (s *TaskService) CreateJoinGroupsWithInterval(ctx context.Context, tenantID uuid.UUID, accountID uuid.UUID, links []string, intervalMin, intervalMax int) (*domain.Task, error) {
-	if err := s.validateAccountOwnership(ctx, tenantID, []uuid.UUID{accountID}); err != nil {
+	if err := s.validateTaskCreation(ctx, tenantID, domain.TaskTypeJoinGroups, []uuid.UUID{accountID}, false, 1); err != nil {
 		return nil, err
 	}
 	// 2026-09-22 服务端兜底：空链接直接拒绝，杜绝零目标任务
@@ -715,7 +889,7 @@ func (s *TaskService) CreateJoinGroupsWithInterval(ctx context.Context, tenantID
 
 // CreateInviteMembers 邀请入群: 把来源群已采集成员批量邀请进本账号的目标群。
 func (s *TaskService) CreateInviteMembers(ctx context.Context, tenantID, accountID, targetGroupID, sourceGroupID uuid.UUID) (*domain.Task, error) {
-	if err := s.validateAccountOwnership(ctx, tenantID, []uuid.UUID{accountID}); err != nil {
+	if err := s.validateTaskCreation(ctx, tenantID, domain.TaskTypeInviteMembers, []uuid.UUID{accountID}, false, 1); err != nil {
 		return nil, err
 	}
 	// 目标群必须是本账号已加入的群
@@ -723,8 +897,12 @@ func (s *TaskService) CreateInviteMembers(ctx context.Context, tenantID, account
 	if err != nil || target == nil {
 		return nil, fmt.Errorf("目标群不存在")
 	}
-	if !target.IsJoined {
-		return nil, fmt.Errorf("目标群尚未加入, 请先把账号拉进该群")
+	joined, err := s.groupRepo.IsJoinedByAccount(ctx, tenantID, accountID, targetGroupID)
+	if err != nil {
+		return nil, fmt.Errorf("检查目标群账号归属失败: %w", err)
+	}
+	if !joined {
+		return nil, fmt.Errorf("当前执行账号尚未加入目标群, 请先把该账号拉进群")
 	}
 	// 来源群须存在(成员在执行器里再取)
 	if _, err := s.groupRepo.GetByID(ctx, tenantID, sourceGroupID); err != nil {
@@ -754,7 +932,7 @@ func (s *TaskService) CreateInviteMembers(ctx context.Context, tenantID, account
 
 // CreateScrapeLinks creates a scrape links task.
 func (s *TaskService) CreateScrapeLinks(ctx context.Context, tenantID uuid.UUID, accountID uuid.UUID, _ []string, durationMinutes int) (*domain.Task, error) {
-	if err := s.validateAccountOwnership(ctx, tenantID, []uuid.UUID{accountID}); err != nil {
+	if err := s.validateTaskCreation(ctx, tenantID, domain.TaskTypeScrapeLinks, []uuid.UUID{accountID}, false, 1); err != nil {
 		return nil, err
 	}
 
@@ -808,7 +986,15 @@ func (s *TaskService) Pause(ctx context.Context, tenantID, taskID uuid.UUID) err
 	if !validTransitions[task.Status][domain.TaskStatusPaused] {
 		return fmt.Errorf("cannot pause task with status %s", task.Status)
 	}
-	return s.repo.UpdateStatus(ctx, tenantID, taskID, domain.TaskStatusPaused)
+	// 先把 paused 持久化，再取消执行 context。这样 worker 的最终写入会因
+	// status!=running 被条件更新挡住，不会把用户的暂停覆盖成 completed。
+	if err := s.repo.UpdateStatus(ctx, tenantID, taskID, domain.TaskStatusPaused); err != nil {
+		return err
+	}
+	if task.Status == domain.TaskStatusRunning && s.engine != nil {
+		s.engine.CancelTask(taskID)
+	}
+	return nil
 }
 
 // Resume resumes a paused task.
@@ -823,7 +1009,7 @@ func (s *TaskService) Resume(ctx context.Context, tenantID, taskID uuid.UUID) er
 	return s.repo.ResetToQueued(ctx, tenantID, taskID)
 }
 
-// Cancel cancels a task (signals the engine to stop execution, then updates DB).
+// Cancel persists the terminal state first, then signals the worker to stop.
 func (s *TaskService) Cancel(ctx context.Context, tenantID, taskID uuid.UUID) error {
 	task, err := s.repo.GetByID(ctx, tenantID, taskID)
 	if err != nil {
@@ -832,10 +1018,40 @@ func (s *TaskService) Cancel(ctx context.Context, tenantID, taskID uuid.UUID) er
 	if !validTransitions[task.Status][domain.TaskStatusCancelled] {
 		return fmt.Errorf("cannot cancel task with status %s", task.Status)
 	}
+	// 状态只由 service 持久化一次；Engine.CancelTask 只负责停止内存中的执行 context。
+	// 先落 cancelled 再发取消信号，避免 worker 抢先完成并覆盖用户的取消操作。
+	if err := s.repo.UpdateStatus(ctx, tenantID, taskID, domain.TaskStatusCancelled); err != nil {
+		return err
+	}
 	if s.engine != nil {
 		s.engine.CancelTask(taskID)
 	}
-	return s.repo.UpdateStatus(ctx, tenantID, taskID, domain.TaskStatusCancelled)
+	return nil
+}
+
+// failedTargetsToMappings groups failed log rows without losing account ownership.
+func failedTargetsToMappings(failed []repository.FailedTarget) []domain.AccountTargetMapping {
+	index := make(map[uuid.UUID]int, len(failed))
+	seen := make(map[uuid.UUID]map[string]bool, len(failed))
+	mappings := make([]domain.AccountTargetMapping, 0, len(failed))
+	for _, item := range failed {
+		if item.AccountID == nil || *item.AccountID == uuid.Nil || item.TargetID == "" {
+			continue
+		}
+		accountID := *item.AccountID
+		i, ok := index[accountID]
+		if !ok {
+			i = len(mappings)
+			index[accountID] = i
+			seen[accountID] = make(map[string]bool)
+			mappings = append(mappings, domain.AccountTargetMapping{AccountID: accountID})
+		}
+		if !seen[accountID][item.TargetID] {
+			seen[accountID][item.TargetID] = true
+			mappings[i].Targets = append(mappings[i].Targets, item.TargetID)
+		}
+	}
+	return mappings
 }
 
 // Retry retries a failed task.
@@ -852,57 +1068,40 @@ func (s *TaskService) Retry(ctx context.Context, tenantID, taskID uuid.UUID, sco
 			return fmt.Errorf("获取失败目标失败: %w", err)
 		}
 		if len(failed) == 0 {
-			return fmt.Errorf("该任务没有失败目标, 无需续发")
+			return fmt.Errorf("该任务没有可续发的失败目标")
 		}
-		// P1-15 审计修复: mapping 模式的续发任务必须保留原定向映射。
-		// 原来直接走 Create → CreateBroadcast(mapping=nil) → cartesian,
-		// 把"账号A只发群1"退化成"所有账号×所有失败目标", 既发错群又浪费额度。
-		// 现在从原 payload 取出 mappings, 按失败目标过滤后走 CreateBroadcastWithMapping。
-		if raw, ok := task.Payload["mappings"].([]any); ok && len(raw) > 0 {
-			failedSet := make(map[string]bool, len(failed))
-			for _, t := range failed {
-				failedSet[t] = true
+
+		if task.Type == domain.TaskTypeBroadcast || task.Type == domain.TaskTypeScheduledBroadcast {
+			mappings := failedTargetsToMappings(failed)
+			if len(mappings) == 0 {
+				return fmt.Errorf("失败日志缺少账号归属，无法安全续发")
 			}
 			message, _ := task.Payload["message"].(string)
 			intervalMin, _ := task.Payload["interval_min"].(float64)
 			intervalMax, _ := task.Payload["interval_max"].(float64)
 			extra := map[string]any{}
-			if p, ok := task.Payload["priority"].(float64); ok && p >= 1 && p <= 10 {
-				extra["priority"] = p
-			}
-			var filtered []domain.AccountTargetMapping
-			for _, item := range raw {
-				m, ok := item.(map[string]any)
-				if !ok {
-					continue
-				}
-				accStr, _ := m["account_id"].(string)
-				accID, err := uuid.Parse(accStr)
-				if err != nil {
-					continue
-				}
-				tlist, _ := m["targets"].([]any)
-				var kept []string
-				for _, t := range tlist {
-					ts, _ := t.(string)
-					if failedSet[ts] {
-						kept = append(kept, ts)
-					}
-				}
-				if len(kept) > 0 {
-					filtered = append(filtered, domain.AccountTargetMapping{AccountID: accID, Targets: kept})
+			for _, key := range []string{"priority", "auto_vary", "obfuscate", "media", "buttons"} {
+				if value, ok := task.Payload[key]; ok {
+					extra[key] = value
 				}
 			}
-			if len(filtered) == 0 {
-				return fmt.Errorf("失败目标不在原定向映射内，无法按定向续发")
-			}
-			if _, err := s.CreateBroadcastWithMapping(ctx, tenantID, filtered, nil, failed, message, nil, int(intervalMin), int(intervalMax), extra); err != nil {
+			// Retry is a one-shot task even when the source task was scheduled/looping.
+			if _, err := s.CreateBroadcastWithMapping(ctx, tenantID, mappings, nil, nil, message, nil, int(intervalMin), int(intervalMax), extra); err != nil {
 				return fmt.Errorf("创建续发任务失败: %w", err)
 			}
 			return nil
 		}
-		// 优先级透传已在 Create 的 broadcast 分支内从 payload 读取，这里直接重建即可
-		if _, err := s.Create(ctx, tenantID, task.Type, task.AccountIDs, failed, task.Payload, nil); err != nil {
+
+		// Non-broadcast task types keep their existing retry path.
+		targets := make([]string, 0, len(failed))
+		seen := make(map[string]bool, len(failed))
+		for _, item := range failed {
+			if !seen[item.TargetID] {
+				seen[item.TargetID] = true
+				targets = append(targets, item.TargetID)
+			}
+		}
+		if _, err := s.Create(ctx, tenantID, task.Type, task.AccountIDs, targets, task.Payload, nil); err != nil {
 			return fmt.Errorf("创建续发任务失败: %w", err)
 		}
 		return nil
@@ -1021,7 +1220,7 @@ func (s *TaskService) Update(ctx context.Context, tenantID, taskID uuid.UUID, ac
 
 // CreateMonitorScrape creates a monitor-based member scraping task.
 func (s *TaskService) CreateMonitorScrape(ctx context.Context, tenantID, accountID, groupID uuid.UUID, matchType, matchContent string, durationMinutes, maxResults int) (*domain.Task, error) {
-	if err := s.validateAccountOwnership(ctx, tenantID, []uuid.UUID{accountID}); err != nil {
+	if err := s.validateTaskCreation(ctx, tenantID, domain.TaskTypeMonitorScrape, []uuid.UUID{accountID}, false, 1); err != nil {
 		return nil, err
 	}
 	group, err := s.groupRepo.GetByID(ctx, tenantID, groupID)

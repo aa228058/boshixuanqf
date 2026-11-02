@@ -135,17 +135,16 @@ func (h *GroupHandler) List(c echo.Context) error {
 			return echo.NewHTTPError(http.StatusBadRequest, "账号ID格式错误")
 		}
 		groups, err = h.svc.ListByAccount(c.Request().Context(), tenantID, accountID, page, pageSize)
-		var countErr error
-		total, countErr = h.svc.CountByAccount(c.Request().Context(), tenantID, accountID)
-		if countErr != nil {
-			log.Printf("[handler] CountByAccount failed: %v", countErr)
-			total = 0
+		if err == nil {
+			total, err = h.svc.CountByAccount(c.Request().Context(), tenantID, accountID)
 		}
 		log.Printf("[handler] ListByAccount返回%d个群组，总计=%d，错误=%v", len(groups), total, err)
 	} else {
 		groups, err = h.svc.List(c.Request().Context(), tenantID, page, pageSize)
-		total = len(groups)
-		log.Printf("[handler] List返回%d个群组，错误=%v", len(groups), err)
+		if err == nil {
+			total, err = h.svc.Count(c.Request().Context(), tenantID)
+		}
+		log.Printf("[handler] List返回%d个群组，总计=%d，错误=%v", len(groups), total, err)
 	}
 	if err != nil {
 		log.Printf("[handler] 获取群组列表失败: %v", err)

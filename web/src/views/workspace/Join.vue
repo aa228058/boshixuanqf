@@ -97,7 +97,7 @@
           <label class="block text-xs font-semibold mb-1">来源群(邀请这个群的成员)</label>
           <select v-model="inviteSourceId" class="w-full px-3 py-2.5 rounded-lg glow-input text-sm bg-bg-card">
             <option value="">选择来源群</option>
-            <option v-for="g in groups" :key="g.group_id" :value="g.group_id">{{ g.title || g.username || ('群' + g.tg_chat_id) }} ({{ g.member_count || 0 }}人)</option>
+            <option v-for="g in inviteGroups" :key="g.group_id" :value="g.group_id">{{ g.title || g.username || ('群' + g.tg_chat_id) }} ({{ g.member_count || 0 }}人)</option>
           </select>
         </div>
         <p class="text-xs text-text-muted">需要先在「成员采集」里采集来源群成员；邀请间隔 1.5~3.5 秒, 被限流会自动暂停该账号。</p>

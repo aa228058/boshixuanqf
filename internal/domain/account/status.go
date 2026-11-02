@@ -3,6 +3,7 @@ package account
 import (
 	"context"
 	"crypto/rand"
+	"io"
 	"math/big"
 	"time"
 
@@ -165,7 +166,8 @@ func (e *Engine) applyGuardRail(tenantMin, tenantMax, floor time.Duration) (min,
 
 	// Guard-rail 1: min cannot go below floor
 	if tenantMin < floor {
-		jitter := randomDuration(e.guardJitterRange())
+		minJitter, maxJitter := e.guardJitterBounds()
+		jitter := minJitter + randomDuration(maxJitter-minJitter)
 		tenantMin = floor + jitter
 	}
 
@@ -194,23 +196,34 @@ func (e *Engine) recentBanRate() float64 {
 	return e.banRate
 }
 
-// guardJitterRange returns the jitter range for floor offset.
-func (e *Engine) guardJitterRange() time.Duration {
+// guardJitterBounds returns the inclusive lower bound and exclusive upper bound
+// for the floor offset. Invalid configuration falls back to [0, 2s).
+func (e *Engine) guardJitterBounds() (time.Duration, time.Duration) {
 	minJ := e.cfg.GuardMinJitter
 	maxJ := e.cfg.GuardMaxJitter
-	if maxJ <= minJ {
+	if minJ < 0 {
 		minJ = 0
-		maxJ = 2 * time.Second
 	}
-	return maxJ - minJ
+	if maxJ <= minJ {
+		return 0, 2 * time.Second
+	}
+	return minJ, maxJ
 }
 
-// randomDuration returns a random duration in [0, max).
+// randomDuration returns a random duration in [0, max). If the system random
+// source fails, it safely returns zero rather than dereferencing a nil result.
 func randomDuration(max time.Duration) time.Duration {
+	return randomDurationFromReader(max, rand.Reader)
+}
+
+func randomDurationFromReader(max time.Duration, reader io.Reader) time.Duration {
 	if max <= 0 {
 		return 0
 	}
-	n, _ := rand.Int(rand.Reader, big.NewInt(int64(max)))
+	n, err := rand.Int(reader, big.NewInt(int64(max)))
+	if err != nil || n == nil {
+		return 0
+	}
 	return time.Duration(n.Int64())
 }
 

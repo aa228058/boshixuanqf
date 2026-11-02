@@ -3,7 +3,9 @@ package service
 import (
 	"testing"
 
+	"github.com/google/uuid"
 	"tg-sender/internal/domain"
+	"tg-sender/internal/repository"
 )
 
 // TestValidTransitions_DAG 钉死任务状态机的合法迁移集合。
@@ -39,6 +41,57 @@ func TestValidTransitions_RejectsIllegal(t *testing.T) {
 	for _, tr := range mustDeny {
 		if validTransitions[tr.from][tr.to] {
 			t.Errorf("transition %s -> %s must be denied", tr.from, tr.to)
+		}
+	}
+}
+
+func TestFailedTargetsToMappingsPreservesAccountAssignments(t *testing.T) {
+	accountA := uuid.MustParse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
+	accountB := uuid.MustParse("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb")
+	got := failedTargetsToMappings([]repository.FailedTarget{
+		{AccountID: &accountA, TargetID: "group-1"},
+		{AccountID: &accountB, TargetID: "group-1"},
+		{AccountID: &accountA, TargetID: "group-2"},
+		{AccountID: &accountA, TargetID: "group-1"},
+	})
+	if len(got) != 2 {
+		t.Fatalf("expected 2 account mappings, got %d", len(got))
+	}
+	if got[0].AccountID != accountA || len(got[0].Targets) != 2 || got[0].Targets[0] != "group-1" || got[0].Targets[1] != "group-2" {
+		t.Fatalf("unexpected account A mapping: %#v", got[0])
+	}
+	if got[1].AccountID != accountB || len(got[1].Targets) != 1 || got[1].Targets[0] != "group-1" {
+		t.Fatalf("unexpected account B mapping: %#v", got[1])
+	}
+}
+
+func TestSplitMappingsSplitsLargeSingleAccountMapping(t *testing.T) {
+	accountID := uuid.MustParse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
+	targets := []string{"g1", "g2", "g3", "g4", "g5", "g6", "g7"}
+	chunks := splitMappings([]domain.AccountTargetMapping{{AccountID: accountID, Targets: targets}}, 3)
+	if len(chunks) != 3 {
+		t.Fatalf("expected 3 chunks, got %d", len(chunks))
+	}
+	var rebuilt []string
+	for i, chunk := range chunks {
+		count := 0
+		for _, mapping := range chunk {
+			if mapping.AccountID != accountID {
+				t.Fatalf("chunk %d changed account assignment: %s", i, mapping.AccountID)
+			}
+			count += len(mapping.Targets)
+			rebuilt = append(rebuilt, mapping.Targets...)
+		}
+		if count > 3 {
+			t.Fatalf("chunk %d exceeds limit: %d", i, count)
+		}
+	}
+	if len(rebuilt) != len(targets) {
+		t.Fatalf("lost targets: got %d, want %d", len(rebuilt), len(targets))
+	}
+	for i := range targets {
+		if rebuilt[i] != targets[i] {
+			t.Fatalf("target order/content changed at %d: got %q want %q", i, rebuilt[i], targets[i])
 		}
 	}
 }

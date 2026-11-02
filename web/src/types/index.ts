@@ -23,6 +23,39 @@ export interface Admin {
   created_at: string
 }
 
+export type AccountStatus = Account['status']
+
+export interface PaginationParams {
+  page?: number
+  page_size?: number
+}
+
+export interface ActivationCode {
+  code_id: string
+  code: string
+  plan_id: string
+  status: 'unused' | 'used' | 'expired' | 'revoked'
+  used_by?: string
+  used_at?: string
+  expires_at?: string
+  timing_type: 'immediate' | 'on_use'
+  created_by?: string
+  created_at: string
+  notes?: string
+  used_by_tenant_name?: string
+}
+
+export interface MonitorMessage {
+  message_id?: number
+  rule_id?: string
+  account_id?: string
+  source_chat_id?: number
+  sender_id?: number
+  message?: string
+  message_preview?: string
+  created_at?: string
+}
+
 export interface Account {
   account_id: string
   tenant_id: string
@@ -55,6 +88,23 @@ export interface TelegramGroup {
   created_at: string
 }
 
+// 群组 API 返回的后端 domain.Group 结构；tg_chat_id 也兼容私聊选择器的字符串 ID。
+export interface Group {
+  group_id: string
+  tenant_id: string
+  tg_chat_id: number | string
+  title: string
+  username?: string
+  type?: string
+  member_count?: number
+  is_joined?: boolean
+  joined_at?: string
+  last_scraped_at?: string
+  access_hash?: number
+  metadata?: Record<string, unknown>
+  _joinedAccounts?: string[]
+}
+
 export interface Member {
   member_id: string
   tenant_id: string
@@ -70,24 +120,69 @@ export interface Member {
   created_at: string
 }
 
+export interface TaskProgress {
+  total: number
+  done: number
+  failed: number
+  current_target?: string
+  account_progress?: Array<{ account_id: string; done: number; failed: number; total: number }>
+}
+
 export interface Task {
   task_id: string
   tenant_id: string
-  account_id: string
+  account_id?: string
+  account_ids: string[]
+  target_ids: string[]
   type: string
-  status: 'pending' | 'running' | 'paused' | 'completed' | 'failed' | 'cancelled'
-  config: Record<string, any>
-  progress: {
-    total: number
-    completed: number
-    failed: number
-    skipped: number
-  }
+  status: 'pending' | 'scheduled' | 'queued' | 'running' | 'paused' | 'completed' | 'failed' | 'cancelled'
+  priority?: number
+  payload: Record<string, any>
+  config?: Record<string, any>
+  progress: TaskProgress
   result?: Record<string, any>
   error?: string
+  retry_count?: number
+  scheduled_at?: string
   created_at: string
   started_at?: string
   completed_at?: string
+  is_loop?: boolean
+  loop_interval_minutes?: number
+  min_interval_seconds?: number
+  max_interval_seconds?: number
+  next_run_at?: string
+}
+
+export interface TaskLog {
+  log_id: string
+  task_id: string
+  tenant_id: string
+  account_id: string
+  target_id: string
+  target_name?: string
+  action: string
+  status: string
+  tg_response?: string
+  error_code?: string
+  message?: string
+  tg_message_id?: number
+  executed_at: string
+}
+
+export interface Tenant {
+  tenant_id: string
+  name: string
+  username: string
+  max_accounts: number
+  max_concurrent_tasks: number
+  plan_id: string
+  status: string
+  expires_at?: string
+  created_at: string
+  notify_email?: string
+  notify_settings?: Record<string, boolean>
+  plan_features?: Record<string, boolean>
 }
 
 export interface MessageTemplate {
@@ -165,18 +260,22 @@ export interface Channel {
 export interface MonitorRule {
   rule_id: string
   tenant_id: string
-  account_id: string
-  target?: string
-  target_group_id?: string
+  account_id?: string
+  name?: string
+  type?: 'reply' | 'forward'
+  source_chat_ids?: string[]
+  target_chat_ids?: string[]
   keywords: string[]
-  match_type: 'contains' | 'regex' | 'exact'
-  forward_enabled: boolean
+  match_type: 'contains' | 'regex' | 'exact' | 'from_user'
+  reply_content?: string
+  is_active?: boolean
+  forward_enabled?: boolean
   forward_target_account_id?: string
   forward_target_group_id?: string
   forward_mode?: 'new_message' | 'edit' | 'forward'
-  auto_reply_enabled: boolean
+  auto_reply_enabled?: boolean
   auto_reply_content?: string
-  enabled: boolean
+  enabled?: boolean
   created_at: string
   updated_at?: string
 }
@@ -282,8 +381,11 @@ export interface Announcement {
   announcement_id: string
   title: string
   content: string
+  priority?: 'normal' | 'urgent'
+  target_type?: 'all' | 'specific_plan'
   target_plans: string[]
-  pinned: boolean
+  pinned?: boolean
+  is_active?: boolean
   start_at?: string
   end_at?: string
   created_at: string
@@ -615,6 +717,12 @@ export interface DashboardStats {
   success_rate: number
   recent_tasks?: Task[]
   recent_activities?: RecentActivity[]
+  completed_tasks_today?: number
+  total_groups?: number
+  risk_events_24h?: number
+  task_trend?: number[]
+  account_distribution?: Array<{ value: number; name: string }>
+  trends?: Record<string, string>
   system_health?: {
     cpu_usage?: number
     memory_usage?: number

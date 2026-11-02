@@ -3,6 +3,7 @@ package task
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"math/rand/v2"
@@ -26,9 +27,45 @@ import (
 )
 
 func (e *Engine) executeBroadcast(ctx context.Context, task *domain.Task) {
-	// Overall timeout: max 30 minutes for a broadcast task to prevent indefinite hanging
-	ctx, cancel := context.WithTimeout(ctx, 30*time.Minute)
-	defer cancel()
+	// Status writes must survive task-context cancellation and remain lease-guarded.
+	updateOwnedStatus := func(status domain.TaskStatus) {
+		persistCtx, persistCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer persistCancel()
+		updated, err := e.repo.UpdateStatusIfOwned(persistCtx, task.TenantID, task.TaskID, e.workerID, status)
+		if err != nil {
+			taskLog.Printf("[broadcast] 更新任务状态失败 task=%s status=%s: %v", task.TaskID, status, err)
+		} else if !updated {
+			taskLog.Printf("[broadcast] 更新任务状态跳过(租约已失效) task=%s status=%s", task.TaskID, status)
+		}
+	}
+
+	// Flush only the uncommitted progress delta after Pause has persisted status.
+	// A paused-state predicate prevents a stale worker from touching a resumed task.
+	flushStoppedProgress := func(progress domain.TaskProgress) {
+		if progress.Done == 0 && progress.Failed == 0 {
+			return
+		}
+		persistCtx, persistCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer persistCancel()
+		updated, err := e.repo.UpdateProgressIfStopped(persistCtx, task.TenantID, task.TaskID, progress)
+		if err != nil {
+			taskLog.Printf("[broadcast] 停止时刷新进度失败 task=%s: %v", task.TaskID, err)
+		} else if !updated {
+			taskLog.Printf("[broadcast] 停止进度刷新跳过，任务已恢复或状态变化 task=%s", task.TaskID)
+		}
+	}
+
+	flushCancellationProgress := func(progress domain.TaskProgress) {
+		status := domain.TaskStatusPaused
+		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			status = domain.TaskStatusFailed
+		}
+		// Engine shutdown must persist pause before the paused-only progress update.
+		// A user pause/cancel may already have changed the state; the ownership guard
+		// makes this a harmless no-op in that case.
+		updateOwnedStatus(status)
+		flushStoppedProgress(progress)
+	}
 
 	// 读取任务自定义发送间隔（秒），未设置则使用全局配置
 	var taskMinInterval, taskMaxInterval int
@@ -41,14 +78,28 @@ func (e *Engine) executeBroadcast(ctx context.Context, task *domain.Task) {
 		}
 	}
 
+	// Keep a safety timeout, but scale it with the task's target count and the
+	// per-message request deadline so large valid broadcasts are not cut off at 30m.
+	maxInterval := taskMaxInterval
+	if maxInterval <= 0 {
+		maxInterval = 30
+	}
+	timeout := 30 * time.Minute
+	if task.Progress.Total > 0 {
+		estimated := time.Duration(task.Progress.Total)*(time.Duration(maxInterval)*time.Second+65*time.Second) + 5*time.Minute
+		if estimated > timeout {
+			timeout = estimated
+		}
+	}
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
 	var message string
 	if v, ok := task.Payload["message"]; ok {
 		message = fmt.Sprint(v)
 	}
 	if message == "" {
-		if err := e.repo.UpdateStatus(ctx, task.TenantID, task.TaskID, domain.TaskStatusFailed); err != nil {
-			taskLog.Printf("[task] UpdateStatus failed: %v", err)
-		}
+		updateOwnedStatus(domain.TaskStatusFailed)
 		return
 	}
 
@@ -156,7 +207,9 @@ func (e *Engine) executeBroadcast(ctx context.Context, task *domain.Task) {
 	flushTicker := time.NewTicker(5 * time.Second)
 	defer flushTicker.Stop()
 	flushDone := make(chan struct{})
+	flushExited := make(chan struct{})
 	safego.Go(func() {
+		defer close(flushExited)
 		for {
 			select {
 			case <-flushTicker.C:
@@ -167,6 +220,9 @@ func (e *Engine) executeBroadcast(ctx context.Context, task *domain.Task) {
 					mu.Unlock()
 					if err := e.logRepo.CreateBatch(ctx, logs); err != nil {
 						taskLog.Printf("[task] periodic flush logs failed: %v", err)
+						mu.Lock()
+						batchLogs = append(logs, batchLogs...)
+						mu.Unlock()
 					}
 				} else {
 					mu.Unlock()
@@ -186,7 +242,9 @@ func (e *Engine) executeBroadcast(ctx context.Context, task *domain.Task) {
 	sseTicker := time.NewTicker(100 * time.Millisecond)
 	defer sseTicker.Stop()
 	sseDone := make(chan struct{})
+	sseExited := make(chan struct{})
 	safego.Go(func() {
+		defer close(sseExited)
 		for {
 			select {
 			case <-sseTicker.C:
@@ -229,18 +287,8 @@ func (e *Engine) executeBroadcast(ctx context.Context, task *domain.Task) {
 	semaphore := make(chan struct{}, maxConcurrentAccounts)
 	var wg sync.WaitGroup
 
-	// Deduplicate targets globally to prevent multiple accounts sending to the same target
-	seenTargets := make(map[string]bool)
-	for accID := range accountTargets {
-		unique := make([]string, 0, len(accountTargets[accID]))
-		for _, t := range accountTargets[accID] {
-			if !seenTargets[t] {
-				seenTargets[t] = true
-				unique = append(unique, t)
-			}
-		}
-		accountTargets[accID] = unique
-	}
+	// Preserve per-account target assignments: the same destination can be
+	// intentionally sent by more than one account.
 
 	// P1-47 审计修复: 续传防重原先是每目标一次 count(*) 查询(N+1), 上千目标时
 	// 拖慢发送循环。这里在 worker 扇出前一次性批量查回成功目标集; 运行期新成功
@@ -257,27 +305,43 @@ func (e *Engine) executeBroadcast(ctx context.Context, task *domain.Task) {
 	}
 	successSet := map[string]bool{}
 	if ss, err := e.logRepo.HasSuccessForTargets(ctx, task.TenantID, task.TaskID, allTargets); err != nil {
-		log.Printf("[broadcast] 批量查询已发目标失败 task=%s: %v(防重降级为不检查)", task.TaskID, err)
+		// Fail closed: sending without the idempotency set may duplicate messages.
+		taskLog.Printf("[broadcast] 查询续发防重记录失败，终止任务 task=%s: %v", task.TaskID, err)
+		updateOwnedStatus(domain.TaskStatusFailed)
+		return
 	} else {
 		successSet = ss
 	}
 
+accountLoop:
 	for _, accID := range task.AccountIDs {
 		targets := accountTargets[accID]
 		if len(targets) == 0 {
 			continue
 		}
 
-		wg.Add(1)
-		// P0-16 审计修复: 原写法 semaphore 不响应 ctx——任务取消且 worker 全占满时,
-		// 主协程永久阻塞在 <-struct{}{}, 任务永远停 running。select 让取消信号可中断。
+		// Acquire the slot before adding to the wait group. Cancellation exits
+		// the loop without starting a worker that does not own a semaphore slot.
 		select {
 		case semaphore <- struct{}{}:
 		case <-ctx.Done():
-			wg.Done()
-			break
+			break accountLoop
 		}
+		wg.Add(1)
 		safego.Go(func() {
+			nextTargetIndex := 0
+			var recordPanicRemainder func()
+			defer func() {
+				if recovered := recover(); recovered != nil {
+					taskLog.Printf("[task] broadcast panic for account %s: %v\n%s", accID, recovered, debug.Stack())
+					if recordPanicRemainder != nil {
+						recordPanicRemainder()
+					}
+				}
+			}()
+			defer wg.Done()
+			defer func() { <-semaphore }()
+
 			// 群名映射: 日志里显示群名而不是 ID
 			titleByChatID := map[int64]string{}
 			if gl, err := e.groupRepo.ListByAccount(ctx, task.TenantID, accID, 1000, 0); err == nil {
@@ -292,58 +356,79 @@ func (e *Engine) executeBroadcast(ctx context.Context, task *domain.Task) {
 			if cn, err := e.memberRepo.ListContactsByAccount(ctx, task.TenantID, accID); err == nil {
 				contactNameByID = cn
 			}
-			defer func() {
-				if r := recover(); r != nil {
-					taskLog.Printf("[task] broadcast panic for account %s: %v\n%s", accID, r, debug.Stack())
+			accDone := 0
+			accFailed := 0
+			recordAccountFailure := func(code, message string) {
+				now := time.Now()
+				mu.Lock()
+				failed += len(targets)
+				for _, targetID := range targets {
+					tl := &domain.TaskLog{
+						LogID: uuid.New(), TaskID: task.TaskID, TenantID: task.TenantID,
+						AccountID: accID, TargetID: targetID, Action: "send_message",
+						Status: "failed", ErrorCode: code, Message: message, ExecutedAt: now,
+					}
+					batchLogs = append(batchLogs, tl)
+					pendingLogs = append(pendingLogs, tl)
 				}
-			}()
-			defer wg.Done()
-			defer func() { <-semaphore }()
+				pendingProgress = domain.TaskProgress{Total: total, Done: done, Failed: failed}
+				accountProgress[accID] = &domain.AccountProgress{
+					AccountID: accID, Done: 0, Failed: len(targets), Total: len(targets),
+				}
+				mu.Unlock()
+				nextTargetIndex = len(targets)
+			}
+
+			recordPanicRemainder = func() {
+				start := nextTargetIndex
+				now := time.Now()
+				mu.Lock()
+				for _, targetID := range targets[start:] {
+					tl := &domain.TaskLog{
+						LogID: uuid.New(), TaskID: task.TaskID, TenantID: task.TenantID,
+						AccountID: accID, TargetID: targetID, Action: "send_message",
+						Status: "failed", ErrorCode: "account_worker_panic",
+						Message: "账号执行异常，当前及剩余目标未能确认发送结果", ExecutedAt: now,
+					}
+					batchLogs = append(batchLogs, tl)
+					pendingLogs = append(pendingLogs, tl)
+				}
+				failed += len(targets) - start
+				doneForAccount := accDone
+				if doneForAccount > start {
+					doneForAccount = start
+				}
+				accountProgress[accID] = &domain.AccountProgress{
+					AccountID: accID, Done: doneForAccount, Failed: len(targets) - start, Total: len(targets),
+				}
+				pendingProgress = domain.TaskProgress{Total: total, Done: done, Failed: failed}
+				mu.Unlock()
+				nextTargetIndex = len(targets)
+			}
 
 			// 检查账号状态，非 ACTIVE 或已被 block 的账号跳过
 			acc, err := e.accEngine.GetByID(ctx, task.TenantID, accID)
-			if err != nil || acc == nil || (acc.Status == domain.AccountStatusBanned || acc.Status == domain.AccountStatusRestricted || acc.Status == domain.AccountStatusPendingAuth) {
+			if err != nil || acc == nil || (acc.Status == domain.AccountStatusBanned || acc.Status == domain.AccountStatusRestricted || acc.Status == domain.AccountStatusPendingAuth) || (acc != nil && acc.PoolStatus == "standby") {
 				status := "unknown"
 				if acc != nil {
 					status = string(acc.Status)
+					if acc.PoolStatus == "standby" {
+						status = "standby_pool"
+					}
 				}
-				taskLog.Printf("[task] skip account %s: status=%s (not active)", accID, status)
-				mu.Lock()
-				failed += len(targets)
-				accountProgress[accID] = &domain.AccountProgress{
-					AccountID: accID,
-					Done:      0,
-					Failed:    len(targets),
-					Total:     len(targets),
-				}
-				mu.Unlock()
+				taskLog.Printf("[task] skip account %s: status=%s (not active for broadcast)", accID, status)
+				recordAccountFailure("account_unavailable", "账号不可用或处于备用池，跳过该账号的全部目标")
 				return
 			}
 			if acc.BlockedUntil != nil && acc.BlockedUntil.After(time.Now().UTC()) {
 				taskLog.Printf("[task] skip account %s: blocked_until=%s", accID, acc.BlockedUntil.Format(time.RFC3339))
-				mu.Lock()
-				failed += len(targets)
-				accountProgress[accID] = &domain.AccountProgress{
-					AccountID: accID,
-					Done:      0,
-					Failed:    len(targets),
-					Total:     len(targets),
-				}
-				mu.Unlock()
+				recordAccountFailure("account_unavailable", "账号不可用，跳过该账号的全部目标")
 				return
 			}
 
 			client, err := e.accEngine.GetClient(ctx, task.TenantID, accID)
 			if err != nil {
-				mu.Lock()
-				failed += len(targets)
-				accountProgress[accID] = &domain.AccountProgress{
-					AccountID: accID,
-					Done:      0,
-					Failed:    len(targets),
-					Total:     len(targets),
-				}
-				mu.Unlock()
+				recordAccountFailure("account_unavailable", "账号不可用，跳过该账号的全部目标")
 				return
 			}
 			defer e.accEngine.ReleaseClient(task.TenantID, accID, client)
@@ -354,9 +439,7 @@ func (e *Engine) executeBroadcast(ctx context.Context, task *domain.Task) {
 
 			if len(task.AccountIDs) == 0 || len(targets) == 0 {
 				taskLog.Printf("[task] broadcast task %s has empty account_ids or target_ids, marking failed", task.TaskID)
-				if err := e.repo.UpdateStatus(ctx, task.TenantID, task.TaskID, domain.TaskStatusFailed); err != nil {
-					taskLog.Printf("[task] UpdateStatus failed: %v", err)
-				}
+				updateOwnedStatus(domain.TaskStatusFailed)
 				if err := e.logRepo.Create(ctx, &domain.TaskLog{
 					TaskID:     task.TaskID,
 					TenantID:   task.TenantID,
@@ -371,8 +454,6 @@ func (e *Engine) executeBroadcast(ctx context.Context, task *domain.Task) {
 				return
 			}
 
-			accDone := 0
-			accFailed := 0
 			progressAccum := domain.TaskProgress{}
 			progressFlushThreshold := 10 // flush progress every N messages to reduce DB writes
 
@@ -381,25 +462,14 @@ func (e *Engine) executeBroadcast(ctx context.Context, task *domain.Task) {
 				targetStart := time.Now()
 				select {
 				case <-e.stopCh:
-					// Flush pending progress before pausing
-					if progressAccum.Total > 0 {
-						if err := e.repo.UpdateProgressExact(ctx, task.TenantID, task.TaskID, progressAccum); err != nil {
-							log.Printf("[broadcast] 更新进度失败: %v", err)
-						}
-						e.publishProgress(task.TenantID, task.TaskID, progressAccum)
-					}
-					if err := e.repo.UpdateStatus(ctx, task.TenantID, task.TaskID, domain.TaskStatusPaused); err != nil {
-						taskLog.Printf("[task] UpdateStatus failed: %v", err)
-					}
+					// Flush pending progress before pausing.
+					flushCancellationProgress(progressAccum)
+					progressAccum = domain.TaskProgress{}
 					return
 				case <-ctx.Done():
-					// Flush pending progress before cancel exit
-					if progressAccum.Total > 0 {
-						if err := e.repo.UpdateProgressExact(ctx, task.TenantID, task.TaskID, progressAccum); err != nil {
-							log.Printf("[broadcast] 更新进度失败: %v", err)
-						}
-						e.publishProgress(task.TenantID, task.TaskID, progressAccum)
-					}
+					// Preserve the last delta on pause/cancel/deadline exit.
+					flushCancellationProgress(progressAccum)
+					progressAccum = domain.TaskProgress{}
 					return
 				default:
 				}
@@ -412,6 +482,13 @@ func (e *Engine) executeBroadcast(ctx context.Context, task *domain.Task) {
 				mu.Unlock()
 				if alreadySent {
 					accDone++
+					mu.Lock()
+					done++
+					progressAccum.Done++
+					progressAccum.Total++
+					progressAccum.CurrentTarget = targetID
+					mu.Unlock()
+					nextTargetIndex = i + 1
 					continue
 				}
 
@@ -447,6 +524,8 @@ func (e *Engine) executeBroadcast(ctx context.Context, task *domain.Task) {
 							backoff := time.Duration(attempt*attempt) * 3 * time.Second
 							select {
 							case <-ctx.Done():
+								flushCancellationProgress(progressAccum)
+								progressAccum = domain.TaskProgress{}
 								return
 							case <-time.After(backoff):
 							}
@@ -466,22 +545,24 @@ func (e *Engine) executeBroadcast(ctx context.Context, task *domain.Task) {
 						e.recordRiskEvent(ctx, task.TenantID, accID, "broadcast_fail", "medium", errCode)
 						taskLog.Printf("[broadcast] target %s resolve failed for account %s: %s (target may be invalid or account restricted)\n",
 							targetID, accID, resolveErr.Error())
-						continue
-					}
-					switch p := peer.(type) {
-					case *tg.InputPeerUser:
-						chatID = p.UserID
-					case *tg.InputPeerChat:
-						chatID = p.ChatID
-					case *tg.InputPeerChannel:
-						chatID = p.ChannelID
+					} else {
+						switch p := peer.(type) {
+						case *tg.InputPeerUser:
+							chatID = p.UserID
+						case *tg.InputPeerChat:
+							chatID = p.ChatID
+						case *tg.InputPeerChannel:
+							chatID = p.ChannelID
+						}
 					}
 				}
 				if chatID == 0 {
-					status = "failed"
-					errCode = "unsupported peer type"
-					accFailed++
-					e.recordRiskEvent(ctx, task.TenantID, accID, "broadcast_fail", "medium", errCode)
+					if status != "failed" {
+						status = "failed"
+						errCode = "unsupported_peer_type"
+						accFailed++
+						e.recordRiskEvent(ctx, task.TenantID, accID, "broadcast_fail", "medium", errCode)
+					}
 				} else {
 					// Replace template variables with target info before sending
 					// 先 spintax 随机语法(每个目标独立), 再变量替换
@@ -490,12 +571,13 @@ func (e *Engine) executeBroadcast(ctx context.Context, task *domain.Task) {
 						rawMsg = dictBag.fill(message)
 					}
 					personalizedMsg := replaceMessageVars(spintaxSpin(rawMsg), peer, targetID)
-					if obfEnabled {
-						// 混淆每条重新随机 — TG按内容查重时每条都是"不同消息"
-						if autoVary {
+					// 自动变化与消息混淆是两个独立开关，不能让前者依赖后者。
+					if autoVary {
 						personalizedMsg = autoVaryMessage(personalizedMsg)
 					}
-					personalizedMsg = obfuscateMessage(personalizedMsg)
+					if obfEnabled {
+						// 混淆每条重新随机 — TG按内容查重时每条都是"不同消息"
+						personalizedMsg = obfuscateMessage(personalizedMsg)
 					}
 					// R104+R118: 拟人化 —— 发送前模拟"正在输入..." 1~3 秒再发(风控规避,
 					// 真实用户行为: 先打字后发送, 机器人则消息凭空出现)
@@ -505,7 +587,13 @@ func (e *Engine) executeBroadcast(ctx context.Context, task *domain.Task) {
 					} else if chatID < 0 {
 						_, _ = client.Raw().MessagesSetTyping(ctx, &tg.MessagesSetTypingRequest{Peer: &tg.InputPeerChat{ChatID: chatID}, Action: &tg.SendMessageTypingAction{}})
 					}
-					time.Sleep(time.Duration(1000+rand.IntN(2000)) * time.Millisecond)
+					select {
+					case <-ctx.Done():
+						flushCancellationProgress(progressAccum)
+						progressAccum = domain.TaskProgress{}
+						return
+					case <-time.After(time.Duration(1000+rand.IntN(2000)) * time.Millisecond):
+					}
 
 					// R119-fix: 发送前最后一步 —— Markdown 转义兜底(此时 spintax/变量/混淆已全部解析,
 					// 转义后的 \{ \} 不再参与语法匹配, 用户写的 {你好|Hi} 能正常随机取值)
@@ -544,6 +632,8 @@ func (e *Engine) executeBroadcast(ctx context.Context, task *domain.Task) {
 								// Light flood: wait and retry once
 								select {
 								case <-ctx.Done():
+									flushCancellationProgress(progressAccum)
+									progressAccum = domain.TaskProgress{}
 									return
 								case <-time.After(time.Duration(waitSec) * time.Second):
 								}
@@ -637,6 +727,7 @@ func (e *Engine) executeBroadcast(ctx context.Context, task *domain.Task) {
 				failed += progressDelta.Failed
 				progressAccum.Done += progressDelta.Done
 				progressAccum.Failed += progressDelta.Failed
+				progressAccum.Total++
 				progressAccum.CurrentTarget = targetID
 				// P1-47: 成功即本地登记, 不必等 flush 落库。
 				// P0-12: 登记同样用复合键——账号维度各自防重, cartesian 语义完整保留
@@ -644,6 +735,7 @@ func (e *Engine) executeBroadcast(ctx context.Context, task *domain.Task) {
 					successSet[accID.String()+"|"+targetID] = true
 				}
 				mu.Unlock()
+				nextTargetIndex = i + 1
 
 				// Throttled SSE: accumulate into pending buffer, flushed by aggregator goroutine
 				// Prevents memory explosion from per-message SSE channel writes
@@ -663,8 +755,13 @@ func (e *Engine) executeBroadcast(ctx context.Context, task *domain.Task) {
 					accum := progressAccum
 					progressAccum = domain.TaskProgress{} // reset
 					mu.Unlock()
-					if err := e.repo.UpdateProgress(ctx, task.TenantID, task.TaskID, accum); err != nil {
+					updated, err := e.repo.UpdateProgressIfOwned(ctx, task.TenantID, task.TaskID, e.workerID, accum)
+					if err != nil {
 						taskLog.Printf("progress update failed: %v\n", err)
+					} else if !updated {
+						taskLog.Printf("[broadcast] 进度刷新时已失去任务租约，取消整个任务以停止其他账号 worker task=%s", task.TaskID)
+						cancel()
+						return
 					}
 				}
 				// Use account's actual level for send interval (循环外已查好 accLevel)
@@ -688,6 +785,8 @@ func (e *Engine) executeBroadcast(ctx context.Context, task *domain.Task) {
 						select {
 						case <-ctx.Done():
 							ticker.Stop()
+							flushCancellationProgress(progressAccum)
+							progressAccum = domain.TaskProgress{}
 							return
 						case <-ticker.C:
 							remaining--
@@ -698,6 +797,8 @@ func (e *Engine) executeBroadcast(ctx context.Context, task *domain.Task) {
 				} else {
 					select {
 					case <-ctx.Done():
+						flushCancellationProgress(progressAccum)
+						progressAccum = domain.TaskProgress{}
 						return
 					case <-time.After(waitDur):
 					}
@@ -716,7 +817,9 @@ func (e *Engine) executeBroadcast(ctx context.Context, task *domain.Task) {
 	}
 	wg.Wait()
 	close(flushDone)
+	<-flushExited
 	close(sseDone)
+	<-sseExited
 
 	// Final SSE flush: push any remaining pending data
 	mu.Lock()
@@ -732,17 +835,32 @@ func (e *Engine) executeBroadcast(ctx context.Context, task *domain.Task) {
 		e.publishProgress(task.TenantID, task.TaskID, prog)
 	}
 
-	// Final flush of remaining logs
+	// Final persistence must not reuse the expired/cancelled send context.
+	persistCtx, persistCancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer persistCancel()
+
+	// Final flush of remaining logs even if ownership was lost: these rows record
+	// Telegram sends that already happened and are needed by the next worker's
+	// resume de-duplication. Progress/status writes below remain lease-guarded.
 	mu.Lock()
-	if len(batchLogs) > 0 {
-		logs := batchLogs
-		batchLogs = nil
-		mu.Unlock()
-		if err := e.logRepo.CreateBatch(ctx, logs); err != nil {
+	logsToFlush := batchLogs
+	batchLogs = nil
+	mu.Unlock()
+	if len(logsToFlush) > 0 {
+		if err := e.logRepo.CreateBatch(persistCtx, logsToFlush); err != nil {
 			taskLog.Printf("[task] final flush logs failed: %v", err)
 		}
-	} else {
-		mu.Unlock()
+	}
+
+	// A stale worker must not overwrite progress/status of a task reclaimed by another instance.
+	current, currentErr := e.repo.GetByID(persistCtx, task.TenantID, task.TaskID)
+	if currentErr != nil {
+		taskLog.Printf("[broadcast] 无法确认任务租约，停止最终写入 task=%s: %v", task.TaskID, currentErr)
+		return
+	}
+	if current == nil || current.Status != domain.TaskStatusRunning || current.WorkerID == nil || *current.WorkerID != e.workerID {
+		taskLog.Printf("[broadcast] worker 已失去任务所有权，跳过最终进度/状态写入 task=%s worker=%s", task.TaskID, e.workerID)
+		return
 	}
 
 	// Build account_progress slice
@@ -751,26 +869,40 @@ func (e *Engine) executeBroadcast(ctx context.Context, task *domain.Task) {
 		accProgList = append(accProgList, *ap)
 	}
 
-	// Set final exact progress and status
 	finalProgress := domain.TaskProgress{
 		Total:           total,
 		Done:            done,
 		Failed:          failed,
 		AccountProgress: accProgList,
 	}
-	if err := e.repo.UpdateProgressExact(ctx, task.TenantID, task.TaskID, finalProgress); err != nil {
-		log.Printf("[broadcast] 更新进度失败: %v", err)
+	updated, err := e.repo.UpdateProgressExactIfOwned(persistCtx, task.TenantID, task.TaskID, e.workerID, finalProgress)
+	if err != nil {
+		taskLog.Printf("[broadcast] 更新最终进度失败: %v", err)
+		return
+	}
+	if !updated {
+		taskLog.Printf("[broadcast] 最终进度写入时租约已丢失 task=%s", task.TaskID)
+		return
 	}
 	e.publishProgress(task.TenantID, task.TaskID, finalProgress)
 
+	targetStatus := domain.TaskStatusCompleted
 	if failed == total && total > 0 {
-		if err := e.repo.UpdateStatus(ctx, task.TenantID, task.TaskID, domain.TaskStatusFailed); err != nil {
-			taskLog.Printf("[task] UpdateStatus failed: %v", err)
+		targetStatus = domain.TaskStatusFailed
+	}
+	if ctx.Err() != nil {
+		// Explicit cancellation is normally persisted by CancelTask first. If the
+		// parent engine context stopped instead, pause rather than report success.
+		targetStatus = domain.TaskStatusPaused
+		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			targetStatus = domain.TaskStatusFailed
 		}
-	} else {
-		if err := e.repo.UpdateStatus(ctx, task.TenantID, task.TaskID, domain.TaskStatusCompleted); err != nil {
-			taskLog.Printf("[task] UpdateStatus failed: %v", err)
-		}
+	}
+	updated, err = e.repo.UpdateStatusIfOwned(persistCtx, task.TenantID, task.TaskID, e.workerID, targetStatus)
+	if err != nil {
+		taskLog.Printf("[task] final status update failed: %v", err)
+	} else if !updated {
+		taskLog.Printf("[task] final status skipped because worker lease was lost task=%s", task.TaskID)
 	}
 }
 

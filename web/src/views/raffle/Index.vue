@@ -403,13 +403,13 @@ const groupedResults = computed(() => {
     }
     m.get(k).items.push(r)
   }
-  const list = [...m.values()].sort((a, b) => {
+  const list = [...m.values()].sort((a: any, b: any) => {
     const ta = a.items[0]?.created_at || ''
     const tb = b.items[0]?.created_at || ''
     return ta < tb ? 1 : -1
   })
   for (const g of list) {
-    g.items.sort((a, b) => (a.created_at < b.created_at ? -1 : 1))
+    g.items.sort((a: any, b: any) => (a.created_at < b.created_at ? -1 : 1))
     g.wins = g.items.filter((r: any) => r.kind === 'winner').length
   }
   return list

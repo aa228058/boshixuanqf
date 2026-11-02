@@ -180,7 +180,7 @@ const accName = (a: any) => a?.first_name || a?.remark || a?.phone || (a?.accoun
 // R109: 监控按账号管理, 下拉选择管理哪个号
 const monAccId = ref('')
 watch(currentAccount, (acc: any) => { if (acc?.account_id && !monAccId.value) monAccId.value = acc.account_id }, { immediate: true })
-watch(monAccId, () => { loadGroups(); fetchRules() })
+watch(monAccId, () => { fetchGroups(); fetchRules() })
 const groups = ref<Group[]>([])
 const showSourceSelector = ref(false)
 const showTargetSelector = ref(false)

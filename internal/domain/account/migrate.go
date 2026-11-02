@@ -195,7 +195,9 @@ func (e *Engine) maybeAutoMigrate(tenantID, accountID uuid.UUID) {
 
 	hit := false
 	for _, s := range strings.Split(from, ",") {
-		if n, err := strconv.Atoi(strings.TrimSpace(s)); err == nil && int32(n) == info.dc {
+		// DC id is int32 in the sessions schema; parse at that width instead
+		// of allowing Atoi followed by a potentially wrapping conversion.
+		if n, err := strconv.ParseInt(strings.TrimSpace(s), 10, 32); err == nil && int32(n) == info.dc {
 			hit = true
 			break
 		}

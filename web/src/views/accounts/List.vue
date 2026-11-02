@@ -718,8 +718,9 @@ import {
   ShieldCheck, ArrowRightLeft,
 } from 'lucide-vue-next'
 import { useAccountStore } from '@/stores/account'
-import { accountApi, importSessions, importSessionFiles, setAccountProxy, testAccountProxy } from '@/api/account'
+import { accountApi, importSessions, importSessionFiles, setAccountProxy, testAccountProxy, uploadAvatar } from '@/api/account'
 import { settingsApi } from '@/api/settings'
+import { taskApi } from '@/api/task'
 import Modal from '@/components/ui/Modal.vue'
 import EmptyState from '@/components/ui/EmptyState.vue'
 import ConfirmDialog from '@/components/ui/ConfirmDialog.vue'
@@ -1055,7 +1056,7 @@ async function refreshAvatar(acc: any) {
 
 // 一键退群: 确认后退出该账号加入的全部群组(逐个执行带风控间隔)
 async function leaveAllGroups(acc: any) {
-  const ok = await ask('一键退群', `确定让 ${acc.remark || acc.phone} 退出全部已加入群组吗? 逐个执行需等待, 期间勿重复点击。`)
+  const ok = await ask(`确定让 ${acc.remark || acc.phone} 退出全部已加入群组吗? 逐个执行需等待, 期间勿重复点击。`, { title: '一键退群' })
   if (!ok) return
   leavingAllId.value = acc?.account_id
   try {
@@ -1771,7 +1772,7 @@ async function loadTaskSummary() {
     const res = await taskApi.list({ status: 'running', page: 1, page_size: 100 })
     const map: Record<string, string[]> = {}
     for (const t of res.list || []) {
-      const name = t.name || `${typeLabel(t.type)}任务`
+      const name = String(t.payload?.name || `${typeLabel(t.type)}任务`)
       const ids: string[] = Array.isArray(t.account_ids) ? t.account_ids.map(String) : []
       const pids: string[] = Array.isArray(t.payload?.account_ids) ? t.payload.account_ids.map(String) : []
       for (const id of [...new Set([...ids, ...pids])]) {

@@ -48,12 +48,12 @@ func (r *GroupRepository) List(ctx context.Context, tenantID uuid.UUID, limit, o
 func (r *GroupRepository) ListByAccount(ctx context.Context, tenantID, accountID uuid.UUID, limit, offset int) ([]*domain.Group, error) {
 	log.Printf("[repo] ListByAccount 租户=%s 账号=%s 限制=%d 偏移=%d", tenantID, accountID, limit, offset)
 	rows, err := r.db.Query(ctx, `
-		SELECT g.group_id, g.tenant_id, g.tg_chat_id, g.title, g.username, g.type, g.member_count, g.is_joined, g.joined_at, g.last_scraped_at, g.access_hash, g.metadata
+		SELECT g.group_id, g.tenant_id, g.tg_chat_id, g.title, g.username, g.type, g.member_count, ag.is_joined, g.joined_at, g.last_scraped_at, g.access_hash, g.metadata
 		FROM groups g
 		JOIN account_groups ag ON g.group_id = ag.group_id
 		WHERE g.tenant_id = $1 AND ag.account_id = $2 AND ag.account_id IS NOT NULL
 		  AND ag.is_joined = true
-		ORDER BY g.created_at DESC LIMIT $3 OFFSET $4`, tenantID, accountID, limit, offset)
+		ORDER BY g.created_at DESC, g.group_id DESC LIMIT $3 OFFSET $4`, tenantID, accountID, limit, offset)
 	if err != nil {
 		log.Printf("[repo] ListByAccount 查询错误: %v", err)
 		return nil, fmt.Errorf("list groups by account: %w", err)
@@ -87,7 +87,23 @@ func (r *GroupRepository) UpsertAccountGroup(ctx context.Context, accountID, gro
 	return err
 }
 
-// GetByID retrieves a group by ID.
+// IsJoinedByAccount checks the per-account association, not groups.is_joined.
+ // A tenant-level group may be joined by one account and absent from another.
+ func (r *GroupRepository) IsJoinedByAccount(ctx context.Context, tenantID, accountID, groupID uuid.UUID) (bool, error) {
+ 	var joined bool
+ 	err := r.db.QueryRow(ctx, `
+ 		SELECT COALESCE(ag.is_joined, FALSE)
+ 		FROM groups g
+ 		LEFT JOIN account_groups ag ON ag.group_id = g.group_id AND ag.account_id = $2
+ 		WHERE g.tenant_id = $1 AND g.group_id = $3`,
+ 		tenantID, accountID, groupID).Scan(&joined)
+ 	if err != nil {
+ 		return false, fmt.Errorf("check account group membership: %w", err)
+ 	}
+ 	return joined, nil
+ }
+
+ // GetByID retrieves a group by ID.
 func (r *GroupRepository) GetByID(ctx context.Context, tenantID, groupID uuid.UUID) (*domain.Group, error) {
 	var g domain.Group
 	err := r.db.QueryRow(ctx, `
@@ -155,6 +171,20 @@ func (r *GroupRepository) UpdateJoinStatus(ctx context.Context, tenantID, groupI
 	_, err := r.db.Exec(ctx, `
 		UPDATE groups SET is_joined = $3, joined_at = CASE WHEN $3 THEN NOW() ELSE joined_at END
 		WHERE tenant_id = $1 AND group_id = $2`, tenantID, groupID, isJoined)
+	return err
+}
+
+// RefreshJoinStatus keeps the tenant-level groups.is_joined summary equal to
+// whether any account in the tenant is currently joined. Per-account state lives
+// in account_groups and must never be overwritten by one account's sync.
+func (r *GroupRepository) RefreshJoinStatus(ctx context.Context, tenantID, groupID uuid.UUID) error {
+	_, err := r.db.Exec(ctx, `
+		UPDATE groups g
+		SET is_joined = EXISTS (
+			SELECT 1 FROM account_groups ag
+			WHERE ag.group_id = g.group_id AND ag.is_joined = TRUE
+		)
+		WHERE g.tenant_id = $1 AND g.group_id = $2`, tenantID, groupID)
 	return err
 }
 

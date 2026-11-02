@@ -72,12 +72,25 @@ func (h *SettingsHandler) UpdateNotify(c echo.Context) error {
 		return echo.NewHTTPError(http.StatusBadRequest, "参数错误: 需要合法的邮箱地址")
 	}
 	raw, _ := json.Marshal(req.Settings)
-	// SMTP 配置: 若前端未传 pass 且租户已配置过, 保留旧授权码(前端不回传已存的密码)
-	smtpRaw, _ := json.Marshal(req.SMTP)
-	if req.SMTP != nil {
+	// SMTP 配置: 未提交 smtp 字段时保留整份旧配置；提交了配置但未传 pass 时保留旧授权码。
+	var smtpRaw json.RawMessage
+	if req.SMTP == nil {
+		tenant, terr := h.svc.GetProfile(c.Request().Context(), tenantID)
+		if terr != nil || tenant == nil {
+			return echo.NewHTTPError(http.StatusInternalServerError, "读取现有 SMTP 配置失败")
+		}
+		smtpRaw = tenant.NotifySMTP
+		if len(smtpRaw) == 0 {
+			smtpRaw = json.RawMessage("null")
+		}
+	} else {
+		smtpRaw, _ = json.Marshal(req.SMTP)
 		if _, hasPass := req.SMTP["pass"]; !hasPass {
 			tenant, terr := h.svc.GetProfile(c.Request().Context(), tenantID)
-			if terr == nil && tenant != nil && tenant.SMTPConfig() != nil {
+			if terr != nil || tenant == nil {
+				return echo.NewHTTPError(http.StatusInternalServerError, "读取现有 SMTP 配置失败")
+			}
+			if tenant.SMTPConfig() != nil {
 				var old map[string]any
 				if json.Unmarshal(tenant.NotifySMTP, &old) == nil {
 					if p, ok := old["pass"]; ok {

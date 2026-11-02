@@ -2,10 +2,12 @@ package task
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"tg-sender/internal/domain"
 )
 
@@ -29,6 +31,7 @@ func (e *Engine) SyncJoinedGroups(ctx context.Context, tenantID, accountID uuid.
 	totalProcessed := 0
 	totalSkipped := 0
 	batchCount := 0
+	paginationComplete := false // 只有确认读到最后一页时才允许 prune
 	seenIDs := make(map[int64]bool) // dedup: same dialog may appear across pages
 
 	for {
@@ -42,6 +45,7 @@ func (e *Engine) SyncJoinedGroups(ctx context.Context, tenantID, accountID uuid.
 
 		if len(dialogs) == 0 {
 			log.Printf("[sync] 没有更多对话，停止分页")
+			paginationComplete = true
 			break
 		}
 
@@ -131,8 +135,14 @@ func (e *Engine) SyncJoinedGroups(ctx context.Context, tenantID, accountID uuid.
 			// 频道(channel)也一并保存: 很多"群组"实际是频道, 跳过会导致群组选择器加载不全
 			log.Printf("[sync] 处理对话 id=%d 标题=%q 类型=%s 成员=%d", chat.ID, chat.Title, gtype, memberCount)
 
-			// Check if group already exists by TGChatID to avoid duplicate inserts
-			existing, _ := e.groupRepo.GetByTGChatID(ctx, tenantID, chat.ID)
+			// Check if group already exists by TGChatID to avoid duplicate inserts.
+			// Distinguish "not found" from database errors; otherwise a transient read
+			// failure is mistaken for a new group and the account link is skipped.
+			existing, lookupErr := e.groupRepo.GetByTGChatID(ctx, tenantID, chat.ID)
+			if lookupErr != nil && !errors.Is(lookupErr, pgx.ErrNoRows) {
+				log.Printf("[sync] 查询群组 %d 失败: %v", chat.ID, lookupErr)
+				continue
+			}
 			var groupID uuid.UUID
 			if existing != nil {
 				existing.Title = chat.Title
@@ -145,12 +155,13 @@ func (e *Engine) SyncJoinedGroups(ctx context.Context, tenantID, accountID uuid.
 				// Preserve existing AccessHash (GetDialogs doesn't provide it)
 				if err := e.groupRepo.Update(ctx, existing); err != nil {
 					log.Printf("[sync] 更新群组 %d 失败: %v", chat.ID, err)
+					continue
 				}
 				groupID = existing.GroupID
 			} else {
-				groupID = uuid.New()
+				candidateID := uuid.New()
 				g := &domain.Group{
-					GroupID:     groupID,
+					GroupID:     candidateID,
 					TenantID:    tenantID,
 					TGChatID:    chat.ID,
 					Title:       chat.Title,
@@ -164,12 +175,23 @@ func (e *Engine) SyncJoinedGroups(ctx context.Context, tenantID, accountID uuid.
 					log.Printf("[sync] upsert group %d failed: %v", chat.ID, err)
 					continue
 				}
+				// Create uses ON CONFLICT DO UPDATE but does not RETURN the persisted
+				// primary key. Re-read it so a concurrent account sync cannot leave
+				// account_groups pointing at this request's losing candidate UUID.
+				persisted, err := e.groupRepo.GetByTGChatID(ctx, tenantID, chat.ID)
+				if err != nil {
+					log.Printf("[sync] 创建后回读群组 %d 失败: %v", chat.ID, err)
+					continue
+				}
+				groupID = persisted.GroupID
 			}
-
 			// Link group to account
 			if err := e.groupRepo.UpsertAccountGroup(ctx, accountID, groupID, isJoined); err != nil {
 				log.Printf("[sync] 关联群组 %d 到账号失败: %v", chat.ID, err)
 			} else {
+				if err := e.groupRepo.RefreshJoinStatus(ctx, tenantID, groupID); err != nil {
+					log.Printf("[sync] 刷新群组汇总加入状态失败 group=%s: %v", groupID, err)
+				}
 				log.Printf("[sync] 已关联群组 %d（group_id=%s）到账号 %s", chat.ID, groupID, accountID)
 			}
 			processed++
@@ -181,20 +203,21 @@ func (e *Engine) SyncJoinedGroups(ctx context.Context, tenantID, accountID uuid.
 
 		// Stop if no new unique dialogs were found in this batch (all were duplicates)
 		if newInBatch == 0 {
-			log.Printf("[sync] 批次#%d没有新的唯一对话，停止", batchCount)
+			log.Printf("[sync] 批次#%d没有新的唯一对话，停止；无法确认已到末页", batchCount)
 			break
 		}
 
 		// Also stop if we got fewer dialogs than requested (last page)
 		if len(dialogs) < e.cfg.DialogsLimit {
 			log.Printf("[sync] 到达最后一页（%d < %d），停止", len(dialogs), e.cfg.DialogsLimit)
+			paginationComplete = true
 			break
 		}
 
 		offset += int32(len(dialogs))
 		// Safety limit: max 200 batches (约 2 万个会话), 防止极端情况下无限分页
 		if batchCount >= 200 {
-			log.Printf("[sync] 达到最大批次数量（200），停止")
+			log.Printf("[sync] 达到最大批次数量（200），本次同步不执行 prune，避免误标未扫描群组")
 			break
 		}
 	}
@@ -205,38 +228,46 @@ func (e *Engine) SyncJoinedGroups(ctx context.Context, tenantID, accountID uuid.
 	// 只增不删的同步会让已退出/被踢的群永远留在选择器里。
 	// 反向 diff: 分页遍历本地该账号的全部已加入群, 不在 seenIDs 里的标 left。
 	pruned := 0
-	const prunePage = 500
-	for off := 0; ; off += prunePage {
-		localGroups, err := e.groupRepo.ListByAccount(ctx, tenantID, accountID, prunePage, off)
-		if err != nil {
-			log.Printf("[sync] prune 阶段读取本地群组失败(offset=%d): %v", off, err)
-			break
-		}
-		if len(localGroups) == 0 {
-			break
-		}
-		for _, lg := range localGroups {
-			if lg == nil || !lg.IsJoined {
-				continue
+	if !paginationComplete {
+		log.Printf("[sync] 本次分页未确认完整结束，跳过 prune，避免把未扫描到的群误标为已退出")
+	} else {
+		const prunePage = 500
+		// 先完整读取，再修改 account_groups。若边分页边把 is_joined 改为 false，
+		// OFFSET 会作用于不断缩小的结果集，超过 500 个群时会跳过后半部分。
+		var localJoinedGroups []*domain.Group
+		localReadComplete := true
+		for off := 0; ; off += prunePage {
+			localGroups, err := e.groupRepo.ListByAccount(ctx, tenantID, accountID, prunePage, off)
+			if err != nil {
+				log.Printf("[sync] prune 阶段读取本地群组失败(offset=%d): %v", off, err)
+				localReadComplete = false
+				break
 			}
-			if seenIDs[lg.TGChatID] {
-				continue // 本次同步见到了, 保持已加入
+			localJoinedGroups = append(localJoinedGroups, localGroups...)
+			if len(localGroups) < prunePage {
+				break
 			}
-			if err := e.groupRepo.UpdateJoinStatus(ctx, tenantID, lg.GroupID, false); err != nil {
-				log.Printf("[sync] prune 标记群 %d left 失败: %v", lg.TGChatID, err)
-				continue
-			}
-			if err := e.groupRepo.UpsertAccountGroup(ctx, accountID, lg.GroupID, false); err != nil {
-				log.Printf("[sync] prune 更新关联表失败 group=%s: %v", lg.GroupID, err)
-			}
-			pruned++
 		}
-		if len(localGroups) < prunePage {
-			break // 最后一页
+		if !localReadComplete {
+			log.Printf("[sync] prune 阶段未完整读取本地群组，跳过清理，避免误标未读取群组")
+		} else {
+			for _, lg := range localJoinedGroups {
+				if lg == nil || !lg.IsJoined || seenIDs[lg.TGChatID] {
+					continue
+				}
+				if err := e.groupRepo.UpsertAccountGroup(ctx, accountID, lg.GroupID, false); err != nil {
+					log.Printf("[sync] prune 更新关联表失败 group=%s: %v", lg.GroupID, err)
+					continue
+				}
+				if err := e.groupRepo.RefreshJoinStatus(ctx, tenantID, lg.GroupID); err != nil {
+					log.Printf("[sync] prune 刷新群组汇总状态失败: %v", err)
+				}
+				pruned++
+			}
+			if pruned > 0 {
+				log.Printf("[sync] prune 完成：标记 %d 个已退出群组", pruned)
+			}
 		}
-	}
-	if pruned > 0 {
-		log.Printf("[sync] prune 完成：标记 %d 个已退出群组", pruned)
 	}
 	// R99: 同步完成主动通知 —— 前端全局事件流收到后自动刷新群缓存,
 	// 避免"同步完要重开选择器/手动刷新"

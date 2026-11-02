@@ -664,14 +664,20 @@ func (e *Engine) claimAndExecute(ctx context.Context) {
 
 func (e *Engine) runTask(ctx context.Context, task *domain.Task) {
 	// P1-01: 全局并发原子锁(count+claim非原子会突破上限; 信号量保证任何时刻running<=上限)
+	globalSemOwned := false
 	select {
 	case e.globalSem <- struct{}{}:
-		defer func() { <-e.globalSem }()
+		globalSemOwned = true
 	case <-ctx.Done():
 		return
 	case <-e.stopCh:
 		return
 	}
+	defer func() {
+		if globalSemOwned {
+			<-e.globalSem
+		}
+	}()
 	// Idempotency: skip if already running (memory + DB)
 	taskKey := task.TaskID.String()
 	if _, loaded := e.runningTasks.LoadOrStore(taskKey, true); loaded {
@@ -697,14 +703,19 @@ func (e *Engine) runTask(ctx context.Context, task *domain.Task) {
 		// 必须回滚为 queued，让后续轮询重新认领（"retry later"落到实处）。
 		e.runningTasks.Delete(taskKey)
 		taskLog.Printf("[task] 租户配额已满/系统限压，任务 %s 回滚为 queued 等待重试", task.TaskID)
-		if err := e.repo.UpdateStatus(ctx, task.TenantID, task.TaskID, domain.TaskStatusQueued); err != nil {
+		updated, err := e.repo.UpdateStatusIfOwned(ctx, task.TenantID, task.TaskID, e.workerID, domain.TaskStatusQueued)
+		if err != nil {
 			taskLog.Printf("[task] 回滚任务状态失败 %s: %v", task.TaskID, err)
+		} else if !updated {
+			taskLog.Printf("[task] 回滚任务状态跳过，worker 已失去租约 task=%s", task.TaskID)
 		}
 		return
 	}
 
+	globalSemOwned = false // ownership transfers to the execution goroutine
 	e.wg.Add(1)
 	safego.Go(func() {
+		defer func() { <-e.globalSem }()
 		defer e.wg.Done()
 		// 任务结束(完成/失败/取消)时广播状态事件, 前端列表实时刷新
 		defer func() {
@@ -716,20 +727,28 @@ func (e *Engine) runTask(ctx context.Context, task *domain.Task) {
 				})
 			}
 		}()
-		// R119: 任务结束邮件通知(完成→task_finished, 失败→task_failed)
+		// 任务结束通知必须读取数据库最终状态：claim 返回的 task.Status 固定是
+		// running，执行器更新状态不会回写这个内存对象；直接读 task.Status 会导致通知永不触发。
 		defer func() {
 			if e.finishNotify == nil {
 				return
 			}
-			st := string(task.Status)
-			if st == "completed" || st == "failed" {
-				// Task.Progress 是值类型非指针; 任务名取 payload["name"], 回退类型名
-				name, _ := task.Payload["name"].(string)
-				if name == "" {
-					name = string(task.Type)
-				}
-				e.finishNotify(task.TenantID, name, string(task.Type), st, task.Progress.Done, task.Progress.Failed)
+			notifyCtx, notifyCancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer notifyCancel()
+			finalTask, err := e.repo.GetByID(notifyCtx, task.TenantID, task.TaskID)
+			if err != nil || finalTask == nil {
+				taskLog.Printf("[task] 读取最终状态以发送完成通知失败 task=%s: %v", task.TaskID, err)
+				return
 			}
+			st := string(finalTask.Status)
+			if st != "completed" && st != "failed" {
+				return
+			}
+			name, _ := finalTask.Payload["name"].(string)
+			if name == "" {
+				name = string(finalTask.Type)
+			}
+			e.finishNotify(finalTask.TenantID, name, string(finalTask.Type), st, finalTask.Progress.Done, finalTask.Progress.Failed)
 		}()
 		defer func() {
 			if e.scheduler != nil {
@@ -739,17 +758,21 @@ func (e *Engine) runTask(ctx context.Context, task *domain.Task) {
 		defer e.runningTasks.Delete(taskKey)
 		// P1修复(精读发现): progressCache 只 Store 从不 Delete(注释承诺的删除并不存在),
 		// 每个任务永久泄漏一个 TaskProgress, sync.Map 随任务数无限增长。
-		defer e.progressCache.Delete(taskKey)
+		defer e.progressCache.Delete(task.TaskID)
 		defer func() {
 			if r := recover(); r != nil {
 				taskLog.Printf("task panic: %v\n%s\n", r, debug.Stack())
-				if err := e.repo.UpdateStatus(ctx, task.TenantID, task.TaskID, domain.TaskStatusFailed); err != nil {
-					taskLog.Printf("[task] UpdateStatus failed: %v", err)
+				persistCtx, persistCancel := context.WithTimeout(context.Background(), 10*time.Second)
+				defer persistCancel()
+				if updated, err := e.repo.UpdateStatusIfOwned(persistCtx, task.TenantID, task.TaskID, e.workerID, domain.TaskStatusFailed); err != nil {
+					taskLog.Printf("[task] panic status update failed: %v", err)
+				} else if !updated {
+					taskLog.Printf("[task] panic status update skipped; worker no longer owns task %s", task.TaskID)
 				}
 			}
 		}()
 
-		// Create a cancellable context for this specific task
+		// Create a cancellable context for this specific task.
 		taskCtx, cancel := context.WithCancel(ctx)
 		e.taskCtxs.Store(taskKey, cancel)
 		defer func() {
@@ -757,26 +780,78 @@ func (e *Engine) runTask(ctx context.Context, task *domain.Task) {
 			e.taskCtxs.Delete(taskKey)
 		}()
 
-		// Check if task was cancelled before starting
+		// Re-check status and ownership after waiting for a local worker slot.
+		// The DB lease may have expired while this task was waiting on globalSem.
 		freshTask, err := e.repo.GetByID(ctx, task.TenantID, task.TaskID)
-		if err == nil && freshTask.Status == domain.TaskStatusCancelled {
+		if err != nil {
+			taskLog.Printf("[task] cannot verify claimed task %s; skip execution: %v", task.TaskID, err)
 			return
 		}
+		if freshTask.Status != domain.TaskStatusRunning || freshTask.WorkerID == nil || *freshTask.WorkerID != e.workerID {
+			taskLog.Printf("[task] task %s is no longer owned by worker %s; skip stale claim", task.TaskID, e.workerID)
+			return
+		}
+
+		// Renew the lease immediately before starting execution, then keep it
+		// alive. This also closes the window where a claimed task waited on the
+		// local semaphore long enough for another worker to reclaim it.
+		owned, err := e.repo.RefreshTaskLock(ctx, task.TenantID, task.TaskID, e.workerID)
+		if err != nil || !owned {
+			taskLog.Printf("[task] cannot renew initial lease task=%s owned=%v err=%v; skip execution", task.TaskID, owned, err)
+			return
+		}
+		leaseDone := make(chan struct{})
+		go e.renewTaskLease(taskCtx, task, cancel, leaseDone)
+		defer func() {
+			cancel()
+			<-leaseDone
+		}()
 
 		e.executeTask(taskCtx, task)
 	})
 }
 
+// renewTaskLease keeps a claimed task's lock alive and cancels execution if ownership is lost.
+func (e *Engine) renewTaskLease(ctx context.Context, task *domain.Task, cancel context.CancelFunc, done chan<- struct{}) {
+	defer close(done)
+	lockTimeout := time.Duration(e.cfg.TaskLockTimeoutMin) * time.Minute
+	if lockTimeout <= 0 {
+		lockTimeout = 40 * time.Minute
+	}
+	interval := lockTimeout / 3
+	if interval < time.Second {
+		interval = time.Second
+	}
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			renewCtx, renewCancel := context.WithTimeout(ctx, 10*time.Second)
+			owned, err := e.repo.RefreshTaskLock(renewCtx, task.TenantID, task.TaskID, e.workerID)
+			renewCancel()
+			if err != nil {
+				taskLog.Printf("[task] lease renewal failed task=%s: %v; stopping worker to avoid duplicate execution", task.TaskID, err)
+				cancel()
+				return
+			}
+			if !owned {
+				taskLog.Printf("[task] lease ownership lost task=%s; stopping stale worker", task.TaskID)
+				cancel()
+				return
+			}
+		}
+	}
+}
+
 // CancelTask cancels a running task by its ID.
 
 func (e *Engine) CancelTask(taskID uuid.UUID) {
-	// M-05: 取消立即落库(原只触发内存cancel, DB状态要等worker退出才更新,
-	// 取消后列表长时间显示running造成"取消没生效"的错觉; worker认领时的状态双查会跳过已取消任务)
-	if t, err := e.repo.GetByTaskIDAnyTenant(context.Background(), taskID); err == nil && t != nil {
-		if uerr := e.repo.UpdateStatus(context.Background(), t.TenantID, taskID, domain.TaskStatusCancelled); uerr != nil {
-			taskLog.Printf("[task] cancel落库失败: %v", uerr)
-		}
-	}
+	// 只停止内存中的执行 context；任务状态由 TaskService 在调用本方法前
+	// 持久化为 paused/cancelled，避免 service 与 engine 重复更新状态。
 	if cancel, ok := e.taskCtxs.Load(taskID.String()); ok {
 		cancel.(context.CancelFunc)()
 	}
@@ -800,13 +875,31 @@ func (e *Engine) executeTask(ctx context.Context, task *domain.Task) {
 	case domain.TaskTypeMonitorScrape:
 		e.executeMonitorScrape(ctx, task)
 	case domain.TaskTypeInviteMembers:
-		e.executeInviteMembers(ctx, task)
+		inviteErr := e.executeInviteMembers(ctx, task)
+		finalStatus := domain.TaskStatusCompleted
+		if inviteErr != nil {
+			taskLog.Printf("[invite] task %s failed: %v", task.TaskID, inviteErr)
+			if ctx.Err() != nil {
+				finalStatus = domain.TaskStatusPaused
+			} else {
+				finalStatus = domain.TaskStatusFailed
+			}
+		}
+		persistCtx, persistCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		if updated, err := e.repo.UpdateStatusIfOwned(persistCtx, task.TenantID, task.TaskID, e.workerID, finalStatus); err != nil {
+			taskLog.Printf("[invite] final status update failed: %v", err)
+		} else if !updated {
+			taskLog.Printf("[invite] final status skipped; worker no longer owns task %s", task.TaskID)
+		}
+		persistCancel()
 	case domain.TaskTypeScheduledBroadcast:
 		e.executeBroadcast(ctx, task)
 		e.rescheduleLoopTask(ctx, task)
 	default:
-		if err := e.repo.UpdateStatus(ctx, task.TenantID, task.TaskID, domain.TaskStatusFailed); err != nil {
+		if updated, err := e.repo.UpdateStatusIfOwned(ctx, task.TenantID, task.TaskID, e.workerID, domain.TaskStatusFailed); err != nil {
 			taskLog.Printf("[task] UpdateStatus failed: %v", err)
+		} else if !updated {
+			taskLog.Printf("[task] unsupported task status update skipped; worker no longer owns task %s", task.TaskID)
 		}
 	}
 }
@@ -855,9 +948,11 @@ func (e *Engine) recordRiskEvent(ctx context.Context, tenantID, accountID uuid.U
 // executeMonitorScrape listens to group messages and scrapes usernames from matching messages.
 // executeMonitorScrape listens to group messages via OnMessage and scrapes usernames from matching messages.
 func (e *Engine) executeMonitorScrape(ctx context.Context, task *domain.Task) {
-	if err := e.repo.UpdateStatus(ctx, task.TenantID, task.TaskID, domain.TaskStatusRunning); err != nil {
-		taskLog.Printf("[task] failed to update status to running: %v", err)
-	}
+	// The worker has already claimed the task and set status=running.
+	// Use a child context so maxResults can stop the listener without cancelling the worker engine.
+	parentCtx := ctx
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
 
 	payload := task.Payload
 	matchType, _ := payload["match_type"].(string)
@@ -868,14 +963,14 @@ func (e *Engine) executeMonitorScrape(ctx context.Context, task *domain.Task) {
 	groupID, err := uuid.Parse(groupIDStr)
 	if err != nil {
 		taskLog.Printf("[monitor_scrape] 无效 group_id %q: %v", groupIDStr, err)
-		if uerr := e.repo.UpdateStatus(ctx, task.TenantID, task.TaskID, domain.TaskStatusFailed); uerr != nil {
+		if uerr := e.updateTaskStatusIfOwned(ctx, task, domain.TaskStatusFailed); uerr != nil {
 			taskLog.Printf("[task] failed to update status to failed: %v", uerr)
 		}
 		return
 	}
 
 	if matchContent == "" {
-		if err := e.repo.UpdateStatus(ctx, task.TenantID, task.TaskID, domain.TaskStatusFailed); err != nil {
+		if err := e.updateTaskStatusIfOwned(ctx, task, domain.TaskStatusFailed); err != nil {
 			taskLog.Printf("[task] failed to update status to failed: %v", err)
 		}
 		return
@@ -888,7 +983,7 @@ func (e *Engine) executeMonitorScrape(ctx context.Context, task *domain.Task) {
 		re, err := regexp.Compile(matchContent)
 		if err != nil {
 			taskLog.Printf("[monitor_scrape] invalid regex: %v", err)
-			if err := e.repo.UpdateStatus(ctx, task.TenantID, task.TaskID, domain.TaskStatusFailed); err != nil {
+			if err := e.updateTaskStatusIfOwned(ctx, task, domain.TaskStatusFailed); err != nil {
 				taskLog.Printf("[task] failed to update status to failed: %v", err)
 			}
 			return
@@ -928,7 +1023,7 @@ func (e *Engine) executeMonitorScrape(ctx context.Context, task *domain.Task) {
 
 	if len(task.AccountIDs) == 0 {
 		taskLog.Printf("[monitor_scrape] 任务缺少账号，无法执行")
-		if uerr := e.repo.UpdateStatus(ctx, task.TenantID, task.TaskID, domain.TaskStatusFailed); uerr != nil {
+		if uerr := e.updateTaskStatusIfOwned(ctx, task, domain.TaskStatusFailed); uerr != nil {
 			taskLog.Printf("[task] failed to update status to failed: %v", uerr)
 		}
 		return
@@ -937,7 +1032,7 @@ func (e *Engine) executeMonitorScrape(ctx context.Context, task *domain.Task) {
 	client, err := e.accEngine.GetClient(ctx, task.TenantID, accountID)
 	if err != nil {
 		taskLog.Printf("[monitor_scrape] get client failed: %v", err)
-		if err := e.repo.UpdateStatus(ctx, task.TenantID, task.TaskID, domain.TaskStatusFailed); err != nil {
+		if err := e.updateTaskStatusIfOwned(ctx, task, domain.TaskStatusFailed); err != nil {
 			taskLog.Printf("[task] failed to update status to failed: %v", err)
 		}
 		return
@@ -947,7 +1042,7 @@ func (e *Engine) executeMonitorScrape(ctx context.Context, task *domain.Task) {
 	group, err := e.groupRepo.GetByID(ctx, task.TenantID, groupID)
 	if err != nil {
 		taskLog.Printf("[monitor_scrape] get group failed: %v", err)
-		if err := e.repo.UpdateStatus(ctx, task.TenantID, task.TaskID, domain.TaskStatusFailed); err != nil {
+		if err := e.updateTaskStatusIfOwned(ctx, task, domain.TaskStatusFailed); err != nil {
 			taskLog.Printf("[task] failed to update status to failed: %v", err)
 		}
 		return
@@ -970,6 +1065,7 @@ func (e *Engine) executeMonitorScrape(ctx context.Context, task *domain.Task) {
 	// Message processing
 	scrapedCount := 0
 	scrapedUsers := make(map[string]bool)
+	var persistErr error
 	var countMu sync.Mutex
 
 	// Register OnMessage handler for real-time message listening
@@ -978,9 +1074,16 @@ func (e *Engine) executeMonitorScrape(ctx context.Context, task *domain.Task) {
 	e.scrapeRegMu.Lock()
 	if e.scrapeRegistered[clientKey] {
 		e.scrapeRegMu.Unlock()
-		taskLog.Printf("[monitor_scrape] client %s already has OnMessage registered, falling back to polling", clientKey)
-		// Fallback to polling if OnMessage already registered (by monitor engine or another task)
-		e.runMonitorScrapePolling(ctx, task, group, matcher, durationMinutes, maxResults, &scrapedCount, scrapedUsers, &countMu)
+		taskLog.Printf("[monitor_scrape] client %s already has OnMessage registered; polling fallback is not implemented", clientKey)
+		persistCtx, persistCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer persistCancel()
+		_ = e.logRepo.Create(persistCtx, &domain.TaskLog{
+			TaskID: task.TaskID, TenantID: task.TenantID, AccountID: accountID,
+			Action: "monitor_scrape", Status: "failed", ErrorCode: "listener_conflict",
+			Message: "账号已有消息监听，当前版本无法启用采集轮询，请先停止其他监听后重试",
+			ExecutedAt: time.Now(),
+		})
+		_, _ = e.repo.UpdateStatusIfOwned(persistCtx, task.TenantID, task.TaskID, e.workerID, domain.TaskStatusFailed)
 		return
 	}
 	e.scrapeRegistered[clientKey] = true
@@ -1025,16 +1128,14 @@ func (e *Engine) executeMonitorScrape(ctx context.Context, task *domain.Task) {
 		// Deduplicate by sender ID
 		countMu.Lock()
 		key := fmt.Sprintf("%d", msg.FromID)
-		if scrapedUsers[key] {
+		if scrapedUsers == nil || scrapedUsers[key] {
 			countMu.Unlock()
 			return
 		}
-		scrapedUsers[key] = true
-		currentCount := scrapedCount + 1
-		scrapedCount = currentCount
+		scrapedUsers[key] = true // reserve this user while the database write is in flight
 		countMu.Unlock()
 
-		// Save member to database (TGUserID only, username fetched if possible)
+		// Save member before counting it as successful.
 		member := &domain.Member{
 			MemberID:  uuid.New(),
 			TenantID:  task.TenantID,
@@ -1042,9 +1143,32 @@ func (e *Engine) executeMonitorScrape(ctx context.Context, task *domain.Task) {
 			TGUserID:  msg.FromID,
 			ScrapedAt: time.Now(),
 		}
-		if err := e.memberRepo.BatchCreate(ctx, []*domain.Member{member}); err != nil {
-			taskLog.Printf("[task] failed to save member: %v", err)
+		if e.memberRepo == nil {
+			countMu.Lock()
+			delete(scrapedUsers, key)
+			if persistErr == nil {
+				persistErr = fmt.Errorf("member repository is not configured")
+			}
+			countMu.Unlock()
+			cancel()
+			return
 		}
+		if err := e.memberRepo.BatchCreate(ctx, []*domain.Member{member}); err != nil {
+			countMu.Lock()
+			delete(scrapedUsers, key)
+			if persistErr == nil {
+				persistErr = err
+			}
+			countMu.Unlock()
+			taskLog.Printf("[task] failed to save member: %v", err)
+			cancel()
+			return
+		}
+
+		countMu.Lock()
+		scrapedCount++
+		currentCount := scrapedCount
+		countMu.Unlock()
 
 		// Update progress
 		e.publishProgress(task.TenantID, task.TaskID, domain.TaskProgress{
@@ -1068,9 +1192,7 @@ func (e *Engine) executeMonitorScrape(ctx context.Context, task *domain.Task) {
 
 		// Check if max results reached
 		if maxResults > 0 && currentCount >= int(maxResults) {
-			if err := e.repo.UpdateStatus(ctx, task.TenantID, task.TaskID, domain.TaskStatusCompleted); err != nil {
-				taskLog.Printf("[task] failed to update status to completed: %v", err)
-			}
+			cancel()
 		}
 	})
 
@@ -1085,28 +1207,42 @@ func (e *Engine) executeMonitorScrape(ctx context.Context, task *domain.Task) {
 	case <-ctx.Done():
 	}
 
-	// Finalize
+	// Finalize with a detached context: maxResults cancellation and task cancellation
+	// must not prevent the final status/log write.
 	countMu.Lock()
 	finalCount := scrapedCount
+	finalPersistErr := persistErr
 	countMu.Unlock()
 
-	if err := e.repo.UpdateStatus(ctx, task.TenantID, task.TaskID, domain.TaskStatusCompleted); err != nil {
-		taskLog.Printf("[task] failed to update status to completed: %v", err)
+	persistCtx, persistCancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer persistCancel()
+	finalProgress := domain.TaskProgress{Total: int(maxResults), Done: finalCount}
+	if updated, err := e.repo.UpdateProgressExactIfOwned(persistCtx, task.TenantID, task.TaskID, e.workerID, finalProgress); err != nil {
+		taskLog.Printf("[monitor_scrape] final progress update failed: %v", err)
+	} else if updated {
+		e.publishProgress(task.TenantID, task.TaskID, finalProgress)
 	}
 
-	e.publishProgress(task.TenantID, task.TaskID, domain.TaskProgress{
-		Total: int(maxResults),
-		Done:  finalCount,
-	})
+	finalStatus := domain.TaskStatusCompleted
+	if finalPersistErr != nil {
+		finalStatus = domain.TaskStatusFailed
+	} else if parentCtx.Err() != nil {
+		finalStatus = domain.TaskStatusPaused
+	}
+	if updated, err := e.repo.UpdateStatusIfOwned(persistCtx, task.TenantID, task.TaskID, e.workerID, finalStatus); err != nil {
+		taskLog.Printf("[monitor_scrape] final status update failed: %v", err)
+	} else if !updated {
+		taskLog.Printf("[monitor_scrape] final status skipped; worker no longer owns task %s", task.TaskID)
+	}
 
-	if err := e.logRepo.Create(ctx, &domain.TaskLog{
-		TaskID:     task.TaskID,
-		TenantID:   task.TenantID,
-		AccountID:  accountID,
-		Action:     "monitor_complete",
-		Status:     "success",
-		TargetName: fmt.Sprintf("监控完成，共采集 %d 人", finalCount),
-		ExecutedAt: time.Now(),
+	logStatus, errorCode, message := "success", "", fmt.Sprintf("监控完成，共采集 %d 人", finalCount)
+	if finalPersistErr != nil {
+		logStatus, errorCode, message = "failed", "member_persist_failed", finalPersistErr.Error()
+	}
+	if err := e.logRepo.Create(persistCtx, &domain.TaskLog{
+		TaskID: task.TaskID, TenantID: task.TenantID, AccountID: accountID,
+		Action: "monitor_complete", Status: logStatus, ErrorCode: errorCode,
+		Message: message, TargetName: message, ExecutedAt: time.Now(),
 	}); err != nil {
 		taskLog.Printf("[task] failed to create monitor_complete log: %v", err)
 	}
@@ -1135,7 +1271,7 @@ func (e *Engine) rescheduleLoopTask(ctx context.Context, task *domain.Task) {
 	if err != nil || fresh == nil {
 		return
 	}
-	if fresh.Status == domain.TaskStatusPaused || fresh.Status == domain.TaskStatusCancelled {
+	if fresh.Status != domain.TaskStatusCompleted {
 		return
 	}
 	interval := task.LoopIntervalMinutes
