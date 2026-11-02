@@ -337,6 +337,7 @@ func newEchoServer(cfg *config.Config, c *app.Container) *echo.Echo {
 	api.POST("/groups", c.GroupHandler.Create)
 	api.GET("/groups/:id", c.GroupHandler.GetByID)
 	api.PUT("/groups/:id", c.GroupHandler.Update)
+	api.DELETE("/groups/:id", c.GroupHandler.Delete)
 	api.GET("/groups/:id/members", c.GroupHandler.GetMembers)
 	api.GET("/members", c.GroupHandler.GetMembersGlobal)
 	// P1-1 审计修复: 原来无 RequirePlanFeature——免费版可绕过 scrape_members 限制
