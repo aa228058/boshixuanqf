@@ -323,13 +323,16 @@ accountLoop:
 
 			// 检查账号状态，非 ACTIVE 或已被 block 的账号跳过
 			acc, err := e.accEngine.GetByID(ctx, task.TenantID, accID)
-			if err != nil || acc == nil || (acc.Status == domain.AccountStatusBanned || acc.Status == domain.AccountStatusRestricted || acc.Status == domain.AccountStatusPendingAuth) {
+			if err != nil || acc == nil || (acc.Status == domain.AccountStatusBanned || acc.Status == domain.AccountStatusRestricted || acc.Status == domain.AccountStatusPendingAuth) || (acc != nil && acc.PoolStatus == "standby") {
 				status := "unknown"
 				if acc != nil {
 					status = string(acc.Status)
+					if acc.PoolStatus == "standby" {
+						status = "standby_pool"
+					}
 				}
-				taskLog.Printf("[task] skip account %s: status=%s (not active)", accID, status)
-				recordAccountFailure("account_unavailable", "账号不可用，跳过该账号的全部目标")
+				taskLog.Printf("[task] skip account %s: status=%s (not active for broadcast)", accID, status)
+				recordAccountFailure("account_unavailable", "账号不可用或处于备用池，跳过该账号的全部目标")
 				return
 			}
 			if acc.BlockedUntil != nil && acc.BlockedUntil.After(time.Now().UTC()) {
