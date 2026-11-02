@@ -24,6 +24,22 @@ func (r *TenantRepository) SetRaffleEnabled(ctx context.Context, tenantID uuid.U
 	return err
 }
 
+// ToggleRaffleEnabled 原子切换租户抽奖助手开关。
+// 使用单条 UPDATE ... RETURNING，避免并发请求先读后写导致状态丢失。
+func (r *TenantRepository) ToggleRaffleEnabled(ctx context.Context, tenantID uuid.UUID) (bool, error) {
+	var enabled bool
+	err := r.db.QueryRow(ctx, `
+		UPDATE tenants
+		SET raffle_enabled = NOT raffle_enabled
+		WHERE tenant_id = $1
+		RETURNING raffle_enabled
+	`, tenantID).Scan(&enabled)
+	if err != nil {
+		return false, err
+	}
+	return enabled, nil
+}
+
 // GetRaffleReply 查询中奖回复设置(060 迁移加的列): 返回 (是否开启, 文案)
 func (r *TenantRepository) GetRaffleReply(ctx context.Context, tenantID uuid.UUID) (bool, string, error) {
 	var en bool
