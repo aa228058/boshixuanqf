@@ -161,7 +161,7 @@ func itoa(v int64) string {
 }
 
 // watchRaffleMessage 在 dispatch 的消息回调里调用(每账号并行, 互不阻塞)
-func (e *Engine) watchRaffleMessage(tenantID, accountID uuid.UUID, chatID int64, msg *types.Message, cl *telegram.Client) {
+func (e *Engine) watchRaffleMessage(ctx context.Context, tenantID, accountID uuid.UUID, chatID int64, msg *types.Message, cl *telegram.Client) {
 	if msg == nil {
 		return
 	}
@@ -281,7 +281,7 @@ func (e *Engine) watchRaffleMessage(tenantID, accountID uuid.UUID, chatID int64,
 				}
 				if rp != "" {
 					safego.Go(func() {
-						e.sendRaffleReply(context.Background(), cl, chatID, rp)
+						e.sendRaffleReply(ctx, cl, chatID, rp)
 					})
 				}
 			}
