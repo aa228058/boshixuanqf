@@ -369,11 +369,13 @@ func (r *TaskRepository) UpdateStatus(ctx context.Context, tenantID, taskID uuid
 	res, err := r.db.Exec(ctx, `
 		UPDATE tasks SET status = $3, completed_at = $4, locked_at = NULL, worker_id = NULL
 		WHERE tenant_id = $1 AND task_id = $2 AND (
-			$3 IN ('failed', 'cancelled', 'queued')
+			-- 失败/取消只能从非终态进入，不能被迟到的 worker 覆盖 completed/cancelled。
+			(status = 'pending'   AND $3 = 'cancelled')
 			OR (status = 'scheduled' AND $3 IN ('queued', 'cancelled'))
-			OR (status = 'queued'   AND $3 IN ('running', 'cancelled'))
-			OR (status = 'running'  AND $3 IN ('paused', 'completed', 'failed', 'cancelled'))
-			OR (status = 'paused'   AND $3 IN ('running', 'cancelled'))
+			OR (status = 'queued'    AND $3 IN ('running', 'paused', 'cancelled'))
+			OR (status = 'running'   AND $3 IN ('queued', 'paused', 'completed', 'failed', 'cancelled'))
+			OR (status = 'paused'    AND $3 IN ('queued', 'cancelled'))
+			OR (status = 'failed'    AND $3 = 'queued')
 		)`,
 		tenantID, taskID, status, completedAt)
 	if err != nil {
