@@ -171,8 +171,11 @@ func (s *AccountService) Create(ctx context.Context, tenantID uuid.UUID, phone s
 		return nil, fmt.Errorf("create account: %w", err)
 	}
 
-	// Init quotas
+	// 初始化配额失败时回滚账号记录，避免留下一个永远缺少配额的半成品账号。
 	if err := s.quota.InitAccountQuotas(ctx, acc.AccountID, level); err != nil {
+		if rollbackErr := s.repo.Delete(ctx, tenantID, acc.AccountID); rollbackErr != nil {
+			return nil, fmt.Errorf("init quotas: %w (rollback account failed: %v)", err, rollbackErr)
+		}
 		return nil, fmt.Errorf("init quotas: %w", err)
 	}
 
@@ -249,7 +252,10 @@ func (s *AccountService) ImportSessions(ctx context.Context, tenantID uuid.UUID,
 			continue
 		}
 		if err := s.quota.InitAccountQuotas(ctx, acc.AccountID, acc.Level); err != nil {
-			log.Printf("[account] init quotas %s: %v", accountID, err)
+			_ = s.repo.Delete(ctx, tenantID, accountID)
+			result.Failed++
+			result.Errors = append(result.Errors, fmt.Sprintf("第%d行: 配额初始化失败(%v)", i+1, err))
+			continue
 		}
 		if err := s.engine.StoreImportedSession(ctx, acc.SessionName, serverAddr, sess); err != nil {
 			_ = s.repo.Delete(ctx, tenantID, accountID)
@@ -300,13 +306,12 @@ func (s *AccountService) UpdateAccountProfile(ctx context.Context, tenantID, acc
 			acc.DeviceProfile = map[string]any{}
 		}
 		if twoFA != "" {
-			// R182: 2FA 密码不明文落 JSONB(device_profile)——审计报告#11。
-			// 加密存 twofa_enc, 同时清掉历史明文遗留键。
-			if enc, err := crypto.Encrypt([]byte(twoFA)); err == nil {
-				acc.DeviceProfile["twofa_enc"] = enc
-			} else {
-				log.Printf("[account] 2FA 密码加密存储失败: %v", err)
+			// 加密失败必须中止更新，不能删除旧密码或保存不完整的资料。
+			enc, err := crypto.Encrypt([]byte(twoFA))
+			if err != nil {
+				return fmt.Errorf("2FA 密码加密存储失败: %w", err)
 			}
+			acc.DeviceProfile["twofa_enc"] = enc
 			delete(acc.DeviceProfile, "twofa")
 		}
 		// 空串=保持不变(2FA已不随API返回前端, 绝不能因空误清)
