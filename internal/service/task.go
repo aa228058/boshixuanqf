@@ -385,28 +385,25 @@ func (s *TaskService) createBroadcastWithMappingTask(ctx context.Context, tenant
 			return nil, fmt.Errorf("mappings exceeds limit: %d > %d", len(mappings), maxMappings)
 		}
 
-		// Deduplicate accounts in mappings (keep first occurrence)
-		seen := make(map[uuid.UUID]bool)
+		// 合并重复账号映射，而不是直接丢弃后续映射；同一账号的不同目标都必须保留。
+		accountIndex := make(map[uuid.UUID]int, len(mappings))
+		targetSeen := make(map[uuid.UUID]map[string]bool, len(mappings))
 		deduped := make([]domain.AccountTargetMapping, 0, len(mappings))
 		for _, m := range mappings {
-			if seen[m.AccountID] {
-				continue
+			idx, exists := accountIndex[m.AccountID]
+			if !exists {
+				idx = len(deduped)
+				accountIndex[m.AccountID] = idx
+				targetSeen[m.AccountID] = make(map[string]bool)
+				deduped = append(deduped, domain.AccountTargetMapping{AccountID: m.AccountID})
 			}
-			seen[m.AccountID] = true
-			// Also deduplicate targets within each mapping
-			if len(m.Targets) > 0 {
-				targetSeen := make(map[string]bool)
-				targetDeduped := make([]string, 0, len(m.Targets))
-				for _, t := range m.Targets {
-					if targetSeen[t] {
-						continue
-					}
-					targetSeen[t] = true
-					targetDeduped = append(targetDeduped, t)
+			for _, target := range m.Targets {
+				if targetSeen[m.AccountID][target] {
+					continue
 				}
-				m.Targets = targetDeduped
+				targetSeen[m.AccountID][target] = true
+				deduped[idx].Targets = append(deduped[idx].Targets, target)
 			}
-			deduped = append(deduped, m)
 		}
 		mappings = deduped
 		// Mapping mode: validate and count
