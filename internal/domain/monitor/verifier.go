@@ -35,6 +35,17 @@ var (
 )
 
 // vstate 一次验证的状态机
+func waitContext(ctx context.Context, d time.Duration) bool {
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-timer.C:
+		return true
+	}
+}
+
 type vstate struct {
 	mu       sync.Mutex
 	logID    uuid.UUID
@@ -338,7 +349,9 @@ func (e *Engine) retestSpeak(ctx context.Context, client *telegram.Client, st *v
 	if peer == nil {
 		return false
 	}
-	time.Sleep(time.Duration(6+rand.IntN(6)) * time.Second)
+	if !waitContext(ctx, time.Duration(6+rand.IntN(6))*time.Second) {
+		return false
+	}
 	testText := fmt.Sprintf("%d", rand.IntN(90)+10)
 	sctx, cancel := context.WithTimeout(ctx, 20*time.Second)
 	defer cancel()
@@ -350,7 +363,9 @@ func (e *Engine) retestSpeak(ctx context.Context, client *telegram.Client, st *v
 		return false
 	}
 	msgID := firstSentMsgID(sent)
-	time.Sleep(time.Duration(12+rand.IntN(10)) * time.Second)
+	if !waitContext(ctx, time.Duration(12+rand.IntN(10))*time.Second) {
+		return false
+	}
 	hctx, hcancel := context.WithTimeout(ctx, 20*time.Second)
 	defer hcancel()
 	// 返回类型为接口 tg.MessagesMessagesClass, 需断言取 .Messages
@@ -414,7 +429,9 @@ func (e *Engine) clickCallback(ctx context.Context, client *telegram.Client, can
 	if cand.peer == nil {
 		return fmt.Errorf("无会话 peer")
 	}
-	time.Sleep(time.Duration(1+rand.IntN(2)) * time.Second)
+	if !waitContext(ctx, time.Duration(1+rand.IntN(2))*time.Second) {
+		return ctx.Err()
+	}
 	cctx, cancel := context.WithTimeout(ctx, 20*time.Second)
 	defer cancel()
 	_, err := client.Raw().MessagesGetBotCallbackAnswer(cctx, &tg.MessagesGetBotCallbackAnswerRequest{
