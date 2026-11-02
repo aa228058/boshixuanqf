@@ -28,15 +28,21 @@ func (e *Engine) executeInviteMembers(ctx context.Context, task *domain.Task) er
 	if err != nil || target == nil {
 		return fmt.Errorf("目标群不存在")
 	}
-	source, err := e.groupRepo.GetByID(ctx, task.TenantID, sourceID)
-	if err != nil || source == nil {
-		return fmt.Errorf("来源群不存在")
-	}
 	if len(task.AccountIDs) == 0 {
 		return fmt.Errorf("无执行账号")
 	}
 	accID := task.AccountIDs[0]
-
+	joined, err := e.groupRepo.IsJoinedByAccount(ctx, task.TenantID, accID, targetID)
+	if err != nil {
+		return fmt.Errorf("检查执行账号是否已加入目标群失败: %w", err)
+	}
+	if !joined {
+		return fmt.Errorf("执行账号尚未加入目标群")
+	}
+	source, err := e.groupRepo.GetByID(ctx, task.TenantID, sourceID)
+	if err != nil || source == nil {
+		return fmt.Errorf("来源群不存在")
+	}
 	if e.memberRepo == nil {
 		return fmt.Errorf("成员仓库未就绪")
 	}
