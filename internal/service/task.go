@@ -973,6 +973,20 @@ func (s *TaskService) Retry(ctx context.Context, tenantID, taskID uuid.UUID, sco
 			}
 			return nil
 		}
+		// 定时广播的失败目标续发应创建一次性普通广播，不应重新建立循环计划。
+		if task.Type == domain.TaskTypeScheduledBroadcast {
+			message, _ := task.Payload["message"].(string)
+			intervalMin, _ := task.Payload["interval_min"].(float64)
+			intervalMax, _ := task.Payload["interval_max"].(float64)
+			extra := map[string]any{}
+			if p, ok := task.Payload["priority"].(float64); ok && p >= 1 && p <= 10 {
+				extra["priority"] = p
+			}
+			if _, err := s.CreateBroadcast(ctx, tenantID, task.AccountIDs, failed, message, nil, int(intervalMin), int(intervalMax), extra); err != nil {
+				return fmt.Errorf("创建定时广播失败目标续发任务失败: %w", err)
+			}
+			return nil
+		}
 		// 优先级透传已在 Create 的 broadcast 分支内从 payload 读取，这里直接重建即可
 		if _, err := s.Create(ctx, tenantID, task.Type, task.AccountIDs, failed, task.Payload, nil); err != nil {
 			return fmt.Errorf("创建续发任务失败: %w", err)
