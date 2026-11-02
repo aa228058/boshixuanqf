@@ -2,10 +2,12 @@ package task
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"tg-sender/internal/domain"
 )
 
@@ -133,8 +135,14 @@ func (e *Engine) SyncJoinedGroups(ctx context.Context, tenantID, accountID uuid.
 			// 频道(channel)也一并保存: 很多"群组"实际是频道, 跳过会导致群组选择器加载不全
 			log.Printf("[sync] 处理对话 id=%d 标题=%q 类型=%s 成员=%d", chat.ID, chat.Title, gtype, memberCount)
 
-			// Check if group already exists by TGChatID to avoid duplicate inserts
-			existing, _ := e.groupRepo.GetByTGChatID(ctx, tenantID, chat.ID)
+			// Check if group already exists by TGChatID to avoid duplicate inserts.
+			// Distinguish "not found" from database errors; otherwise a transient read
+			// failure is mistaken for a new group and the account link is skipped.
+			existing, lookupErr := e.groupRepo.GetByTGChatID(ctx, tenantID, chat.ID)
+			if lookupErr != nil && !errors.Is(lookupErr, pgx.ErrNoRows) {
+				log.Printf("[sync] 查询群组 %d 失败: %v", chat.ID, lookupErr)
+				continue
+			}
 			var groupID uuid.UUID
 			if existing != nil {
 				existing.Title = chat.Title
@@ -147,12 +155,13 @@ func (e *Engine) SyncJoinedGroups(ctx context.Context, tenantID, accountID uuid.
 				// Preserve existing AccessHash (GetDialogs doesn't provide it)
 				if err := e.groupRepo.Update(ctx, existing); err != nil {
 					log.Printf("[sync] 更新群组 %d 失败: %v", chat.ID, err)
+					continue
 				}
 				groupID = existing.GroupID
 			} else {
-				groupID = uuid.New()
+				candidateID := uuid.New()
 				g := &domain.Group{
-					GroupID:     groupID,
+					GroupID:     candidateID,
 					TenantID:    tenantID,
 					TGChatID:    chat.ID,
 					Title:       chat.Title,
@@ -166,8 +175,16 @@ func (e *Engine) SyncJoinedGroups(ctx context.Context, tenantID, accountID uuid.
 					log.Printf("[sync] upsert group %d failed: %v", chat.ID, err)
 					continue
 				}
+				// Create uses ON CONFLICT DO UPDATE but does not RETURN the persisted
+				// primary key. Re-read it so a concurrent account sync cannot leave
+				// account_groups pointing at this request's losing candidate UUID.
+				persisted, err := e.groupRepo.GetByTGChatID(ctx, tenantID, chat.ID)
+				if err != nil {
+					log.Printf("[sync] 创建后回读群组 %d 失败: %v", chat.ID, err)
+					continue
+				}
+				groupID = persisted.GroupID
 			}
-
 			// Link group to account
 			if err := e.groupRepo.UpsertAccountGroup(ctx, accountID, groupID, isJoined); err != nil {
 				log.Printf("[sync] 关联群组 %d 到账号失败: %v", chat.ID, err)
