@@ -264,11 +264,16 @@ func (e *Engine) StopAll() {
 
 // ReloadRules triggers rule reload for all active monitoring sessions of a tenant.
 func (e *Engine) ReloadRules(ctx context.Context, tenantID uuid.UUID) error {
+	// Copy account IDs while holding the read lock. Iterating the shared map after
+	// unlocking races with StartMonitoring/StopMonitoring map mutations.
 	e.mu.RLock()
-	tenantSessions := e.sessions[tenantID]
+	accountIDs := make([]uuid.UUID, 0, len(e.sessions[tenantID]))
+	for accountID := range e.sessions[tenantID] {
+		accountIDs = append(accountIDs, accountID)
+	}
 	e.mu.RUnlock()
 
-	for accountID := range tenantSessions {
+	for _, accountID := range accountIDs {
 		clientKey := tenantID.String() + ":" + accountID.String()
 		e.reloadMu.Lock()
 		if ch, exists := e.reloadChs[clientKey]; exists {
