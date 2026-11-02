@@ -122,6 +122,11 @@ func (ls *LinkScraper) Stop() {
 		return true
 	})
 	ls.wg.Wait()
+	// consumer 退出后再做一次最终 flush，确保 shutdown 时从 linkQueue
+	// 转入 batchLinks 的记录不会因 batchWriter 先退出而滞留在内存。
+	flushCtx, flushCancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer flushCancel()
+	ls.flushBatch(flushCtx)
 	log.Printf("[link-scraper] 常驻链接采集服务已停止")
 }
 
@@ -286,8 +291,10 @@ func (ls *LinkScraper) consumerLoop(ctx context.Context) {
 	for {
 		select {
 		case <-ls.stopCh:
+			ls.drainQueueWithoutResolve()
 			return
 		case <-ctx.Done():
+			ls.drainQueueWithoutResolve()
 			return
 		case <-ticker.C:
 			// 消费节奏由 ticker 门控：200ms 一条 = 每秒最多 5 次 ResolvePeer，
@@ -297,6 +304,24 @@ func (ls *LinkScraper) consumerLoop(ctx context.Context) {
 				ls.processLink(ctx, raw)
 			default:
 			}
+		}
+	}
+}
+
+// drainQueueWithoutResolve 将关机时尚未处理的消息链接转成待落库记录。
+// 使用已取消的 context 使 public ResolvePeer 快速跳过，优先保存原始链接，
+// 避免服务重启后 linkQueue 中的采集结果直接丢失。
+func (ls *LinkScraper) drainQueueWithoutResolve() {
+	drainCtx, cancel := context.WithCancel(context.Background())
+	cancel()
+	for {
+		select {
+		case raw := <-ls.linkQueue:
+			if raw != nil {
+				ls.processLink(drainCtx, raw)
+			}
+		default:
+			return
 		}
 	}
 }
@@ -477,6 +502,8 @@ func (ls *LinkScraper) accountWatcherLoop(ctx context.Context) {
 	for {
 		select {
 		case <-ls.stopCh:
+			return
+		case <-ctx.Done():
 			return
 		case <-ticker.C:
 			ls.syncOnlineAccounts(ctx)
