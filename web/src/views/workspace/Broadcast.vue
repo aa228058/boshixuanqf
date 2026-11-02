@@ -133,7 +133,7 @@
         </div>
         <p v-if="selectedTargets.length && execAccounts.length" class="text-[10.5px] text-text-muted mt-1.5">
           预计发送 {{ selectedTargets.length * execAccounts.length }} 条 = {{ selectedTargets.length }} 目标 × {{ execAccounts.length }} 账号
-          · 约需 {{ estMinutes }} 分钟
+          · 约需 {{ estMinutes }} 分钟（按账号并行粗略估算，实际受并发配置影响）
         </p>
         <!-- R101 P1-第二刀: 覆盖预览 -->
         <div v-if="selectedTargets.length && execAccounts.length && coverage.ok + coverage.fail > 0"
@@ -399,12 +399,12 @@ const coverage = computed(() => {
   }
   return { ok, fail, unreachable }
 })
-// R102: 预计耗时 = 总条数 × 平均间隔(秒) / 60, 向上取整
+// 全部账号并行发送：每个账号处理同一批目标，耗时按单账号目标数粗略估算。
 const estMinutes = computed(() => {
-  const total = selectedTargets.value.length * execAccounts.value.length
-  if (!total) return 0
+  const targetCount = selectedTargets.value.length
+  if (!targetCount || !execAccounts.value.length) return 0
   const avgSec = (intervalMin.value + intervalMax.value) / 2
-  return Math.max(1, Math.ceil((total * avgSec) / 60))
+  return Math.max(1, Math.ceil((targetCount * avgSec) / 60))
 })
 const showImport = ref(false)
 const importText = ref('')
