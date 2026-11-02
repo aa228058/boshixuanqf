@@ -37,13 +37,19 @@ func (e *Engine) executeInviteMembers(ctx context.Context, task *domain.Task) er
 	}
 	accID := task.AccountIDs[0]
 
+	if e.memberRepo == nil {
+		return fmt.Errorf("成员仓库未就绪")
+	}
 	total, err := e.memberRepo.CountByGroup(ctx, task.TenantID, sourceID)
 	if err != nil {
 		return fmt.Errorf("统计成员失败: %w", err)
 	}
 	initProg := domain.TaskProgress{Total: total, Done: 0, Failed: 0}
-	_ = e.repo.UpdateProgress(ctx, task.TenantID, task.TaskID, initProg)
-	e.publishProgress(task.TenantID, task.TaskID, initProg)
+	if updated, err := e.repo.UpdateProgressExactIfOwned(ctx, task.TenantID, task.TaskID, e.workerID, initProg); err != nil {
+		return fmt.Errorf("初始化邀请进度失败: %w", err)
+	} else if updated {
+		e.publishProgress(task.TenantID, task.TaskID, initProg)
+	}
 	taskLog.Printf("[invite] 任务 %s: 邀请 %s 的 %d 名成员进 %s", task.TaskID, source.Title, total, target.Title)
 
 	client, err := e.accEngine.GetClient(ctx, task.TenantID, accID)
@@ -58,8 +64,19 @@ func (e *Engine) executeInviteMembers(ctx context.Context, task *domain.Task) er
 	const pageSize = 200
 	saveProgress := func() {
 		prog := domain.TaskProgress{Total: total, Done: invited, Failed: failed, CurrentTarget: fmt.Sprintf("已邀 %d / 失败 %d", invited, failed)}
-		_ = e.repo.UpdateProgress(ctx, task.TenantID, task.TaskID, prog)
-		e.publishProgress(task.TenantID, task.TaskID, prog)
+		progressCtx := ctx
+		var cancel context.CancelFunc
+		if ctx.Err() != nil {
+			progressCtx, cancel = context.WithTimeout(context.Background(), 10*time.Second)
+		}
+		if cancel != nil {
+			defer cancel()
+		}
+		if updated, err := e.repo.UpdateProgressExactIfOwned(progressCtx, task.TenantID, task.TaskID, e.workerID, prog); err == nil && updated {
+			e.publishProgress(task.TenantID, task.TaskID, prog)
+		} else if err != nil {
+			taskLog.Printf("[invite] 保存进度失败: %v", err)
+		}
 	}
 
 	for offset := 0; ; offset += pageSize {
@@ -70,7 +87,10 @@ func (e *Engine) executeInviteMembers(ctx context.Context, task *domain.Task) er
 		default:
 		}
 		members, err := e.memberRepo.ListByGroup(ctx, task.TenantID, sourceID, pageSize, offset)
-		if err != nil || len(members) == 0 {
+		if err != nil {
+			return fmt.Errorf("读取来源群成员失败: %w", err)
+		}
+		if len(members) == 0 {
 			break
 		}
 		for _, m := range members {
@@ -81,6 +101,7 @@ func (e *Engine) executeInviteMembers(ctx context.Context, task *domain.Task) er
 			default:
 			}
 			if m.TGUserID == 0 {
+				failed++
 				continue
 			}
 			if m.AccessHash == 0 {
