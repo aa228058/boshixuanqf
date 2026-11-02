@@ -179,18 +179,27 @@ var taskTypeFeature = map[domain.TaskType]string{
 
 // checkPlanFeature 校验租户套餐是否含指定功能(FeatureMap 单一数据源, ≤60s 缓存)
 func (s *TaskService) checkPlanFeature(ctx context.Context, tenantID uuid.UUID, feature string) error {
-	if s.planRepo == nil || feature == "" {
+	if feature == "" {
 		return nil
+	}
+	if s.tenantRepo == nil || s.planRepo == nil {
+		return fmt.Errorf("套餐功能校验服务未就绪")
 	}
 	t, err := s.tenantRepo.GetByID(ctx, tenantID)
-	if err != nil || t == nil {
-		return nil // 取不到租户不阻断(保守)
+	if err != nil {
+		return fmt.Errorf("读取租户套餐失败: %w", err)
+	}
+	if t == nil {
+		return fmt.Errorf("租户不存在")
 	}
 	plan, err := s.planRepo.GetByID(ctx, t.PlanID)
-	if err != nil || plan == nil {
-		return nil
+	if err != nil {
+		return fmt.Errorf("读取套餐配置失败: %w", err)
 	}
-	if v, ok := plan.FeatureMap()[feature]; !ok || v == false {
+	if plan == nil {
+		return fmt.Errorf("租户套餐不存在或已失效")
+	}
+	if v, ok := plan.FeatureMap()[feature]; !ok || !v {
 		return fmt.Errorf("当前套餐不含此功能(%s), 升级套餐后可用", feature)
 	}
 	return nil
@@ -221,13 +230,19 @@ func (s *TaskService) Create(ctx context.Context, tenantID uuid.UUID, taskType d
 		}
 	}
 
-	// Check tenant expiration
-	if s.tenantRepo != nil {
-		if tenant, err := s.tenantRepo.GetByID(ctx, tenantID); err == nil && tenant != nil {
-			if tenant.ExpiresAt != nil && tenant.ExpiresAt.Before(time.Now()) {
-				return nil, fmt.Errorf("tenant subscription expired")
-			}
-		}
+	// Check tenant expiration. A failed lookup must not silently bypass subscription expiry.
+	if s.tenantRepo == nil {
+		return nil, fmt.Errorf("租户服务未就绪")
+	}
+	tenant, err := s.tenantRepo.GetByID(ctx, tenantID)
+	if err != nil {
+		return nil, fmt.Errorf("读取租户订阅状态失败: %w", err)
+	}
+	if tenant == nil {
+		return nil, fmt.Errorf("租户不存在")
+	}
+	if tenant.ExpiresAt != nil && !tenant.ExpiresAt.After(time.Now()) {
+		return nil, fmt.Errorf("tenant subscription expired")
 	}
 
 	// Check tenant concurrent task limit
@@ -333,6 +348,9 @@ func (s *TaskService) CreateBroadcast(ctx context.Context, tenantID uuid.UUID, a
 // First run happens immediately; afterwards the engine requeues it every
 // loopIntervalMinutes until it is paused or cancelled.
 func (s *TaskService) CreateScheduledBroadcast(ctx context.Context, tenantID uuid.UUID, accountIDs []uuid.UUID, targetIDs []string, message string, loopIntervalMinutes, intervalMin, intervalMax int, isLoop bool) (*domain.Task, error) {
+	if err := s.checkPlanFeature(ctx, tenantID, "scheduled_tasks"); err != nil {
+		return nil, err
+	}
 	now := time.Now()
 	task, err := s.CreateBroadcast(ctx, tenantID, accountIDs, targetIDs, message, &now, intervalMin, intervalMax, nil)
 	if err != nil {
