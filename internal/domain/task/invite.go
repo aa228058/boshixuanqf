@@ -52,6 +52,13 @@ func (e *Engine) executeInviteMembers(ctx context.Context, task *domain.Task) er
 	}
 	taskLog.Printf("[invite] 任务 %s: 邀请 %s 的 %d 名成员进 %s", task.TaskID, source.Title, total, target.Title)
 
+	acc, err := e.accEngine.GetByID(ctx, task.TenantID, accID)
+	if err != nil || acc == nil {
+		return fmt.Errorf("执行账号不存在")
+	}
+	if acc.PoolStatus == "standby" || acc.Status == domain.AccountStatusBanned || acc.Status == domain.AccountStatusRestricted || acc.Status == domain.AccountStatusPendingAuth {
+		return fmt.Errorf("执行账号不可用于邀请(当前状态: %s, 池状态: %s)", acc.Status, acc.PoolStatus)
+	}
 	client, err := e.accEngine.GetClient(ctx, task.TenantID, accID)
 	if err != nil {
 		return fmt.Errorf("取客户端失败: %w", err)
