@@ -44,8 +44,20 @@ func setupTestDB(t *testing.T) *pgxpool.Pool {
 		t.Fatalf("connect: %v", err)
 	}
 	t.Cleanup(pool.Close)
-	if err := pool.Ping(ctx); err != nil {
-		t.Fatalf("postgres is not accepting connections: %v", err)
+	// postgres.Run 的端口就绪信号可能早于 PostgreSQL 完成初始化；
+	// 在执行迁移前轮询真实 SQL 连接，避免把容器启动竞态误判为迁移失败。
+	readyCtx, readyCancel := context.WithTimeout(ctx, 60*time.Second)
+	defer readyCancel()
+	var pingErr error
+	for {
+		if pingErr = pool.Ping(readyCtx); pingErr == nil {
+			break
+		}
+		select {
+		case <-readyCtx.Done():
+			t.Fatalf("postgres did not become SQL-ready: %v (last ping error: %v)", readyCtx.Err(), pingErr)
+		case <-time.After(250 * time.Millisecond):
+		}
 	}
 
 	// 应用全部迁移（与生产同路径）
