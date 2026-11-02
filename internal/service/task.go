@@ -244,7 +244,7 @@ func (s *TaskService) Create(ctx context.Context, tenantID uuid.UUID, taskType d
 		return nil, fmt.Errorf("some accounts not found (expected %d, got %d)", len(accountIDs), len(accounts))
 	}
 	for _, acc := range accounts {
-		if (task.Type == domain.TaskTypeBroadcast || task.Type == domain.TaskTypeScheduledBroadcast || task.Type == domain.TaskTypeJoinGroups || task.Type == domain.TaskTypeInviteMembers) && acc.PoolStatus == "standby" {
+		if (taskType == domain.TaskTypeBroadcast || taskType == domain.TaskTypeScheduledBroadcast || taskType == domain.TaskTypeJoinGroups || taskType == domain.TaskTypeInviteMembers) && acc.PoolStatus == "standby" {
 			return nil, fmt.Errorf("account %s is in standby pool; move it to active before sending/joining", acc.AccountID)
 		}
 		if acc.Status == domain.AccountStatusBanned {
