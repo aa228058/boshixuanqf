@@ -383,6 +383,9 @@ func (e *Engine) executeScrapeMembers(ctx context.Context, task *domain.Task) {
 	memberCount := totalScraped
 	flushMembers(allMembers)
 
+	persistCtx, persistCancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer persistCancel()
+
 	// 不能把数据库写入失败的采集任务标成 completed；进度区分已持久化与未保存成员。
 	if persistErr != nil {
 		failedMembers := memberCount - persistedMembers
@@ -393,28 +396,33 @@ func (e *Engine) executeScrapeMembers(ctx context.Context, task *domain.Task) {
 			Total: memberCount, Done: persistedMembers, Failed: failedMembers,
 			CurrentTarget: "成员数据保存失败: " + persistErr.Error(),
 		}
-		if err := e.repo.UpdateProgressExact(ctx, task.TenantID, task.TaskID, finalProgress); err != nil {
+		if updated, err := e.repo.UpdateProgressExactIfOwned(persistCtx, task.TenantID, task.TaskID, e.workerID, finalProgress); err != nil {
 			taskLog.Printf("[task] UpdateProgressExact after member persistence failure: %v", err)
+		} else if updated {
+			e.publishProgress(task.TenantID, task.TaskID, finalProgress)
 		}
-		e.publishProgress(task.TenantID, task.TaskID, finalProgress)
-		if err := e.repo.UpdateStatus(ctx, task.TenantID, task.TaskID, domain.TaskStatusFailed); err != nil {
+		if updated, err := e.repo.UpdateStatusIfOwned(persistCtx, task.TenantID, task.TaskID, e.workerID, domain.TaskStatusFailed); err != nil {
 			taskLog.Printf("[task] UpdateStatus after member persistence failure: %v", err)
+		} else if !updated {
+			taskLog.Printf("[scrape] skip failed status: worker no longer owns task %s", task.TaskID)
 		}
 		return
 	}
 
 	if memberCount == 0 {
-		// P2-43 审计修复: 空群(0 成员)是合法采集结果——原来标 failed, 空群永远显示失败。
 		// 空群/全员隐私设置的群按"成功完成(0 结果)"处理。
 		finalProgress := domain.TaskProgress{Total: 0, Done: 0, Failed: 0}
-		if err := e.repo.UpdateProgressExact(ctx, task.TenantID, task.TaskID, finalProgress); err != nil {
+		if updated, err := e.repo.UpdateProgressExactIfOwned(persistCtx, task.TenantID, task.TaskID, e.workerID, finalProgress); err != nil {
 			taskLog.Printf("[task] UpdateProgressExact failed: %v", err)
+		} else if updated {
+			e.publishProgress(task.TenantID, task.TaskID, finalProgress)
 		}
-		e.publishProgress(task.TenantID, task.TaskID, finalProgress)
-		if err := e.repo.UpdateStatus(ctx, task.TenantID, task.TaskID, domain.TaskStatusCompleted); err != nil {
+		if updated, err := e.repo.UpdateStatusIfOwned(persistCtx, task.TenantID, task.TaskID, e.workerID, domain.TaskStatusCompleted); err != nil {
 			taskLog.Printf("[task] UpdateStatus failed: %v", err)
+		} else if !updated {
+			taskLog.Printf("[scrape] skip completed status: worker no longer owns task %s", task.TaskID)
 		}
-		if err := e.logRepo.Create(ctx, &domain.TaskLog{
+		if err := e.logRepo.Create(persistCtx, &domain.TaskLog{
 			TaskID:     task.TaskID,
 			TenantID:   task.TenantID,
 			AccountID:  accID,
@@ -434,13 +442,16 @@ func (e *Engine) executeScrapeMembers(ctx context.Context, task *domain.Task) {
 		return
 	}
 
-	finalProgress := domain.TaskProgress{Total: memberCount, Done: memberCount, Failed: 0}
-	if err := e.repo.UpdateProgressExact(ctx, task.TenantID, task.TaskID, finalProgress); err != nil {
+	finalProgress := domain.TaskProgress{Total: memberCount, Done: persistedMembers, Failed: memberCount - persistedMembers}
+	if updated, err := e.repo.UpdateProgressExactIfOwned(persistCtx, task.TenantID, task.TaskID, e.workerID, finalProgress); err != nil {
 		taskLog.Printf("[task] UpdateProgressExact failed: %v", err)
+	} else if updated {
+		e.publishProgress(task.TenantID, task.TaskID, finalProgress)
 	}
-	e.publishProgress(task.TenantID, task.TaskID, finalProgress)
-	if err := e.repo.UpdateStatus(ctx, task.TenantID, task.TaskID, domain.TaskStatusCompleted); err != nil {
+	if updated, err := e.repo.UpdateStatusIfOwned(persistCtx, task.TenantID, task.TaskID, e.workerID, domain.TaskStatusCompleted); err != nil {
 		taskLog.Printf("[task] UpdateStatus failed: %v", err)
+	} else if !updated {
+		taskLog.Printf("[scrape] skip completed status: worker no longer owns task %s", task.TaskID)
 	}
 }
 
