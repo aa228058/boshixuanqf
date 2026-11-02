@@ -642,6 +642,7 @@ accountLoop:
 				failed += progressDelta.Failed
 				progressAccum.Done += progressDelta.Done
 				progressAccum.Failed += progressDelta.Failed
+				progressAccum.Total++
 				progressAccum.CurrentTarget = targetID
 				// P1-47: 成功即本地登记, 不必等 flush 落库。
 				// P0-12: 登记同样用复合键——账号维度各自防重, cartesian 语义完整保留
