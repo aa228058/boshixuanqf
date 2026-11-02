@@ -53,7 +53,7 @@ func (r *GroupRepository) ListByAccount(ctx context.Context, tenantID, accountID
 		JOIN account_groups ag ON g.group_id = ag.group_id
 		WHERE g.tenant_id = $1 AND ag.account_id = $2 AND ag.account_id IS NOT NULL
 		  AND ag.is_joined = true
-		ORDER BY g.created_at DESC LIMIT $3 OFFSET $4`, tenantID, accountID, limit, offset)
+		ORDER BY g.created_at DESC, g.group_id DESC LIMIT $3 OFFSET $4`, tenantID, accountID, limit, offset)
 	if err != nil {
 		log.Printf("[repo] ListByAccount 查询错误: %v", err)
 		return nil, fmt.Errorf("list groups by account: %w", err)
