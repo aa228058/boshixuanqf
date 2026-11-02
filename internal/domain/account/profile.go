@@ -29,10 +29,11 @@ func (e *Engine) CloneProfile(ctx context.Context, tenantID uuid.UUID, sourceUse
 	}
 	// 用第一个在线目标号的客户端解析源用户(资料对任意客户端可见); 探测到立即释放连接
 	var cl *telegram.Client
+	var sourceAccountID uuid.UUID
 	for _, tid := range targetIDs {
 		if c, err := e.GetClient(ctx, tenantID, tid); err == nil {
 			cl = c
-			defer e.ReleaseClient(tenantID, tid, c)
+			sourceAccountID = tid
 			break
 		}
 	}
@@ -42,6 +43,9 @@ func (e *Engine) CloneProfile(ctx context.Context, tenantID uuid.UUID, sourceUse
 	cctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	res, err := cl.Raw().ContactsResolveUsername(cctx, &tg.ContactsResolveUsernameRequest{Username: un})
+	// GetClient 返回时持有账号客户端锁；解析源资料完成后必须立即释放，
+	// 否则下面 UpdateProfile 再次 GetClient 同一个目标账号会永久等待自身锁。
+	e.ReleaseClient(tenantID, sourceAccountID, cl)
 	if err != nil {
 		return 0, 0, fmt.Errorf("解析用户名 @%s 失败: %w", un, err)
 	}
