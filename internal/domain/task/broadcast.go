@@ -55,6 +55,18 @@ func (e *Engine) executeBroadcast(ctx context.Context, task *domain.Task) {
 		}
 	}
 
+	flushCancellationProgress := func(progress domain.TaskProgress) {
+		status := domain.TaskStatusPaused
+		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			status = domain.TaskStatusFailed
+		}
+		// Engine shutdown must persist pause before the paused-only progress update.
+		// A user pause/cancel may already have changed the state; the ownership guard
+		// makes this a harmless no-op in that case.
+		updateOwnedStatus(status)
+		flushPausedProgress(progress)
+	}
+
 	// 读取任务自定义发送间隔（秒），未设置则使用全局配置
 	var taskMinInterval, taskMaxInterval int
 	if task.Payload != nil {
@@ -417,19 +429,14 @@ accountLoop:
 				targetStart := time.Now()
 				select {
 				case <-e.stopCh:
-					// Flush pending progress before pausing
-					if progressAccum.Total > 0 {
-						flushPausedProgress(progressAccum)
-						progressAccum = domain.TaskProgress{}
-					}
-					updateOwnedStatus(domain.TaskStatusPaused)
+					// Flush pending progress before pausing.
+					flushCancellationProgress(progressAccum)
+					progressAccum = domain.TaskProgress{}
 					return
 				case <-ctx.Done():
-					// Flush pending progress before cancel exit
-					if progressAccum.Total > 0 {
-						flushPausedProgress(progressAccum)
-						progressAccum = domain.TaskProgress{}
-					}
+					// Preserve the last delta on pause/cancel/deadline exit.
+					flushCancellationProgress(progressAccum)
+					progressAccum = domain.TaskProgress{}
 					return
 				default:
 				}
@@ -587,6 +594,8 @@ accountLoop:
 								// Light flood: wait and retry once
 								select {
 								case <-ctx.Done():
+									flushCancellationProgress(progressAccum)
+									progressAccum = domain.TaskProgress{}
 									return
 								case <-time.After(time.Duration(waitSec) * time.Second):
 								}
@@ -732,7 +741,7 @@ accountLoop:
 						select {
 						case <-ctx.Done():
 							ticker.Stop()
-							flushPausedProgress(progressAccum)
+							flushCancellationProgress(progressAccum)
 							progressAccum = domain.TaskProgress{}
 							return
 						case <-ticker.C:
@@ -744,7 +753,7 @@ accountLoop:
 				} else {
 					select {
 					case <-ctx.Done():
-						flushPausedProgress(progressAccum)
+						flushCancellationProgress(progressAccum)
 						progressAccum = domain.TaskProgress{}
 						return
 					case <-time.After(waitDur):
