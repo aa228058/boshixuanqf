@@ -65,6 +65,13 @@ type LinkScraper struct {
 	wg         sync.WaitGroup
 }
 
+// linkDedupKey keeps the in-memory cache aligned with the database's
+// UNIQUE(tenant_id, link_hash) constraint. A hash seen by one tenant must not
+// suppress the same link for another tenant.
+func linkDedupKey(tenantID uuid.UUID, linkHash string) string {
+	return tenantID.String() + ":" + linkHash
+}
+
 // NewLinkScraper creates a new persistent link scraper.
 func NewLinkScraper(cfg *config.Config, accEngine AccountEngine, linkRepo domain.ScrapedLinkRepository, groupRepo *repository.GroupRepository, accountRepo AccountLister) *LinkScraper {
 	return &LinkScraper{
@@ -302,9 +309,10 @@ func (ls *LinkScraper) processLink(ctx context.Context, raw *rawLink) {
 		}
 	}()
 
-	// Memory dedup check (24h window)
+	// Memory dedup check (24h window), scoped to tenant just like the DB unique key.
+	dedupKey := linkDedupKey(raw.TenantID, raw.LinkHash)
 	ls.dedupMu.RLock()
-	if lastSeen, ok := ls.dedupMap[raw.LinkHash]; ok && time.Since(lastSeen) < 24*time.Hour {
+	if lastSeen, ok := ls.dedupMap[dedupKey]; ok && time.Since(lastSeen) < 24*time.Hour {
 		ls.dedupMu.RUnlock()
 		return
 	}
@@ -312,7 +320,7 @@ func (ls *LinkScraper) processLink(ctx context.Context, raw *rawLink) {
 
 	// Mark as seen in memory
 	ls.dedupMu.Lock()
-	ls.dedupMap[raw.LinkHash] = time.Now()
+	ls.dedupMap[dedupKey] = time.Now()
 	ls.dedupMu.Unlock()
 
 	// Build domain link
@@ -400,8 +408,21 @@ func (ls *LinkScraper) flushBatch(ctx context.Context) {
 	ls.batchLinks = ls.batchLinks[:0]
 	ls.batchMu.Unlock()
 
-	if err := ls.linkRepo.CreateBatch(ctx, batch); err != nil {
-		log.Printf("[link-scraper] 批量写入链接失败: %v", err)
+	writeCtx := ctx
+	var cancel context.CancelFunc
+	if ctx.Err() != nil {
+		// Application shutdown must not make the final persistence attempt inherit
+		// an already-cancelled context.
+		writeCtx, cancel = context.WithTimeout(context.Background(), 15*time.Second)
+	}
+	if cancel != nil {
+		defer cancel()
+	}
+	if err := ls.linkRepo.CreateBatch(writeCtx, batch); err != nil {
+		log.Printf("[link-scraper] 批量写入链接失败，保留待重试数据(%d条): %v", len(batch), err)
+		ls.batchMu.Lock()
+		ls.batchLinks = append(batch, ls.batchLinks...)
+		ls.batchMu.Unlock()
 	} else {
 		log.Printf("[link-scraper] 已批量写入 %d 条链接", len(batch))
 	}
@@ -440,7 +461,16 @@ func (ls *LinkScraper) dedupCleanerLoop(ctx context.Context) {
 // accountWatcherLoop 每30秒同步: 上线账号注册监听, 下线注销(多租户全自动)。
 func (ls *LinkScraper) accountWatcherLoop(ctx context.Context) {
 	defer ls.wg.Done()
-	time.Sleep(10 * time.Second) // 等账号引擎完成首批连接
+	// 等账号引擎完成首批连接，但服务停止/应用退出时立即响应，不阻塞关机。
+	startupDelay := time.NewTimer(10 * time.Second)
+	defer startupDelay.Stop()
+	select {
+	case <-ls.stopCh:
+		return
+	case <-ctx.Done():
+		return
+	case <-startupDelay.C:
+	}
 	ls.syncOnlineAccounts(ctx)
 	ticker := time.NewTicker(30 * time.Second)
 	defer ticker.Stop()
