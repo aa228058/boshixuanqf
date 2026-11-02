@@ -33,7 +33,8 @@ func nilAccount(id uuid.UUID) any {
 func (r *TaskLogRepository) Create(ctx context.Context, l *domain.TaskLog) error {
 	_, err := r.db.Exec(ctx, `
 		INSERT INTO task_logs (log_id, task_id, tenant_id, account_id, target_id, target_name, action, status, tg_response, error_code, message, tg_message_id, executed_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`,
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+		ON CONFLICT (log_id) DO NOTHING`,
 		l.LogID, l.TaskID, l.TenantID, nilAccount(l.AccountID), l.TargetID, l.TargetName, l.Action, l.Status, l.TGResponse, l.ErrorCode, l.Message, l.TGMessageID, l.ExecutedAt)
 	return err
 }

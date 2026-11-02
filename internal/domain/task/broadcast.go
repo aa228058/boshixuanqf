@@ -224,7 +224,12 @@ func (e *Engine) executeBroadcast(ctx context.Context, task *domain.Task) {
 					mu.Unlock()
 					flushCtx, flushCancel := context.WithTimeout(context.Background(), 10*time.Second)
 					if err := e.logRepo.CreateBatch(flushCtx, logs); err != nil {
-						taskLog.Printf("[task] periodic flush logs failed: %v", err)
+						// Keep failed batches for the final flush instead of silently losing
+						// result rows needed by task history and "retry failed".
+						mu.Lock()
+						batchLogs = append(logs, batchLogs...)
+						mu.Unlock()
+						taskLog.Printf("[task] periodic flush logs failed; batch retained for retry: %v", err)
 					}
 					flushCancel()
 				} else {
