@@ -374,6 +374,21 @@ func (r *TaskRepository) ResetToQueued(ctx context.Context, tenantID, taskID uui
 	return err
 }
 
+// ResetToQueuedIfCurrent resets a task only if it remains in the expected state.
+func (r *TaskRepository) ResetToQueuedIfCurrent(ctx context.Context, tenantID, taskID uuid.UUID, expected domain.TaskStatus) error {
+	res, err := r.db.Exec(ctx, `
+		UPDATE tasks SET status = 'queued', locked_at = NULL, worker_id = NULL,
+		                 retry_count = retry_count + 1, completed_at = NULL
+		WHERE tenant_id = $1 AND task_id = $2 AND status = $3`, tenantID, taskID, expected)
+	if err != nil {
+		return err
+	}
+	if res.RowsAffected() == 0 {
+		return fmt.Errorf("task status is no longer %q; refusing to queue", expected)
+	}
+	return nil
+}
+
 // Delete removes a task.
 func (r *TaskRepository) Delete(ctx context.Context, tenantID, taskID uuid.UUID) error {
 	_, err := r.db.Exec(ctx, `DELETE FROM tasks WHERE tenant_id = $1 AND task_id = $2`, tenantID, taskID)
@@ -571,8 +586,22 @@ func (r *TaskRepository) SetLoopConfig(ctx context.Context, tenantID, taskID uui
 
 // StopLoop 停止循环任务: 关闭循环标记并置为暂停, 调度器不再激活它。
 func (r *TaskRepository) StopLoop(ctx context.Context, tenantID, taskID uuid.UUID) error {
-	_, err := r.db.Exec(ctx, `UPDATE tasks SET is_loop = FALSE, status = 'paused' WHERE tenant_id = $1 AND task_id = $2`, tenantID, taskID)
+	_, err := r.db.Exec(ctx, `UPDATE tasks SET is_loop = FALSE, status = 'paused', locked_at = NULL, worker_id = NULL WHERE tenant_id = $1 AND task_id = $2`, tenantID, taskID)
 	return err
+}
+
+// StopLoopIfCurrent disables a non-running loop only if its status has not changed.
+func (r *TaskRepository) StopLoopIfCurrent(ctx context.Context, tenantID, taskID uuid.UUID, expected domain.TaskStatus) error {
+	res, err := r.db.Exec(ctx, `
+		UPDATE tasks SET is_loop = FALSE, status = 'paused', locked_at = NULL, worker_id = NULL
+		WHERE tenant_id = $1 AND task_id = $2 AND status = $3`, tenantID, taskID, expected)
+	if err != nil {
+		return err
+	}
+	if res.RowsAffected() == 0 {
+		return fmt.Errorf("task status is no longer %q; refusing to stop loop", expected)
+	}
+	return nil
 }
 
 // RescheduleLoopTask resets a finished loop task back to scheduled with a new run time.
