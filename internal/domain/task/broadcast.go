@@ -287,6 +287,32 @@ func (e *Engine) executeBroadcast(ctx context.Context, task *domain.Task) {
 		// prior successes can duplicate messages. Stop rather than fail open.
 		taskLog.Printf("[broadcast] 查询历史成功记录失败，停止发送以避免重复 task=%s: %v", task.TaskID, err)
 		failCtx, failCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		freshState, stateReadErr := e.repo.GetByID(failCtx, task.TenantID, task.TaskID)
+		if stateReadErr == nil && freshState != nil && freshState.Status != domain.TaskStatusRunning {
+			// A concurrent pause/cancel already changed the authoritative state.
+			failCancel()
+			close(flushDone)
+			<-flushExited
+			close(sseDone)
+			return
+		}
+		if ctx.Err() != nil {
+			// Shutdown should leave the task resumable; a user pause/cancel is handled above.
+			select {
+			case <-e.stopCh:
+				if statusErr := e.repo.UpdateStatusIfCurrent(failCtx, task.TenantID, task.TaskID, domain.TaskStatusRunning, domain.TaskStatusPaused); statusErr != nil {
+					taskLog.Printf("[broadcast] 停机暂停状态回写未执行 task=%s: %v", task.TaskID, statusErr)
+				}
+			default:
+				// Context cancellation with an unreadable DB state is ambiguous.
+				// Do not risk overwriting a concurrent pause/cancel with failed.
+			}
+			failCancel()
+			close(flushDone)
+			<-flushExited
+			close(sseDone)
+			return
+		}
 		if logErr := e.logRepo.Create(failCtx, &domain.TaskLog{
 			LogID: uuid.New(), TaskID: task.TaskID, TenantID: task.TenantID,
 			Action: "broadcast", Status: "failed", ErrorCode: "resume_dedup_check_failed",
