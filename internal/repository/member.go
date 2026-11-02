@@ -94,12 +94,12 @@ func (r *MemberRepository) BatchCreate(ctx context.Context, members []*domain.Me
 	// Use COPY FROM for optimal bulk insert performance
 	copyCount, err := r.db.CopyFrom(ctx, pgx.Identifier{"members"}, []string{
 		"member_id", "tenant_id", "group_id", "tg_user_id", "username",
-		"first_name", "last_name", "phone", "bio", "last_seen", "scraped_at", "access_hash",
+		"first_name", "last_name", "phone", "bio", "last_seen", "has_photo", "scraped_at", "access_hash",
 	}, pgx.CopyFromSlice(len(members), func(i int) ([]interface{}, error) {
 		m := members[i]
 		return []interface{}{
 			m.MemberID, m.TenantID, m.GroupID, m.TGUserID, m.Username,
-			m.FirstName, m.LastName, m.Phone, m.Bio, m.LastSeen, m.ScrapedAt, m.AccessHash,
+			m.FirstName, m.LastName, m.Phone, m.Bio, m.LastSeen, m.HasPhoto, m.ScrapedAt, m.AccessHash,
 		}, nil
 	}))
 	if err == nil && int(copyCount) == len(members) {
