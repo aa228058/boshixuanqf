@@ -423,27 +423,33 @@ func (e *Engine) executeJoinGroups(ctx context.Context, task *domain.Task) {
 		}
 	}
 
-	// Set final exact progress (single DB write instead of per-target)
-	// Use actual 'done' count (not total-failed) to correctly reflect pending_approval states
-	finalProgress := domain.TaskProgress{Total: total, Done: done, Failed: failed}
-	if err := e.repo.UpdateProgressExact(ctx, task.TenantID, task.TaskID, finalProgress); err != nil {
-		log.Printf("[join] 更新进度失败: %v", err)
-	}
-	e.publishProgress(task.TenantID, task.TaskID, finalProgress)
-
 	// Sync joined groups to groups table (always try, even if already_member or failed)
 	if e.groupRepo != nil && total > 0 {
 		e.syncJoinedGroups(ctx, task, accID, client)
 	}
 
+	// Final persistence must survive a cancelled execution context and must not
+	// overwrite a task that was paused/cancelled or reclaimed by another worker.
+	persistCtx, persistCancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer persistCancel()
+	finalProgress := domain.TaskProgress{Total: total, Done: done, Failed: failed}
+	if updated, err := e.repo.UpdateProgressExactIfOwned(persistCtx, task.TenantID, task.TaskID, e.workerID, finalProgress); err != nil {
+		log.Printf("[join] 更新最终进度失败: %v", err)
+	} else if updated {
+		e.publishProgress(task.TenantID, task.TaskID, finalProgress)
+	}
+
+	targetStatus := domain.TaskStatusCompleted
 	if failed == total && total > 0 {
-		if err := e.repo.UpdateStatus(ctx, task.TenantID, task.TaskID, domain.TaskStatusFailed); err != nil {
-			taskLog.Printf("[task] UpdateStatus failed: %v", err)
-		}
-	} else {
-		if err := e.repo.UpdateStatus(ctx, task.TenantID, task.TaskID, domain.TaskStatusCompleted); err != nil {
-			taskLog.Printf("[task] UpdateStatus failed: %v", err)
-		}
+		targetStatus = domain.TaskStatusFailed
+	}
+	if ctx.Err() != nil {
+		targetStatus = domain.TaskStatusPaused
+	}
+	if updated, err := e.repo.UpdateStatusIfOwned(persistCtx, task.TenantID, task.TaskID, e.workerID, targetStatus); err != nil {
+		taskLog.Printf("[task] final join status update failed: %v", err)
+	} else if !updated {
+		taskLog.Printf("[join] final status skipped: worker no longer owns task %s", task.TaskID)
 	}
 }
 
