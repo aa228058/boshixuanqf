@@ -565,10 +565,15 @@ func (s *AccountService) ImportSessionFiles(ctx context.Context, tenantID uuid.U
 			DeviceProfile: map[string]any{},
 		}
 		if twoFA != "" {
-			// R182: sidecar 2FA 密码加密入库(与 UpdateAccountProfile 同规则, 不明文落 JSONB)
-			if enc, err := crypto.Encrypt([]byte(twoFA)); err == nil {
-				acc.DeviceProfile["twofa_enc"] = enc
+			// R182: sidecar 2FA 密码加密入库(与 UpdateAccountProfile 同规则, 不明文落 JSONB)。
+			// 加密失败必须拒绝该文件，不能静默丢弃重登所需的二次验证密码。
+			enc, err := crypto.Encrypt([]byte(twoFA))
+			if err != nil {
+				result.Failed++
+				result.Errors = append(result.Errors, fmt.Sprintf("第%d个文件: 2FA 密码加密失败(%v)", i+1, err))
+				continue
 			}
+			acc.DeviceProfile["twofa_enc"] = enc
 		}
 		if _, _, err := s.repo.CountAndCreate(ctx, acc, maxAccounts); err != nil {
 			result.Failed++
@@ -576,7 +581,10 @@ func (s *AccountService) ImportSessionFiles(ctx context.Context, tenantID uuid.U
 			continue
 		}
 		if err := s.quota.InitAccountQuotas(ctx, acc.AccountID, acc.Level); err != nil {
-			log.Printf("[account] init quotas %s: %v", accountID, err)
+			_ = s.repo.Delete(ctx, tenantID, accountID)
+			result.Failed++
+			result.Errors = append(result.Errors, fmt.Sprintf("第%d个文件: 配额初始化失败(%v)", i+1, err))
+			continue
 		}
 		if err := s.engine.StoreImportedSession(ctx, acc.SessionName, serverAddr, sess); err != nil {
 			_ = s.repo.Delete(ctx, tenantID, accountID)
