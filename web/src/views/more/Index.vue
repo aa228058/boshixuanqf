@@ -41,10 +41,12 @@ import { computed } from 'vue'
 import { useRouter } from 'vue-router'
 import { ChevronRight, Send, UserPlus, Compass, Download, Link2, Eye, Gift, ListChecks, ShieldCheck, Settings, HelpCircle, Megaphone, RefreshCw, KeyRound } from 'lucide-vue-next'
 import { useAuthStore } from '@/stores/auth'
+import { useAdminStore } from '@/stores/admin'
 import { useAccountStore } from '@/stores/account'
 
 const router = useRouter()
 const authStore = useAuthStore()
+const adminStore = useAdminStore()
 const accountStore = useAccountStore()
 
 const accId = computed(() => accountStore.currentAccount?.account_id || 'none')
@@ -69,7 +71,7 @@ const groups = computed(() => {
     ]},
   ]
   // 管理员追加管理端分组
-  if (authStore.isAdmin || String(authStore.tenant?.role) === 'admin') {
+  if (adminStore.isLoggedIn) {
     base.push({ label: '管理后台', items: [
       { path: '/admin/dashboard', label: '运营总览', desc: '平台数据一览', icon: Megaphone },
       { path: '/admin/tenants', label: '租户管理', desc: '租户与套餐', icon: KeyRound },
