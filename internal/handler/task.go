@@ -1405,7 +1405,7 @@ func (h *TaskHandler) StreamProgress(c echo.Context) error {
 // @Failure 400 {object} ErrorResponse
 // @Failure 500 {object} ErrorResponse
 // @Security BearerAuth
-// @Router /tasks/monitor-scrape [post]
+// @Router /tasks [post]
 // CreateInviteMembers creates a task that invites members collected from a source group.
 func (h *TaskHandler) CreateInviteMembers(c echo.Context) error {
 	tenantID, err := middleware.GetTenantID(c)
@@ -1419,6 +1419,9 @@ func (h *TaskHandler) CreateInviteMembers(c echo.Context) error {
 	}
 	if err := c.Bind(&req); err != nil {
 		return echo.NewHTTPError(http.StatusBadRequest, "请求参数错误")
+	}
+	if len(req.AccountIDs) > 1 {
+		return echo.NewHTTPError(http.StatusBadRequest, "邀请任务一次只能指定一个执行账号")
 	}
 	accountIDText := req.AccountID
 	if len(req.AccountIDs) > 0 {
