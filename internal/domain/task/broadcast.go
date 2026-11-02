@@ -376,20 +376,8 @@ accountLoop:
 			break accountLoop
 		}
 		safego.Go(func() {
-			// 群名映射: 日志里显示群名而不是 ID
-			titleByChatID := map[int64]string{}
-			if gl, err := e.groupRepo.ListByAccount(ctx, task.TenantID, accID, 1000, 0); err == nil {
-				for _, g := range gl {
-					if g.TGChatID != 0 {
-						titleByChatID[g.TGChatID] = g.Title
-					}
-				}
-			}
-			// 联系人缓存: 私聊目标反查昵称
-			contactNameByID := map[int64]string{}
-			if cn, err := e.memberRepo.ListContactsByAccount(ctx, task.TenantID, accID); err == nil {
-				contactNameByID = cn
-			}
+			// Register cleanup before any repository/client call so a panic cannot
+			// leak the account slot or leave the task blocked in wg.Wait().
 			defer func() {
 				if r := recover(); r != nil {
 					taskLog.Printf("[task] broadcast panic for account %s: %v\n%s", accID, r, debug.Stack())
@@ -397,6 +385,25 @@ accountLoop:
 			}()
 			defer wg.Done()
 			defer func() { <-semaphore }()
+
+			// 群名映射: 日志里显示群名而不是 ID
+			titleByChatID := map[int64]string{}
+			if e.groupRepo != nil {
+				if gl, err := e.groupRepo.ListByAccount(ctx, task.TenantID, accID, 1000, 0); err == nil {
+					for _, g := range gl {
+						if g.TGChatID != 0 {
+							titleByChatID[g.TGChatID] = g.Title
+						}
+					}
+				}
+			}
+			// 联系人缓存: 私聊目标反查昵称
+			contactNameByID := map[int64]string{}
+			if e.memberRepo != nil {
+				if cn, err := e.memberRepo.ListContactsByAccount(ctx, task.TenantID, accID); err == nil {
+					contactNameByID = cn
+				}
+			}
 
 			// 检查账号状态，非 ACTIVE 或已被 block 的账号跳过
 			acc, err := e.accEngine.GetByID(ctx, task.TenantID, accID)
