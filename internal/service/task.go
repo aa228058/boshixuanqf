@@ -742,6 +742,9 @@ func (s *TaskService) CreateJoinGroupsWithInterval(ctx context.Context, tenantID
 
 // CreateInviteMembers 邀请入群: 把来源群已采集成员批量邀请进本账号的目标群。
 func (s *TaskService) CreateInviteMembers(ctx context.Context, tenantID, accountID, targetGroupID, sourceGroupID uuid.UUID) (*domain.Task, error) {
+	if err := s.checkPlanFeature(ctx, tenantID, "invite"); err != nil {
+		return nil, err
+	}
 	if err := s.validateAccountOwnership(ctx, tenantID, []uuid.UUID{accountID}); err != nil {
 		return nil, err
 	}
