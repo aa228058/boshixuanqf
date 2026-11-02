@@ -685,12 +685,17 @@ func (e *Engine) runTask(ctx context.Context, task *domain.Task) {
 		return
 	}
 
-	// Double-check DB status to prevent duplicate execution after restart
-	if dbTask, err := e.repo.GetByID(ctx, task.TenantID, task.TaskID); err == nil && dbTask != nil {
-		if dbTask.Status == domain.TaskStatusCompleted || dbTask.Status == domain.TaskStatusCancelled {
-			e.runningTasks.Delete(taskKey)
-			return
-		}
+	// Double-check DB status to prevent duplicate execution after restart or cancellation.
+	// 读取失败时必须 fail closed：不能在无法确认任务状态时继续执行外部发送操作。
+	dbTask, statusErr := e.repo.GetByID(ctx, task.TenantID, task.TaskID)
+	if statusErr != nil || dbTask == nil {
+		e.runningTasks.Delete(taskKey)
+		taskLog.Printf("[task] 无法确认任务状态，跳过执行 task=%s err=%v", task.TaskID, statusErr)
+		return
+	}
+	if dbTask.Status == domain.TaskStatusCompleted || dbTask.Status == domain.TaskStatusCancelled {
+		e.runningTasks.Delete(taskKey)
+		return
 	}
 
 	// 兜底预热：任务排队若超过池空闲回收时间(默认5分钟)，创建时的热连接可能已释放。
