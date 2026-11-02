@@ -518,6 +518,35 @@ func (r *AccountRepository) UpdatePoolStatus(ctx context.Context, tenantID, acco
 	return err
 }
 
+// UpdatePoolStatusWithLimit 原子切换账号池状态。
+// 转正与新建账号使用相同的租户行锁，防止并发操作突破启用账号额度。
+func (r *AccountRepository) UpdatePoolStatusWithLimit(ctx context.Context, tenantID, accountID uuid.UUID, status string, maxAccounts int) error {
+	return pgx.BeginFunc(ctx, r.db, func(tx pgx.Tx) error {
+		var lockedTenantID uuid.UUID
+		if err := tx.QueryRow(ctx, `SELECT tenant_id FROM tenants WHERE tenant_id = $1 AND deleted_at IS NULL FOR UPDATE`, tenantID).Scan(&lockedTenantID); err != nil {
+			return fmt.Errorf("lock tenant for pool status: %w", err)
+		}
+
+		var currentStatus string
+		if err := tx.QueryRow(ctx, `SELECT pool_status FROM accounts WHERE tenant_id = $1 AND account_id = $2 FOR UPDATE`, tenantID, accountID).Scan(&currentStatus); err != nil {
+			return fmt.Errorf("get account pool status: %w", err)
+		}
+
+		if status == "active" && currentStatus != "active" && maxAccounts > 0 {
+			var count int
+			if err := tx.QueryRow(ctx, `SELECT COUNT(*) FROM accounts WHERE tenant_id = $1 AND pool_status = 'active'`, tenantID).Scan(&count); err != nil {
+				return err
+			}
+			if count >= maxAccounts {
+				return fmt.Errorf("account limit reached: %d/%d", count, maxAccounts)
+			}
+		}
+
+		_, err := tx.Exec(ctx, `UPDATE accounts SET pool_status = $3 WHERE tenant_id = $1 AND account_id = $2`, tenantID, accountID, status)
+		return err
+	})
+}
+
 // CountActive 统计租户"启用"状态的账号数(备用池不占额度, 只数 active)
 func (r *AccountRepository) CountActive(ctx context.Context, tenantID uuid.UUID) (int, error) {
 	var n int
