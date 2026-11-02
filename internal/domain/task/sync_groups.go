@@ -29,6 +29,7 @@ func (e *Engine) SyncJoinedGroups(ctx context.Context, tenantID, accountID uuid.
 	totalProcessed := 0
 	totalSkipped := 0
 	batchCount := 0
+	paginationComplete := false // 只有确认读到最后一页时才允许 prune
 	seenIDs := make(map[int64]bool) // dedup: same dialog may appear across pages
 
 	for {
@@ -42,6 +43,7 @@ func (e *Engine) SyncJoinedGroups(ctx context.Context, tenantID, accountID uuid.
 
 		if len(dialogs) == 0 {
 			log.Printf("[sync] 没有更多对话，停止分页")
+			paginationComplete = true
 			break
 		}
 
@@ -184,20 +186,21 @@ func (e *Engine) SyncJoinedGroups(ctx context.Context, tenantID, accountID uuid.
 
 		// Stop if no new unique dialogs were found in this batch (all were duplicates)
 		if newInBatch == 0 {
-			log.Printf("[sync] 批次#%d没有新的唯一对话，停止", batchCount)
+			log.Printf("[sync] 批次#%d没有新的唯一对话，停止；无法确认已到末页", batchCount)
 			break
 		}
 
 		// Also stop if we got fewer dialogs than requested (last page)
 		if len(dialogs) < e.cfg.DialogsLimit {
 			log.Printf("[sync] 到达最后一页（%d < %d），停止", len(dialogs), e.cfg.DialogsLimit)
+			paginationComplete = true
 			break
 		}
 
 		offset += int32(len(dialogs))
 		// Safety limit: max 200 batches (约 2 万个会话), 防止极端情况下无限分页
 		if batchCount >= 200 {
-			log.Printf("[sync] 达到最大批次数量（200），停止")
+			log.Printf("[sync] 达到最大批次数量（200），本次同步不执行 prune，避免误标未扫描群组")
 			break
 		}
 	}
@@ -208,6 +211,9 @@ func (e *Engine) SyncJoinedGroups(ctx context.Context, tenantID, accountID uuid.
 	// 只增不删的同步会让已退出/被踢的群永远留在选择器里。
 	// 反向 diff: 分页遍历本地该账号的全部已加入群, 不在 seenIDs 里的标 left。
 	pruned := 0
+	if !paginationComplete {
+		log.Printf("[sync] 本次分页未确认完整结束，跳过 prune，避免把未扫描到的群误标为已退出")
+	} else {
 	const prunePage = 500
 	// 先完整读取，再修改 account_groups。若边分页边把 is_joined 改为 false，
 	// OFFSET 会作用于不断缩小的结果集，超过 500 个群时会跳过后半部分。
@@ -238,6 +244,7 @@ func (e *Engine) SyncJoinedGroups(ctx context.Context, tenantID, accountID uuid.
 	}
 	if pruned > 0 {
 		log.Printf("[sync] prune 完成：标记 %d 个已退出群组", pruned)
+	}
 	}
 	// R99: 同步完成主动通知 —— 前端全局事件流收到后自动刷新群缓存,
 	// 避免"同步完要重开选择器/手动刷新"
