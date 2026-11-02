@@ -7,6 +7,7 @@ package repository
 
 import (
 	"context"
+	"io"
 	"path/filepath"
 	"testing"
 	"time"
@@ -43,6 +44,9 @@ func setupTestDB(t *testing.T) *pgxpool.Pool {
 		t.Fatalf("connect: %v", err)
 	}
 	t.Cleanup(pool.Close)
+	if err := pool.Ping(ctx); err != nil {
+		t.Fatalf("postgres is not accepting connections: %v", err)
+	}
 
 	// 应用全部迁移（与生产同路径）
 	migDir, err := filepath.Abs("../../migrations")
@@ -52,8 +56,17 @@ func setupTestDB(t *testing.T) *pgxpool.Pool {
 	if err := goose.SetDialect("postgres"); err != nil {
 		t.Fatalf("goose dialect: %v", err)
 	}
-	if err := goose.Up(stdlib.OpenDBFromPool(pool), migDir); err != nil {
-		t.Fatalf("apply migrations: %v", err)
+	sqlDB := stdlib.OpenDBFromPool(pool)
+	t.Cleanup(func() { _ = sqlDB.Close() })
+	if err := goose.Up(sqlDB, migDir); err != nil {
+		var logs string
+		if reader, logErr := pg.Logs(ctx); logErr == nil {
+			if data, readErr := io.ReadAll(reader); readErr == nil {
+				logs = string(data)
+			}
+			_ = reader.Close()
+		}
+		t.Fatalf("apply migrations: %v\npostgres container logs:\n%s", err, logs)
 	}
 	return pool
 }
