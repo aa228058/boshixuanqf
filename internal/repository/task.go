@@ -371,8 +371,8 @@ func (r *TaskRepository) UpdateStatus(ctx context.Context, tenantID, taskID uuid
 		WHERE tenant_id = $1 AND task_id = $2 AND (
 			-- 失败/取消只能从非终态进入，不能被迟到的 worker 覆盖 completed/cancelled。
 			(status = 'pending'   AND $3 = 'cancelled')
-			OR (status = 'scheduled' AND $3 IN ('queued', 'cancelled'))
-			OR (status = 'queued'    AND $3 IN ('running', 'paused', 'cancelled'))
+			OR (status = 'scheduled' AND $3 IN ('queued', 'paused', 'cancelled'))
+			OR (status = 'queued'    AND $3 IN ('paused', 'cancelled'))
 			OR (status = 'running'   AND $3 IN ('queued', 'paused', 'completed', 'failed', 'cancelled'))
 			OR (status = 'paused'    AND $3 IN ('queued', 'cancelled'))
 			OR (status = 'failed'    AND $3 = 'queued')
