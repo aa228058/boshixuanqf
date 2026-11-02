@@ -1135,7 +1135,7 @@ func (e *Engine) rescheduleLoopTask(ctx context.Context, task *domain.Task) {
 	if err != nil || fresh == nil {
 		return
 	}
-	if fresh.Status == domain.TaskStatusPaused || fresh.Status == domain.TaskStatusCancelled {
+	if fresh.Status != domain.TaskStatusCompleted {
 		return
 	}
 	interval := task.LoopIntervalMinutes
