@@ -455,6 +455,10 @@ func (s *TaskService) CreateBroadcastWithMapping(ctx context.Context, tenantID u
 		payload["mappings"] = mappingsData
 	}
 
+	if totalMsgs <= 0 {
+		return nil, fmt.Errorf("群发目标不能为空")
+	}
+
 	// 套餐日额度：配置读取或计数失败必须阻断，不能在数据库异常时绕过限额。
 	if s.planLimits == nil {
 		return nil, fmt.Errorf("套餐日额度服务未就绪")
@@ -464,14 +468,13 @@ func (s *TaskService) CreateBroadcastWithMapping(ctx context.Context, tenantID u
 		return nil, fmt.Errorf("读取套餐日额度失败: %w", err)
 	}
 	if dailyCap > 0 {
-		used, allowed, err := s.planLimits.TryAddDailyUsage(ctx, tenantID, repository.KindBroadcastMsgs, totalMsgs, dailyCap)
+		_, allowed, err := s.planLimits.TryAddDailyUsage(ctx, tenantID, repository.KindBroadcastMsgs, totalMsgs, dailyCap)
 		if err != nil {
 			return nil, fmt.Errorf("检查群发日额度失败: %w", err)
 		}
 		if !allowed {
 			return nil, fmt.Errorf("今日群发额度已用完(体验版 %d 条/天), 请升级套餐", dailyCap)
 		}
-		_ = used
 	}
 
 	// Auto-split: if total messages exceed threshold, split into multiple sub-tasks
