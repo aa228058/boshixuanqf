@@ -186,24 +186,32 @@ func TestListFailedTargetsPreservesAccountPairsAndExcludesSuccessfulPairs(t *tes
 	accountB := uuid.New()
 	taskID := uuid.New()
 
-	_, err := pool.Exec(ctx, `
+	if _, err := pool.Exec(ctx, `
 		INSERT INTO tenants (tenant_id, username, password_hash, name, api_key_hash, plan_id)
-		VALUES ($1, 'retry-pairs-test', 'x', 'Retry pairs', 'retry-pairs-key', 'free');
+		VALUES ($1, 'retry-pairs-test', 'x', 'Retry pairs', 'retry-pairs-key', 'free')`, tenantID); err != nil {
+		t.Fatalf("seed tenant: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `
 		INSERT INTO accounts (account_id, tenant_id, phone, session_name, status)
 		VALUES ($2, $1, '+10000000011', 'retry_a', 'offline'),
-		       ($3, $1, '+10000000012', 'retry_b', 'offline');
+		       ($3, $1, '+10000000012', 'retry_b', 'offline')`, tenantID, accountA, accountB); err != nil {
+		t.Fatalf("seed accounts: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `
 		INSERT INTO tasks (task_id, tenant_id, type, status)
-		VALUES ($4, $1, 'broadcast', 'completed');
+		VALUES ($2, $1, 'broadcast', 'completed')`, tenantID, taskID); err != nil {
+		t.Fatalf("seed task: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `
 		INSERT INTO task_logs (log_id, task_id, tenant_id, account_id, target_id, action, status)
 		VALUES
-		  (gen_random_uuid(), $4, $1, $2, 'group-1', 'send_message', 'failed'),
-		  (gen_random_uuid(), $4, $1, $2, 'group-1', 'send_message', 'success'),
-		  (gen_random_uuid(), $4, $1, $2, 'group-2', 'send_message', 'failed'),
-		  (gen_random_uuid(), $4, $1, $3, 'group-1', 'send_message', 'failed'),
-		  (gen_random_uuid(), $4, $1, NULL, 'legacy-target', 'send_message', 'failed')
-	`, tenantID, accountA, accountB, taskID)
-	if err != nil {
-		t.Fatalf("seed retry-pair fixture: %v", err)
+		  (gen_random_uuid(), $1, $2, $3, 'group-1', 'send_message', 'failed'),
+		  (gen_random_uuid(), $1, $2, $3, 'group-1', 'send_message', 'success'),
+		  (gen_random_uuid(), $1, $2, $3, 'group-2', 'send_message', 'failed'),
+		  (gen_random_uuid(), $1, $2, $4, 'group-1', 'send_message', 'failed'),
+		  (gen_random_uuid(), $1, $2, NULL, 'legacy-target', 'send_message', 'failed')`,
+		taskID, tenantID, accountA, accountB); err != nil {
+		t.Fatalf("seed task logs: %v", err)
 	}
 
 	got, err := NewTaskLogRepository(pool).ListFailedTargets(ctx, tenantID, taskID)
