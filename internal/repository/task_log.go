@@ -294,7 +294,7 @@ func (r *TaskLogRepository) HasSuccessForTargets(ctx context.Context, tenantID, 
 
 // FailedTarget identifies the exact account-target pair that failed.
 type FailedTarget struct {
-	AccountID uuid.UUID
+	AccountID *uuid.UUID
 	TargetID  string
 }
 
@@ -304,8 +304,8 @@ func (r *TaskLogRepository) ListFailedTargets(ctx context.Context, tenantID, tas
 		SELECT DISTINCT account_id, target_id
 		FROM task_logs
 		WHERE tenant_id = $1 AND task_id = $2 AND status = 'failed'
-		  AND account_id IS NOT NULL AND target_id <> ''
-		ORDER BY account_id, target_id`, tenantID, taskID)
+		  AND target_id <> ''
+		ORDER BY account_id NULLS FIRST, target_id`, tenantID, taskID)
 	if err != nil {
 		return nil, fmt.Errorf("list failed targets: %w", err)
 	}

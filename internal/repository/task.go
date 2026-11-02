@@ -389,11 +389,18 @@ func (r *TaskRepository) UpdateStatus(ctx context.Context, tenantID, taskID uuid
 
 // ResetToQueued resets a failed task to queued for retry.
 func (r *TaskRepository) ResetToQueued(ctx context.Context, tenantID, taskID uuid.UUID) error {
-	_, err := r.db.Exec(ctx, `
+	res, err := r.db.Exec(ctx, `
 		UPDATE tasks SET status = 'queued', locked_at = NULL, worker_id = NULL,
 		                 retry_count = retry_count + 1, completed_at = NULL
-		WHERE tenant_id = $1 AND task_id = $2`, tenantID, taskID)
-	return err
+		WHERE tenant_id = $1 AND task_id = $2
+		  AND status IN ('paused', 'failed', 'pending', 'scheduled')`, tenantID, taskID)
+	if err != nil {
+		return err
+	}
+	if res.RowsAffected() == 0 {
+		return fmt.Errorf("task cannot be resumed or retried from its current status")
+	}
+	return nil
 }
 
 // Delete removes a task.

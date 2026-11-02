@@ -930,18 +930,19 @@ func failedTargetsToMappings(failed []repository.FailedTarget) []domain.AccountT
 	seen := make(map[uuid.UUID]map[string]bool, len(failed))
 	mappings := make([]domain.AccountTargetMapping, 0, len(failed))
 	for _, item := range failed {
-		if item.AccountID == uuid.Nil || item.TargetID == "" {
+		if item.AccountID == nil || *item.AccountID == uuid.Nil || item.TargetID == "" {
 			continue
 		}
-		i, ok := index[item.AccountID]
+		accountID := *item.AccountID
+		i, ok := index[accountID]
 		if !ok {
 			i = len(mappings)
-			index[item.AccountID] = i
-			seen[item.AccountID] = make(map[string]bool)
-			mappings = append(mappings, domain.AccountTargetMapping{AccountID: item.AccountID})
+			index[accountID] = i
+			seen[accountID] = make(map[string]bool)
+			mappings = append(mappings, domain.AccountTargetMapping{AccountID: accountID})
 		}
-		if !seen[item.AccountID][item.TargetID] {
-			seen[item.AccountID][item.TargetID] = true
+		if !seen[accountID][item.TargetID] {
+			seen[accountID][item.TargetID] = true
 			mappings[i].Targets = append(mappings[i].Targets, item.TargetID)
 		}
 	}

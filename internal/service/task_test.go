@@ -49,10 +49,10 @@ func TestFailedTargetsToMappingsPreservesAccountAssignments(t *testing.T) {
 	accountA := uuid.MustParse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
 	accountB := uuid.MustParse("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb")
 	got := failedTargetsToMappings([]repository.FailedTarget{
-		{AccountID: accountA, TargetID: "group-1"},
-		{AccountID: accountB, TargetID: "group-1"},
-		{AccountID: accountA, TargetID: "group-2"},
-		{AccountID: accountA, TargetID: "group-1"},
+		{AccountID: &accountA, TargetID: "group-1"},
+		{AccountID: &accountB, TargetID: "group-1"},
+		{AccountID: &accountA, TargetID: "group-2"},
+		{AccountID: &accountA, TargetID: "group-1"},
 	})
 	if len(got) != 2 {
 		t.Fatalf("expected 2 account mappings, got %d", len(got))
