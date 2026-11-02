@@ -208,7 +208,14 @@ func newEchoServer(cfg *config.Config, c *app.Container) *echo.Echo {
 		}
 	}
 
-	e.Use(echomiddleware.BodyLimit(defaultBodyLimit))
+	e.Use(echomiddleware.BodyLimitWithConfig(echomiddleware.BodyLimitConfig{
+		Limit: defaultBodyLimit,
+		// 上传端点由各自的 upload group 施加更大的限制；全局 10M 不能提前拦截它们。
+		Skipper: func(c echo.Context) bool {
+			path := c.Request().URL.Path
+			return path == "/api/v1/media" || path == "/api/v1/accounts/import-files"
+		},
+	}))
 
 	// Security headers
 	e.Use(func(next echo.HandlerFunc) echo.HandlerFunc {
@@ -270,7 +277,7 @@ func newEchoServer(cfg *config.Config, c *app.Container) *echo.Echo {
 	api.GET("/accounts/:id/auth-state", c.AccountHandler.GetAuthState)
 	api.POST("/accounts/:id/password", c.AccountHandler.Submit2FA)
 	api.POST("/accounts/import", c.AccountHandler.ImportSessions)
-	api.POST("/accounts/import-files", c.AccountHandler.ImportSessionFiles)
+
 	api.PUT("/accounts/:id/profile", c.AccountHandler.UpdateProfile)
 	api.PUT("/accounts/:id/pool", c.AccountHandler.SetPool)
 	api.POST("/accounts/pool-batch", c.AccountHandler.BatchSetPool)
@@ -333,6 +340,7 @@ func newEchoServer(cfg *config.Config, c *app.Container) *echo.Echo {
 	// 给 media 路由单独放宽到 52M(留 multipart 开销余量), 其他接口仍受 10M 保护。
 	mediaApi := api.Group("", echomiddleware.BodyLimit("52M"))
 	mediaApi.POST("/media", c.MediaHandler.Upload)
+	mediaApi.POST("/accounts/import-files", c.AccountHandler.ImportSessionFiles)
 	api.GET("/contacts", c.ContactHandler.List)
 	api.POST("/groups", c.GroupHandler.Create)
 	api.GET("/groups/:id", c.GroupHandler.GetByID)
