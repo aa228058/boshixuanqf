@@ -370,7 +370,7 @@ func (h *TaskHandler) CreateScheduledBroadcast(c echo.Context) error {
 
 // CreateBroadcast godoc
 // @Summary 创建广播任务
-// @Description 创建TG消息广播任务，支持笛卡尔积模式和精准映射模式
+// @Description 创建TG消息广播任务，支持全部账号都发、指定账号发送和自动均分群组三种分配方式
 // @Tags 任务
 // @Accept json
 // @Produce json
@@ -380,12 +380,8 @@ func (h *TaskHandler) CreateScheduledBroadcast(c echo.Context) error {
 // @Failure 500 {object} ErrorResponse
 // @Security BearerAuth
 // @Router /tasks/broadcast [post]
-// CreateBroadcast creates a broadcast task.
-// Supports two modes:
-//  1. Cartesian (legacy): all accounts send to all targets
-//  2. Mapping (precise): each account sends only to its assigned targets
-//
-// Mapping mode is triggered when req.Mappings is non-empty.
+// CreateBroadcast creates a broadcast task using the selected distribution mode.
+// Older clients that omit broadcast_mode continue to use cartesian mode unless mappings are supplied.
 func (h *TaskHandler) CreateBroadcast(c echo.Context) error {
 	tenantID, err := middleware.GetTenantID(c)
 	if err != nil {

@@ -487,6 +487,15 @@ func (s *TaskService) CreateBroadcastWithMode(ctx context.Context, tenantID uuid
 		if len(expected) > 0 && len(assigned) != len(expected) {
 			return nil, fmt.Errorf("还有未分配的群组")
 		}
+		// Do not start idle account workers when an account has no assigned targets.
+		activeMappings := make([]domain.AccountTargetMapping, 0, len(mappings))
+		for _, mapping := range mappings {
+			if len(mapping.Targets) > 0 {
+				activeMappings = append(activeMappings, mapping)
+			}
+		}
+		mappings = activeMappings
+
 		// Manual assignment and auto-balance both execute from an explicit account-target plan.
 		allAccIDs := make([]uuid.UUID, 0, len(mappings))
 		allTargetIDs := make([]string, 0)
