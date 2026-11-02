@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -35,6 +36,26 @@ func (r *PlanLimitRepository) AddDailyUsage(ctx context.Context, tenantID uuid.U
 		ON CONFLICT (tenant_id, day, kind) DO UPDATE SET used = plan_daily_counters.used + $3
 		RETURNING used`, tenantID, kind, n).Scan(&used)
 	return used, err
+}
+
+// TryAddDailyUsage 在套餐日额度内原子扣减用量；超限时不写入、不增加计数。
+func (r *PlanLimitRepository) TryAddDailyUsage(ctx context.Context, tenantID uuid.UUID, kind string, n, limit int) (int, bool, error) {
+	var used int
+	err := r.db.QueryRow(ctx, `
+		INSERT INTO plan_daily_counters (tenant_id, day, kind, used)
+		SELECT $1, CURRENT_DATE, $2, $3
+		WHERE $3 <= $4
+		ON CONFLICT (tenant_id, day, kind) DO UPDATE
+		SET used = plan_daily_counters.used + EXCLUDED.used
+		WHERE plan_daily_counters.used + EXCLUDED.used <= $4
+		RETURNING used`, tenantID, kind, n, limit).Scan(&used)
+	if err == pgx.ErrNoRows {
+		return 0, false, nil
+	}
+	if err != nil {
+		return 0, false, err
+	}
+	return used, true, nil
 }
 
 // GetDailyUsage 查当日已用量(P2-47 审计修复配套: 超限判断要先查后扣, 不能先扣后判)
