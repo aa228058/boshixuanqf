@@ -364,7 +364,7 @@ func (e *Engine) monitorLoop(ctx context.Context, client *telegram.Client, initi
 			safego.Go(func() { e.tapRaffle(ctx, cl, tenantID, accountID, msg) })
 			// 抽奖结果追踪: 开奖解析(text_mention实体) + 参与回执确认(2026-10-20)
 			// + 中奖自动回复(060, 需 cl 发送)
-			e.watchRaffleMessage(tenantID, accountID, msg.ChatID, msg, cl)
+			e.watchRaffleMessage(ctx, tenantID, accountID, msg.ChatID, msg, cl)
 			textPreview := msg.Text
 			if len(textPreview) > 30 {
 				textPreview = textPreview[:30] + "..."
