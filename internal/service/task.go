@@ -1015,6 +1015,12 @@ func (s *TaskService) Retry(ctx context.Context, tenantID, taskID uuid.UUID, sco
 		return fmt.Errorf("获取任务失败: %w", err)
 	}
 	if scope == "failed" {
+		if task.Type != domain.TaskTypeBroadcast && task.Type != domain.TaskTypeScheduledBroadcast {
+			return fmt.Errorf("仅群发任务支持失败目标续发")
+		}
+		if task.Status == domain.TaskStatusRunning || task.Status == domain.TaskStatusQueued || task.Status == domain.TaskStatusPending {
+			return fmt.Errorf("任务仍在执行或排队中，请结束后再续发失败目标")
+		}
 		failed, err := s.logRepo.ListFailedTargets(ctx, tenantID, taskID)
 		if err != nil {
 			return fmt.Errorf("获取失败目标失败: %w", err)
