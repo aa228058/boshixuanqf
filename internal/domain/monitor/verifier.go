@@ -83,10 +83,15 @@ func (vs *verifierState) get(accountID uuid.UUID, chatID int64) *vstate {
 	return vs.byChat[vs.key(accountID, chatID)]
 }
 
-func (vs *verifierState) put(accountID uuid.UUID, chatID int64, s *vstate) {
+func (vs *verifierState) putIfActive(accountID uuid.UUID, chatID int64, s *vstate) bool {
 	vs.mu.Lock()
 	defer vs.mu.Unlock()
-	vs.byChat[vs.key(accountID, chatID)] = s
+	key := vs.key(accountID, chatID)
+	if current := vs.byChat[key]; current != nil && time.Now().Before(current.deadline) {
+		return false
+	}
+	vs.byChat[key] = s
+	return true
 }
 
 func (vs *verifierState) remove(accountID uuid.UUID, chatID int64, expected *vstate) {
@@ -151,22 +156,23 @@ func (e *Engine) HandleVerification(ctx context.Context, client *telegram.Client
 	if cand.peer == nil {
 		return // 私聊类验证无 access_hash 来源, 暂不支持
 	}
-	if st := e.vstates.get(accountID, chatID); st != nil && time.Now().Before(st.deadline) {
-		return // 同群已有进行中验证
-	}
 	st := &vstate{
 		logID: uuid.New(), tenantID: tenantID, accID: accountID,
 		chatID: chatID, title: chatTitle,
 		deadline: time.Now().Add(120 * time.Second),
 	}
 	st.addStep("detect", truncate(cand.text, 80))
+	// Claim the chat atomically: concurrent OnMessage callbacks must not start
+	// two verification flows for the same account and group.
+	if !e.vstates.putIfActive(accountID, chatID, st) {
+		return
+	}
 	if e.vlRepo != nil {
 		_ = e.vlRepo.Create(ctx, &domain.VerificationLog{
 			VLID: st.logID, TenantID: tenantID, AccountID: accountID,
 			GroupChatID: chatID, GroupTitle: chatTitle, Status: "pending", Steps: st.steps,
 		})
 	}
-	e.vstates.put(accountID, chatID, st)
 	safego.Go(func() { e.runVerification(ctx, client, st, cand) })
 }
 
