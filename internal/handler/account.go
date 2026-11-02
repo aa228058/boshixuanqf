@@ -840,6 +840,7 @@ func (h *AccountHandler) ImportSessionFiles(c echo.Context) error {
 			// R182 两遍式: 第一遍收集同 stem 的 .json(常含 2FA 密码/手机号, 号商导出惯例),
 			// 第二遍落 session 时按同 stem 写出 sidecar json, service 端 readSidecarJSON 读取。
 			sidecars := map[string][]byte{}
+			sidecarCount := 0
 			var sessionFiles []*zip.File
 			for _, zf := range zr.File {
 				if zf.FileInfo().IsDir() {
@@ -847,7 +848,8 @@ func (h *AccountHandler) ImportSessionFiles(c echo.Context) error {
 				}
 				lowerName := strings.ToLower(zf.Name)
 				if strings.HasSuffix(lowerName, ".json") {
-					if len(sidecars) >= 50 || zf.UncompressedSize64 > 1<<20 {
+					sidecarCount++
+					if sidecarCount > 50 || zf.UncompressedSize64 > 1<<20 {
 						return echo.NewHTTPError(http.StatusBadRequest, "压缩包 sidecar JSON 数量或大小超限")
 					}
 					rc, openErr := zf.Open()
