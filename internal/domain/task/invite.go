@@ -28,6 +28,12 @@ func (e *Engine) executeInviteMembers(ctx context.Context, task *domain.Task) er
 	if err != nil || target == nil {
 		return fmt.Errorf("目标群不存在")
 	}
+	if target.TGChatID == 0 {
+		return fmt.Errorf("目标群缺少 Telegram Chat ID")
+	}
+	if !strings.EqualFold(target.Type, "group") && target.AccessHash == 0 {
+		return fmt.Errorf("目标频道缺少 AccessHash，请先同步群组")
+	}
 	if len(task.AccountIDs) == 0 {
 		return fmt.Errorf("无执行账号")
 	}
