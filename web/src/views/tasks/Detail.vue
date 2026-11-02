@@ -49,7 +49,7 @@
           <button v-if="task?.status === 'running'" @click="pause" class="px-3 py-2 rounded-lg bg-amber/10 text-amber border border-amber/20 text-sm">暂停</button>
           <button v-else-if="task?.status === 'paused'" @click="resume" class="px-3 py-2 rounded-lg bg-emerald/10 text-emerald border border-emerald/20 text-sm">恢复</button>
           <button v-if="['running','paused','pending'].includes(task?.status || '')" @click="cancel" class="px-3 py-2 rounded-lg bg-rose/10 text-rose border border-rose/20 text-sm" aria-label="取消">取消</button>
-          <button v-if="['success','failed','cancelled'].includes(task?.status || '') && (task?.progress?.failed || 0) > 0" @click="retryFailed" class="px-3 py-2 rounded-lg bg-cyan/10 text-cyan border border-cyan/20 text-sm">重试失败目标 ({{ task?.progress?.failed }})</button>
+          <button v-if="['completed','failed','cancelled'].includes(task?.status || '') && (task?.progress?.failed || 0) > 0" @click="retryFailed" class="px-3 py-2 rounded-lg bg-cyan/10 text-cyan border border-cyan/20 text-sm">重试失败目标 ({{ task?.progress?.failed }})</button>
         </div>
       </div>
       <div class="w-full h-3 bg-bg-card rounded-full overflow-hidden">
