@@ -17,6 +17,15 @@ import (
 	"github.com/google/uuid"
 )
 
+func sessionNamesForLogin(sessionName string, accountID uuid.UUID) (formalName, temporaryName string) {
+	formalName = strings.TrimSpace(sessionName)
+	if formalName == "" {
+		formalName = fmt.Sprintf("acc_%s", accountID.String())
+	}
+	temporaryName = fmt.Sprintf("%s_login_%s", formalName, uuid.NewString())
+	return formalName, temporaryName
+}
+
 func (e *Engine) ConnectAccount(ctx context.Context, tenantID, accountID uuid.UUID, phone string, sessionName string, level domain.AccountLevel, keepOnline ...bool) error {
 	keep := len(keepOnline) > 0 && keepOnline[0]
 
@@ -81,14 +90,10 @@ func (e *Engine) ConnectAccount(ctx context.Context, tenantID, accountID uuid.UU
 	}
 
 	// Use deterministic session name based on accountID
-	newSessionName := sessionName
-	// R160: 登录流程用临时会话名 —— gotd 连接即把新(未授权)密钥写入存储,
-	// 若与正式会话同名会覆盖号上原有合法密钥, 池下次重连即 401 AUTH_KEY_UNREGISTERED
-	loginSessionName := fmt.Sprintf("%s_login_%d", newSessionName, time.Now().Unix())
+	// 临时会话名必须基于正式账号名并带唯一后缀，避免空正式名时不同账号
+	// 在同一秒共用 "_login_<timestamp>" 存储键，互相覆盖授权密钥。
+	newSessionName, loginSessionName := sessionNamesForLogin(sessionName, accountID)
 	log.Printf("[AUTH] 登录会话(临时): %s (正式: %s)\n", loginSessionName, newSessionName)
-	if newSessionName == "" {
-		newSessionName = fmt.Sprintf("acc_%s", accountID.String())
-	}
 	// Save session name to DB immediately
 	acc.SessionName = newSessionName
 	dbCtx2, dbCancel2 := context.WithTimeout(context.Background(), 5*time.Second)
@@ -113,9 +118,6 @@ func (e *Engine) ConnectAccount(ctx context.Context, tenantID, accountID uuid.UU
 	// R182 读档优先判定(用正式名): 有存档 → 用正式名纯读档连接, PhoneNumber 置空(gotd 绝不发码)。
 	// runAuth 后续 IsConnected 分支照常走, RenameSessionStorage 因 login 名下无记录自动跳过, 安全。
 	effectiveSessionName := loginSessionName
-	if newSessionName == "" {
-		newSessionName = fmt.Sprintf("acc_%s", accountID.String())
-	}
 	if hasStored, serr := e.repo.SessionExists(ctx, newSessionName); serr == nil && hasStored {
 		effectiveSessionName = newSessionName
 		phoneNumber = ""
