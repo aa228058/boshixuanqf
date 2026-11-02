@@ -201,7 +201,9 @@ func (e *Engine) executeJoinGroups(ctx context.Context, task *domain.Task) {
 			}
 		} else {
 			// Public group: ResolvePeer → get chat ID → JoinChannel
-			peer, resolveErr := client.ResolvePeer(ctx, link)
+			resolveCtx, resolveCancel := context.WithTimeout(ctx, 90*time.Second)
+			peer, resolveErr := client.ResolvePeer(resolveCtx, link)
+			resolveCancel()
 			if resolveErr != nil {
 				status = "failed"
 				errCode = "resolve_failed"
@@ -241,20 +243,24 @@ func (e *Engine) executeJoinGroups(ctx context.Context, task *domain.Task) {
 					switch p := peer.(type) {
 					case *tg.InputPeerChat:
 						// Regular group: treat as channel (public groups are usually channels/supergroups)
-						_, joinErr = client.Invoke(ctx, &tg.ChannelsJoinChannelRequest{
+						joinCtx, joinCancel := context.WithTimeout(ctx, 90*time.Second)
+						_, joinErr = client.Invoke(joinCtx, &tg.ChannelsJoinChannelRequest{
 							Channel: &tg.InputChannel{
 								ChannelID:  p.ChatID,
 								AccessHash: 0,
 							},
 						})
+						joinCancel()
 					case *tg.InputPeerChannel:
 						// Channel/supergroup: use channels.joinChannel
-						_, joinErr = client.Invoke(ctx, &tg.ChannelsJoinChannelRequest{
+						joinCtx, joinCancel := context.WithTimeout(ctx, 90*time.Second)
+						_, joinErr = client.Invoke(joinCtx, &tg.ChannelsJoinChannelRequest{
 							Channel: &tg.InputChannel{
 								ChannelID:  p.ChannelID,
 								AccessHash: p.AccessHash,
 							},
 						})
+						joinCancel()
 					}
 					if joinErr != nil {
 						if isInviteRequestSent(joinErr) {
