@@ -10,6 +10,7 @@ import (
 	"log"
 	"net"
 	"net/smtp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -71,7 +72,7 @@ func (m *Mailer) Send(cfg *domain.NotifySMTPConfig, to, subject, body string) (e
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	addr := fmt.Sprintf("%s:%d", cfg.Host, cfg.Port)
+	addr := net.JoinHostPort(cfg.Host, strconv.Itoa(cfg.Port))
 	msg := []byte(fmt.Sprintf("From: %s\r\nTo: %s\r\nSubject: %s\r\nContent-Type: text/plain; charset=utf-8\r\n\r\n%s", cfg.From, to, subject, body))
 
 	if cfg.Port == 465 {
