@@ -197,7 +197,7 @@ func (r *TaskRepository) ClaimTimeoutTasks(ctx context.Context, workerID string,
 		WHERE task_id IN (
 			SELECT task_id FROM tasks
 			WHERE status = 'running'
-			  AND locked_at < NOW() - ($3 * INTERVAL '1 minute')
+			  AND (locked_at IS NULL OR locked_at < NOW() - ($3 * INTERVAL '1 minute'))
 			ORDER BY priority DESC, created_at ASC
 			FOR UPDATE SKIP LOCKED
 			LIMIT $2
