@@ -322,7 +322,7 @@ func (s *TaskService) Create(ctx context.Context, tenantID uuid.UUID, taskType d
 		if err != nil {
 			return nil, fmt.Errorf("群组ID格式错误: %w", err)
 		}
-		return s.CreateScrapeMembers(ctx, tenantID, accountIDs[0], groupID, nil)
+		return s.CreateScrapeMembers(ctx, tenantID, accountIDs[0], groupID, payload)
 	case domain.TaskTypeScrapeLinks:
 		groupIDStr, _ := payload["group_id"].(string)
 		groupID, err := uuid.Parse(groupIDStr)
@@ -694,6 +694,14 @@ func (s *TaskService) CreateScrapeMembers(ctx context.Context, tenantID uuid.UUI
 			"fallback_id": fmt.Sprintf("%d", group.TGChatID),
 		},
 		CreatedAt: time.Now(),
+	}
+	// Keep user-selected filters (recent_days / has_photo) in the persisted task.
+	// Reserved routing fields always come from the tenant-scoped group lookup.
+	for key, value := range extraPayload {
+		if key == "group_id" || key == "fallback_id" {
+			continue
+		}
+		task.Payload[key] = value
 	}
 	if err := s.repo.Create(ctx, task); err != nil {
 		return nil, fmt.Errorf("create scrape task: %w", err)
