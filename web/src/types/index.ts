@@ -23,6 +23,39 @@ export interface Admin {
   created_at: string
 }
 
+export type AccountStatus = Account['status']
+
+export interface PaginationParams {
+  page?: number
+  page_size?: number
+}
+
+export interface ActivationCode {
+  code_id: string
+  code: string
+  plan_id: string
+  status: 'unused' | 'used' | 'expired' | 'revoked'
+  used_by?: string
+  used_at?: string
+  expires_at?: string
+  timing_type: 'immediate' | 'on_use'
+  created_by?: string
+  created_at: string
+  notes?: string
+  used_by_tenant_name?: string
+}
+
+export interface MonitorMessage {
+  message_id?: number
+  rule_id?: string
+  account_id?: string
+  source_chat_id?: number
+  sender_id?: number
+  message?: string
+  message_preview?: string
+  created_at?: string
+}
+
 export interface Account {
   account_id: string
   tenant_id: string
@@ -348,8 +381,11 @@ export interface Announcement {
   announcement_id: string
   title: string
   content: string
+  priority?: 'normal' | 'urgent'
+  target_type?: 'all' | 'specific_plan'
   target_plans: string[]
-  pinned: boolean
+  pinned?: boolean
+  is_active?: boolean
   start_at?: string
   end_at?: string
   created_at: string
