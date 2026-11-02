@@ -3,10 +3,13 @@ import { ref, computed } from 'vue'
 
 interface LocalNotification {
   id: string
+  notification_id?: string
+  tenant_id?: string
   type: string
   title?: string
   message?: string
   read: boolean
+  is_read?: boolean
   created_at: string
 }
 
@@ -17,8 +20,8 @@ export const useNotificationStore = defineStore('notification', () => {
   function addNotification(n: Omit<LocalNotification, 'id' | 'created_at' | 'read'> & { read?: boolean }) {
     notifications.value.unshift({
       ...n,
-      id: Math.random().toString(36).slice(2) + Date.now().toString(36),
-      read: n.read ?? false,
+      id: n.notification_id || Math.random().toString(36).slice(2) + Date.now().toString(36),
+      read: n.read ?? n.is_read ?? false,
       created_at: new Date().toISOString(),
     })
     if (notifications.value.length > 100) notifications.value.pop()
