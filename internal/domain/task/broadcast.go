@@ -41,17 +41,17 @@ func (e *Engine) executeBroadcast(ctx context.Context, task *domain.Task) {
 
 	// Flush only the uncommitted progress delta after Pause has persisted status.
 	// A paused-state predicate prevents a stale worker from touching a resumed task.
-	flushPausedProgress := func(progress domain.TaskProgress) {
+	flushStoppedProgress := func(progress domain.TaskProgress) {
 		if progress.Done == 0 && progress.Failed == 0 {
 			return
 		}
 		persistCtx, persistCancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer persistCancel()
-		updated, err := e.repo.UpdateProgressIfPaused(persistCtx, task.TenantID, task.TaskID, progress)
+		updated, err := e.repo.UpdateProgressIfStopped(persistCtx, task.TenantID, task.TaskID, progress)
 		if err != nil {
-			taskLog.Printf("[broadcast] 暂停时刷新进度失败 task=%s: %v", task.TaskID, err)
+			taskLog.Printf("[broadcast] 停止时刷新进度失败 task=%s: %v", task.TaskID, err)
 		} else if !updated {
-			taskLog.Printf("[broadcast] 暂停进度刷新跳过，任务已恢复或状态变化 task=%s", task.TaskID)
+			taskLog.Printf("[broadcast] 停止进度刷新跳过，任务已恢复或状态变化 task=%s", task.TaskID)
 		}
 	}
 
@@ -64,7 +64,7 @@ func (e *Engine) executeBroadcast(ctx context.Context, task *domain.Task) {
 		// A user pause/cancel may already have changed the state; the ownership guard
 		// makes this a harmless no-op in that case.
 		updateOwnedStatus(status)
-		flushPausedProgress(progress)
+		flushStoppedProgress(progress)
 	}
 
 	// 读取任务自定义发送间隔（秒），未设置则使用全局配置
@@ -524,6 +524,8 @@ accountLoop:
 							backoff := time.Duration(attempt*attempt) * 3 * time.Second
 							select {
 							case <-ctx.Done():
+								flushCancellationProgress(progressAccum)
+								progressAccum = domain.TaskProgress{}
 								return
 							case <-time.After(backoff):
 							}
@@ -587,6 +589,8 @@ accountLoop:
 					}
 					select {
 					case <-ctx.Done():
+						flushCancellationProgress(progressAccum)
+						progressAccum = domain.TaskProgress{}
 						return
 					case <-time.After(time.Duration(1000+rand.IntN(2000)) * time.Millisecond):
 					}
