@@ -209,6 +209,9 @@ func (e *Engine) executeJoinGroups(ctx context.Context, task *domain.Task) {
 							log.Printf("[join] 创建群组失败: %v", err)
 						}
 					}
+				} else if isAlreadyMember(joinErr) {
+					status = "success"
+					errCode = "already_member"
 				} else {
 					status = "failed"
 					errMsg = joinErr.Error()
