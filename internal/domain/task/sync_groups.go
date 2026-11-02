@@ -170,6 +170,9 @@ func (e *Engine) SyncJoinedGroups(ctx context.Context, tenantID, accountID uuid.
 			if err := e.groupRepo.UpsertAccountGroup(ctx, accountID, groupID, isJoined); err != nil {
 				log.Printf("[sync] 关联群组 %d 到账号失败: %v", chat.ID, err)
 			} else {
+				if err := e.groupRepo.RefreshJoinStatus(ctx, tenantID, groupID); err != nil {
+					log.Printf("[sync] 刷新群组汇总加入状态失败 group=%s: %v", groupID, err)
+				}
 				log.Printf("[sync] 已关联群组 %d（group_id=%s）到账号 %s", chat.ID, groupID, accountID)
 			}
 			processed++
@@ -222,12 +225,12 @@ func (e *Engine) SyncJoinedGroups(ctx context.Context, tenantID, accountID uuid.
 			if seenIDs[lg.TGChatID] {
 				continue // 本次同步见到了, 保持已加入
 			}
-			if err := e.groupRepo.UpdateJoinStatus(ctx, tenantID, lg.GroupID, false); err != nil {
-				log.Printf("[sync] prune 标记群 %d left 失败: %v", lg.TGChatID, err)
-				continue
-			}
 			if err := e.groupRepo.UpsertAccountGroup(ctx, accountID, lg.GroupID, false); err != nil {
 				log.Printf("[sync] prune 更新关联表失败 group=%s: %v", lg.GroupID, err)
+				continue
+			}
+			if err := e.groupRepo.RefreshJoinStatus(ctx, tenantID, lg.GroupID); err != nil {
+				log.Printf("[sync] prune 刷新群组汇总状态失败: %v", err)
 			}
 			pruned++
 		}
