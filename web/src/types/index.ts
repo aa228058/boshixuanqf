@@ -683,8 +683,9 @@ export interface DashboardStats {
   completed_tasks_today?: number
   total_groups?: number
   risk_events_24h?: number
-  task_trend?: Array<{ date: string; count: number }> | number[]
-  account_distribution?: Array<{ status: string; count: number }> | Record<string, number>
+  task_trend?: number[]
+  account_distribution?: Array<{ value: number; name: string }>
+  trends?: Record<string, string>
   system_health?: {
     cpu_usage?: number
     memory_usage?: number
