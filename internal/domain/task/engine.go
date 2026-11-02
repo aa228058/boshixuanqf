@@ -716,20 +716,28 @@ func (e *Engine) runTask(ctx context.Context, task *domain.Task) {
 				})
 			}
 		}()
-		// R119: 任务结束邮件通知(完成→task_finished, 失败→task_failed)
+		// 任务结束通知必须读取数据库最终状态：claim 返回的 task.Status 固定是
+		// running，执行器更新状态不会回写这个内存对象；直接读 task.Status 会导致通知永不触发。
 		defer func() {
 			if e.finishNotify == nil {
 				return
 			}
-			st := string(task.Status)
-			if st == "completed" || st == "failed" {
-				// Task.Progress 是值类型非指针; 任务名取 payload["name"], 回退类型名
-				name, _ := task.Payload["name"].(string)
-				if name == "" {
-					name = string(task.Type)
-				}
-				e.finishNotify(task.TenantID, name, string(task.Type), st, task.Progress.Done, task.Progress.Failed)
+			notifyCtx, notifyCancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer notifyCancel()
+			finalTask, err := e.repo.GetByID(notifyCtx, task.TenantID, task.TaskID)
+			if err != nil || finalTask == nil {
+				taskLog.Printf("[task] 读取最终状态以发送完成通知失败 task=%s: %v", task.TaskID, err)
+				return
 			}
+			st := string(finalTask.Status)
+			if st != "completed" && st != "failed" {
+				return
+			}
+			name, _ := finalTask.Payload["name"].(string)
+			if name == "" {
+				name = string(finalTask.Type)
+			}
+			e.finishNotify(finalTask.TenantID, name, string(finalTask.Type), st, finalTask.Progress.Done, finalTask.Progress.Failed)
 		}()
 		defer func() {
 			if e.scheduler != nil {
@@ -743,8 +751,12 @@ func (e *Engine) runTask(ctx context.Context, task *domain.Task) {
 		defer func() {
 			if r := recover(); r != nil {
 				taskLog.Printf("task panic: %v\n%s\n", r, debug.Stack())
-				if err := e.repo.UpdateStatus(ctx, task.TenantID, task.TaskID, domain.TaskStatusFailed); err != nil {
-					taskLog.Printf("[task] UpdateStatus failed: %v", err)
+				persistCtx, persistCancel := context.WithTimeout(context.Background(), 10*time.Second)
+				defer persistCancel()
+				if updated, err := e.repo.UpdateStatusIfOwned(persistCtx, task.TenantID, task.TaskID, e.workerID, domain.TaskStatusFailed); err != nil {
+					taskLog.Printf("[task] panic status update failed: %v", err)
+				} else if !updated {
+					taskLog.Printf("[task] panic status update skipped; worker no longer owns task %s", task.TaskID)
 				}
 			}
 		}()
