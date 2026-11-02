@@ -31,6 +31,9 @@ func nilAccount(id uuid.UUID) any {
 
 // Create inserts a new task l.
 func (r *TaskLogRepository) Create(ctx context.Context, l *domain.TaskLog) error {
+	if l.LogID == uuid.Nil {
+		l.LogID = uuid.New()
+	}
 	_, err := r.db.Exec(ctx, `
 		INSERT INTO task_logs (log_id, task_id, tenant_id, account_id, target_id, target_name, action, status, tg_response, error_code, message, tg_message_id, executed_at)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
@@ -217,6 +220,11 @@ func (r *TaskLogRepository) DeleteOlderThanGlobal(ctx context.Context, days int)
 func (r *TaskLogRepository) CreateBatch(ctx context.Context, logs []*domain.TaskLog) error {
 	if len(logs) == 0 {
 		return nil
+	}
+	for _, l := range logs {
+		if l != nil && l.LogID == uuid.Nil {
+			l.LogID = uuid.New()
+		}
 	}
 	// Use COPY for efficient bulk insert
 	conn, err := r.db.Acquire(ctx)
