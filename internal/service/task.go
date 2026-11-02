@@ -555,7 +555,7 @@ func (s *TaskService) CreateBroadcastWithMode(ctx context.Context, tenantID uuid
 	// Auto-split: if total messages exceed threshold, split into multiple sub-tasks
 	maxMsgsPerTask := s.cfg.MaxMsgsPerTask
 	if (mode == domain.BroadcastModeMapping || mode == domain.BroadcastModeBalanced) && totalMsgs > maxMsgsPerTask {
-		return s.createSplitBroadcast(ctx, tenantID, mappings, message, scheduledAt, totalMsgs, maxMsgsPerTask, intervalMin, intervalMax, extraPayload)
+		return s.createSplitBroadcast(ctx, tenantID, mode, mappings, message, scheduledAt, totalMsgs, maxMsgsPerTask, intervalMin, intervalMax, extraPayload)
 	}
 
 	// 优先级: 默认 5, 前端可传 1-10(8=优先插队, ClaimTasks 按 priority DESC 排序)
@@ -588,7 +588,7 @@ func (s *TaskService) CreateBroadcastWithMode(ctx context.Context, tenantID uuid
 }
 
 // createSplitBroadcast splits a large broadcast into multiple sub-tasks.
-func (s *TaskService) createSplitBroadcast(ctx context.Context, tenantID uuid.UUID, mappings []domain.AccountTargetMapping, message string, scheduledAt *time.Time, totalMsgs, maxMsgsPerTask, intervalMin, intervalMax int, extraPayload map[string]any) (*domain.Task, error) {
+func (s *TaskService) createSplitBroadcast(ctx context.Context, tenantID uuid.UUID, mode domain.BroadcastMode, mappings []domain.AccountTargetMapping, message string, scheduledAt *time.Time, totalMsgs, maxMsgsPerTask, intervalMin, intervalMax int, extraPayload map[string]any) (*domain.Task, error) {
 	// 2026-10-22 审计修复: maxMsgsPerTask<=0 时 splitMappings 会死循环/除零——入口护栏
 	if maxMsgsPerTask < 1 {
 		maxMsgsPerTask = 1
@@ -621,7 +621,7 @@ func (s *TaskService) createSplitBroadcast(ctx context.Context, tenantID uuid.UU
 
 		payload := map[string]any{
 			"message":      message,
-			"mode":         string(domain.BroadcastModeMapping),
+			"mode":         string(mode),
 			"mappings":     mappingsToPayload(chunk),
 			"batch_id":     batch.BatchID.String(),
 			"batch_index":  i + 1,
