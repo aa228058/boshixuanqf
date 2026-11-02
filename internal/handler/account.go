@@ -1339,6 +1339,9 @@ func (h *AccountHandler) TransferGroups(c echo.Context) error {
 	if target.Status == domain.AccountStatusBanned {
 		return echo.NewHTTPError(http.StatusBadRequest, "目标账号已被封禁, 不能作为转移目标")
 	}
+	if target.PoolStatus == "standby" {
+		return echo.NewHTTPError(http.StatusBadRequest, "目标账号处于备用池, 请先转正")
+	}
 
 	// 第一步: 源账号导出邀请链接
 	export, err := h.svc.ExportTransferableGroups(ctx, tenantID, sourceID)
