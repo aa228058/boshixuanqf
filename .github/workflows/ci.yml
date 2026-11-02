@@ -119,11 +119,9 @@ jobs:
       - name: Run go vet
         run: go vet ./...
 
-      - name: Run gosec (security scan)
-        run: |
-          go install github.com/securego/gosec/v2/cmd/gosec@latest
-          gosec -exclude-generated ./...
-
+      # Run functional checks before the repository-wide security baseline.
+      # gosec currently reports pre-existing findings; keep those visible without
+      # allowing that separate gate to skip tests, binary build, or migrations.
       - name: Run tests
         env:
           DB_HOST: localhost
@@ -157,6 +155,11 @@ jobs:
         run: |
           go install github.com/pressly/goose/v3/cmd/goose@latest
           goose -dir migrations postgres "postgres://postgres:postgres@localhost:5432/tg_sender_test?sslmode=disable" up
+
+      - name: Run gosec (security scan)
+        run: |
+          go install github.com/securego/gosec/v2/cmd/gosec@latest
+          gosec -exclude-generated ./...
 
   # Phase 10: 前端 typecheck + 单测门禁——此前 CI 只跑 Go, 前端类型失效无人发现
   # (ListResponse/SystemMetrics 等 4 类型缺失曾静默存在, 本仓修复后立此门禁)
