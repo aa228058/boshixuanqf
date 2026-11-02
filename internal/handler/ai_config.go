@@ -52,8 +52,14 @@ func (h *AIConfigHandler) Get(c echo.Context) error {
 	if err != nil {
 		return err
 	}
-	provider, _, model, hasKey, _ := h.repo.Load(c.Request().Context(), tenantID)
-	enabled, _ := h.repo.VerifierEnabled(c.Request().Context(), tenantID)
+	provider, _, model, hasKey, err := h.repo.Load(c.Request().Context(), tenantID)
+	if err != nil {
+		return echo.NewHTTPError(http.StatusInternalServerError, "AI 配置读取失败")
+	}
+	enabled, err := h.repo.VerifierEnabled(c.Request().Context(), tenantID)
+	if err != nil {
+		return echo.NewHTTPError(http.StatusInternalServerError, "验证开关读取失败")
+	}
 	return c.JSON(http.StatusOK, map[string]interface{}{
 		"provider": provider, "model": model, "has_key": hasKey, "enabled": enabled,
 	})
@@ -74,7 +80,10 @@ func (h *AIConfigHandler) Save(c echo.Context) error {
 		return echo.NewHTTPError(http.StatusBadRequest, "invalid body")
 	}
 	ctx := c.Request().Context()
-	provider, enc, model, _, _ := h.repo.Load(ctx, tenantID)
+	provider, enc, model, _, err := h.repo.Load(ctx, tenantID)
+	if err != nil {
+		return echo.NewHTTPError(http.StatusInternalServerError, "AI 配置读取失败，未保存任何更改")
+	}
 	if req.Provider != "" {
 		provider = req.Provider
 	}
@@ -102,7 +111,10 @@ func (h *AIConfigHandler) Test(c echo.Context) error {
 	}
 	ctx, cancel := context.WithTimeout(c.Request().Context(), 50*time.Second)
 	defer cancel()
-	provider, enc, model, hasKey, _ := h.repo.Load(ctx, tenantID)
+	provider, enc, model, hasKey, err := h.repo.Load(ctx, tenantID)
+	if err != nil {
+		return echo.NewHTTPError(http.StatusInternalServerError, "AI 配置读取失败")
+	}
 	if !hasKey {
 		return echo.NewHTTPError(http.StatusBadRequest, "请先保存 API Key")
 	}
