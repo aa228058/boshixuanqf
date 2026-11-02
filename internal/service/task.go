@@ -353,6 +353,32 @@ func (s *TaskService) CreateBroadcastWithMapping(ctx context.Context, tenantID u
 	mode := domain.BroadcastModeCartesian
 	var totalMsgs int
 
+	// Canonicalize cartesian inputs before calculating totals or persisting the task.
+	// Duplicate IDs must not create duplicate workers or inflate the initial progress denominator.
+	if len(mappings) == 0 {
+		uniqueAccounts := make([]uuid.UUID, 0, len(accountIDs))
+		seenAccounts := make(map[uuid.UUID]bool, len(accountIDs))
+		for _, id := range accountIDs {
+			if seenAccounts[id] {
+				continue
+			}
+			seenAccounts[id] = true
+			uniqueAccounts = append(uniqueAccounts, id)
+		}
+		accountIDs = uniqueAccounts
+
+		uniqueTargets := make([]string, 0, len(targetIDs))
+		seenTargets := make(map[string]bool, len(targetIDs))
+		for _, target := range targetIDs {
+			if target == "" || seenTargets[target] {
+				continue
+			}
+			seenTargets[target] = true
+			uniqueTargets = append(uniqueTargets, target)
+		}
+		targetIDs = uniqueTargets
+	}
+
 	// P1-44 审计修复: 空账号/空目标不报错——任务创建后空转一圈标 completed, 浪费额度且误导。
 	if len(accountIDs) == 0 && (mappings == nil || len(mappings) == 0) {
 		return nil, fmt.Errorf("未选择发送账号")
