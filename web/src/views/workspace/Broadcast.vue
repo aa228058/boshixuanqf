@@ -314,7 +314,7 @@ const accName = (a: any) => a?.first_name || a?.remark || a?.phone || (a?.accoun
 // ===== tab 与发送模式状态(2026-10-20: 此前多轮编辑事故把这块定义整体冲丢, 模板引用 undefined
 // 导致 tab 栏/循环开关静默不显示。此处集中补回, 以后动这个文件先看这里) =====
 const activeTab = ref<'tasks' | 'calendar'>('tasks')
-const pageTabs = [{ key: 'tasks', label: '任务列表' }, { key: 'calendar', label: '发送日历' }]
+const pageTabs = [{ key: 'tasks', label: '任务列表' }, { key: 'calendar', label: '发送日历' }] as const
 const isLoop = ref(false)
 const loopIntervalMin = ref(60)
 const authStore = useAuthStore()
