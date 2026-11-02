@@ -24,7 +24,7 @@
             <p class="text-sm text-text-secondary mt-2 whitespace-pre-wrap max-w-[65ch]">{{ a.content }}</p>
             <div class="flex items-center gap-4 mt-3 text-xs text-text-secondary">
               <span>目标: {{ a.target_type === 'all' ? '全部租户' : a.target_plans?.join(', ') }}</span>
-              <span>开始: {{ formatDate(a.start_at) }}</span>
+              <span>开始: {{ a.start_at ? formatDate(a.start_at) : '立即' }}</span>
               <span v-if="a.end_at">结束: {{ formatDate(a.end_at) }}</span>
             </div>
           </div>
