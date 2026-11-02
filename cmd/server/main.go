@@ -362,7 +362,7 @@ func newEchoServer(cfg *config.Config, c *app.Container) *echo.Echo {
 	// R116: /logs/cleanup 已删(前端封装零调用)
 	api.GET("/scrape-links", c.TaskHandler.ListScrapedLinks)
 	api.GET("/scrape-links/export", c.TaskHandler.ExportScrapedLinks)
-	api.POST("/scrape-links/toggle", c.TaskHandler.ToggleLinkScraping)
+	api.POST("/scrape-links/toggle", c.TaskHandler.ToggleLinkScraping, c.PlanChecker.RequirePlanFeature(middleware.FeatureScrapeLinks))
 	api.GET("/scrape-links/status", c.TaskHandler.LinkScrapingStatus)
 	api.GET("/tasks/logs", c.TaskHandler.GetAccountLogs)
 	api.GET("/tasks/:id/progress", c.TaskHandler.GetProgress)
