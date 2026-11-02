@@ -226,6 +226,9 @@ func (e *Engine) executeJoinGroups(ctx context.Context, task *domain.Task) {
 					// Deduplication: skip if already joined this group
 					if e.groupRepo != nil {
 						if existing, _ := e.groupRepo.GetByTGChatID(ctx, task.TenantID, chatID); existing != nil && existing.IsJoined {
+							if err := e.associateJoinedGroup(ctx, task.TenantID, accID, existing.GroupID); err != nil {
+								log.Printf("[join] 关联已加入群到账号失败: %v", err)
+							}
 							status = "success"
 							errCode = "already_joined"
 							goto logAndContinue
@@ -269,6 +272,13 @@ func (e *Engine) executeJoinGroups(ctx context.Context, task *domain.Task) {
 						} else if isAlreadyMember(joinErr) {
 							status = "success"
 							errCode = "already_member"
+							if e.groupRepo != nil {
+								if existing, getErr := e.groupRepo.GetByTGChatID(ctx, task.TenantID, chatID); getErr == nil && existing != nil {
+								if err := e.associateJoinedGroup(ctx, task.TenantID, accID, existing.GroupID); err != nil {
+									log.Printf("[join] 关联已加入群到账号失败: %v", err)
+								}
+							}
+							}
 						} else {
 							status = "failed"
 							errMsg = joinErr.Error()
@@ -324,6 +334,11 @@ func (e *Engine) executeJoinGroups(ctx context.Context, task *domain.Task) {
 							} else {
 								if err := e.groupRepo.Create(ctx, g); err != nil {
 									log.Printf("[join] 创建群组失败: %v", err)
+								}
+							}
+							if saved, getErr := e.groupRepo.GetByTGChatID(ctx, task.TenantID, chatID); getErr == nil && saved != nil {
+								if err := e.associateJoinedGroup(ctx, task.TenantID, accID, saved.GroupID); err != nil {
+									log.Printf("[join] 关联新加入群到账号失败: %v", err)
 								}
 							}
 						}
