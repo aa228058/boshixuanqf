@@ -1085,6 +1085,9 @@ func (s *TaskService) Update(ctx context.Context, tenantID, taskID uuid.UUID, ac
 
 // CreateMonitorScrape creates a monitor-based member scraping task.
 func (s *TaskService) CreateMonitorScrape(ctx context.Context, tenantID, accountID, groupID uuid.UUID, matchType, matchContent string, durationMinutes, maxResults int) (*domain.Task, error) {
+	if err := s.checkPlanFeature(ctx, tenantID, "monitor"); err != nil {
+		return nil, err
+	}
 	if err := s.validateAccountOwnership(ctx, tenantID, []uuid.UUID{accountID}); err != nil {
 		return nil, err
 	}
