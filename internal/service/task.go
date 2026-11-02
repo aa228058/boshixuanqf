@@ -173,6 +173,77 @@ func (s *TaskService) validateActiveAccountOwnership(ctx context.Context, tenant
 	return nil
 }
 
+
+// validateTaskCreation applies the same tenant, plan, account and concurrency
+// guards to every task-creation entry point (including dedicated API handlers).
+// slots is the number of queued child tasks a split broadcast will create.
+func (s *TaskService) validateTaskCreation(ctx context.Context, tenantID uuid.UUID, taskType domain.TaskType, accountIDs []uuid.UUID, isLoop bool, slots int) error {
+	if feature, ok := taskTypeFeature[taskType]; ok {
+		if err := s.checkPlanFeature(ctx, tenantID, feature); err != nil {
+			return err
+		}
+	}
+	if isLoop {
+		if err := s.checkPlanFeature(ctx, tenantID, "loop_broadcast"); err != nil {
+			return err
+		}
+	}
+	if slots < 1 {
+		slots = 1
+	}
+	accounts, err := s.accountRepo.ListByIDs(ctx, tenantID, accountIDs)
+	if err != nil {
+		return fmt.Errorf("validate task accounts: %w", err)
+	}
+	if len(accounts) != len(accountIDs) {
+		return fmt.Errorf("some accounts not found or not owned by tenant")
+	}
+	requiresActive := taskType == domain.TaskTypeBroadcast ||
+		taskType == domain.TaskTypeScheduledBroadcast ||
+		taskType == domain.TaskTypeJoinGroups ||
+		taskType == domain.TaskTypeInviteMembers
+	for _, acc := range accounts {
+		if acc.Status == domain.AccountStatusBanned {
+			return fmt.Errorf("account %s is banned", acc.AccountID)
+		}
+		if acc.Status == domain.AccountStatusRestricted {
+			return fmt.Errorf("account %s is restricted", acc.AccountID)
+		}
+		if requiresActive && acc.PoolStatus == "standby" {
+			return fmt.Errorf("account %s is in standby pool; move it to active before sending/joining", acc.AccountID)
+		}
+	}
+	if s.tenantRepo == nil {
+		return fmt.Errorf("租户服务未就绪")
+	}
+	tenant, err := s.tenantRepo.GetByID(ctx, tenantID)
+	if err != nil {
+		return fmt.Errorf("读取租户订阅状态失败: %w", err)
+	}
+	if tenant == nil {
+		return fmt.Errorf("租户不存在")
+	}
+	if tenant.ExpiresAt != nil && !tenant.ExpiresAt.After(time.Now()) {
+		return fmt.Errorf("tenant subscription expired")
+	}
+	runningCount, err := s.repo.CountByStatus(ctx, tenantID, string(domain.TaskStatusRunning))
+	if err != nil {
+		return fmt.Errorf("count running tasks: %w", err)
+	}
+	queuedCount, err := s.repo.CountByStatus(ctx, tenantID, string(domain.TaskStatusQueued))
+	if err != nil {
+		return fmt.Errorf("count queued tasks: %w", err)
+	}
+	maxConcurrent := s.cfg.MaxConcurrent
+	if tenant.MaxConcurrentTasks > 0 {
+		maxConcurrent = tenant.MaxConcurrentTasks
+	}
+	if runningCount+queuedCount+slots > maxConcurrent {
+		return fmt.Errorf("max concurrent tasks reached for tenant: %d+%d+%d/%d", runningCount, queuedCount, slots, maxConcurrent)
+	}
+	return nil
+}
+
 // RaffleResultClear R128: 清空抽奖参与记录(调仓库 DeleteAll)
 func (s *TaskService) RaffleResultClear(ctx context.Context, tenantID uuid.UUID) error {
 	return s.raffleResultRepo.DeleteAll(ctx, tenantID)
@@ -372,14 +443,6 @@ func (s *TaskService) CreateBroadcast(ctx context.Context, tenantID uuid.UUID, a
 // First run happens immediately; afterwards the engine requeues it every
 // loopIntervalMinutes until it is paused or cancelled.
 func (s *TaskService) CreateScheduledBroadcast(ctx context.Context, tenantID uuid.UUID, accountIDs []uuid.UUID, targetIDs []string, message string, loopIntervalMinutes, intervalMin, intervalMax int, isLoop bool) (*domain.Task, error) {
-	if err := s.checkPlanFeature(ctx, tenantID, "scheduled_tasks"); err != nil {
-		return nil, err
-	}
-	if isLoop {
-		if err := s.checkPlanFeature(ctx, tenantID, "loop_broadcast"); err != nil {
-			return nil, err
-		}
-	}
 	now := time.Now()
 	return s.createBroadcastWithMappingTask(ctx, tenantID, nil, accountIDs, targetIDs, message, &now, intervalMin, intervalMax, nil, domain.TaskTypeScheduledBroadcast, isLoop, loopIntervalMinutes)
 }
@@ -393,12 +456,6 @@ func (s *TaskService) CreateBroadcastWithMapping(ctx context.Context, tenantID u
 // CreateLoopBroadcastWithMapping creates a broadcast/loop task while preserving
 // the same cartesian or account-target mapping semantics as a normal broadcast.
 func (s *TaskService) CreateLoopBroadcastWithMapping(ctx context.Context, tenantID uuid.UUID, mappings []domain.AccountTargetMapping, accountIDs []uuid.UUID, targetIDs []string, message string, scheduledAt *time.Time, intervalMin, intervalMax, loopIntervalMinutes int, extraPayload map[string]any) (*domain.Task, error) {
-	if err := s.checkPlanFeature(ctx, tenantID, "scheduled_tasks"); err != nil {
-		return nil, err
-	}
-	if err := s.checkPlanFeature(ctx, tenantID, "loop_broadcast"); err != nil {
-		return nil, err
-	}
 	if loopIntervalMinutes <= 0 {
 		loopIntervalMinutes = 60
 	}
@@ -493,6 +550,17 @@ func (s *TaskService) createBroadcastWithMappingTask(ctx context.Context, tenant
 	if totalMsgs <= 0 {
 		return nil, fmt.Errorf("群发目标不能为空")
 	}
+	maxMsgsPerTask := s.cfg.MaxMsgsPerTask
+	if maxMsgsPerTask < 1 {
+		maxMsgsPerTask = 1
+	}
+	taskSlots := 1
+	if mode == domain.BroadcastModeMapping && totalMsgs > maxMsgsPerTask {
+		taskSlots = len(splitMappings(mappings, maxMsgsPerTask))
+	}
+	if err := s.validateTaskCreation(ctx, tenantID, taskType, accountIDs, isLoop, taskSlots); err != nil {
+		return nil, err
+	}
 
 	// 套餐日额度(051): 免费体验版限 50 条/天, 原子计数防并发超发; 付费档 0=不限
 	if s.planLimits != nil {
@@ -503,7 +571,6 @@ func (s *TaskService) createBroadcastWithMappingTask(ctx context.Context, tenant
 		}
 	}
 	// Auto-split: if total messages exceed threshold, split into multiple sub-tasks
-	maxMsgsPerTask := s.cfg.MaxMsgsPerTask
 	if mode == domain.BroadcastModeMapping && totalMsgs > maxMsgsPerTask {
 		return s.createSplitBroadcast(ctx, tenantID, mappings, message, scheduledAt, totalMsgs, maxMsgsPerTask, intervalMin, intervalMax, extraPayload, taskType, isLoop, loopIntervalMinutes)
 	}
@@ -720,7 +787,7 @@ func mappingsToPayload(mappings []domain.AccountTargetMapping) []map[string]any 
 
 // CreateScrapeMembers creates a scrape members task.
 func (s *TaskService) CreateScrapeMembers(ctx context.Context, tenantID uuid.UUID, accountID uuid.UUID, groupID uuid.UUID, extraPayload map[string]any) (*domain.Task, error) {
-	if err := s.validateAccountOwnership(ctx, tenantID, []uuid.UUID{accountID}); err != nil {
+	if err := s.validateTaskCreation(ctx, tenantID, domain.TaskTypeScrapeMembers, []uuid.UUID{accountID}, false, 1); err != nil {
 		return nil, err
 	}
 
@@ -774,7 +841,7 @@ func (s *TaskService) CreateJoinGroups(ctx context.Context, tenantID uuid.UUID, 
 // 否则退回全局 JOIN_INTERVAL_MINUTES(默认2分钟) + 0~50% 抖动。
 // 合法性: 1 ≤ min ≤ 60, min ≤ max ≤ 120。
 func (s *TaskService) CreateJoinGroupsWithInterval(ctx context.Context, tenantID uuid.UUID, accountID uuid.UUID, links []string, intervalMin, intervalMax int) (*domain.Task, error) {
-	if err := s.validateActiveAccountOwnership(ctx, tenantID, []uuid.UUID{accountID}); err != nil {
+	if err := s.validateTaskCreation(ctx, tenantID, domain.TaskTypeJoinGroups, []uuid.UUID{accountID}, false, 1); err != nil {
 		return nil, err
 	}
 	// 2026-09-22 服务端兜底：空链接直接拒绝，杜绝零目标任务
@@ -822,10 +889,7 @@ func (s *TaskService) CreateJoinGroupsWithInterval(ctx context.Context, tenantID
 
 // CreateInviteMembers 邀请入群: 把来源群已采集成员批量邀请进本账号的目标群。
 func (s *TaskService) CreateInviteMembers(ctx context.Context, tenantID, accountID, targetGroupID, sourceGroupID uuid.UUID) (*domain.Task, error) {
-	if err := s.checkPlanFeature(ctx, tenantID, "invite"); err != nil {
-		return nil, err
-	}
-	if err := s.validateActiveAccountOwnership(ctx, tenantID, []uuid.UUID{accountID}); err != nil {
+	if err := s.validateTaskCreation(ctx, tenantID, domain.TaskTypeInviteMembers, []uuid.UUID{accountID}, false, 1); err != nil {
 		return nil, err
 	}
 	// 目标群必须是本账号已加入的群
@@ -868,7 +932,7 @@ func (s *TaskService) CreateInviteMembers(ctx context.Context, tenantID, account
 
 // CreateScrapeLinks creates a scrape links task.
 func (s *TaskService) CreateScrapeLinks(ctx context.Context, tenantID uuid.UUID, accountID uuid.UUID, _ []string, durationMinutes int) (*domain.Task, error) {
-	if err := s.validateAccountOwnership(ctx, tenantID, []uuid.UUID{accountID}); err != nil {
+	if err := s.validateTaskCreation(ctx, tenantID, domain.TaskTypeScrapeLinks, []uuid.UUID{accountID}, false, 1); err != nil {
 		return nil, err
 	}
 
@@ -1156,10 +1220,7 @@ func (s *TaskService) Update(ctx context.Context, tenantID, taskID uuid.UUID, ac
 
 // CreateMonitorScrape creates a monitor-based member scraping task.
 func (s *TaskService) CreateMonitorScrape(ctx context.Context, tenantID, accountID, groupID uuid.UUID, matchType, matchContent string, durationMinutes, maxResults int) (*domain.Task, error) {
-	if err := s.checkPlanFeature(ctx, tenantID, "monitor"); err != nil {
-		return nil, err
-	}
-	if err := s.validateAccountOwnership(ctx, tenantID, []uuid.UUID{accountID}); err != nil {
+	if err := s.validateTaskCreation(ctx, tenantID, domain.TaskTypeMonitorScrape, []uuid.UUID{accountID}, false, 1); err != nil {
 		return nil, err
 	}
 	group, err := s.groupRepo.GetByID(ctx, tenantID, groupID)

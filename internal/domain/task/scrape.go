@@ -958,6 +958,7 @@ func (e *Engine) executeScrapeActiveUsers(ctx context.Context, task *domain.Task
 	seen := map[int64]bool{}
 	var collected []*domain.Member
 	lastID, scanned := int32(0), 0
+historyLoop:
 	for scanned < maxMessages {
 		req := &tg.MessagesGetHistoryRequest{Peer: peer, Limit: 100, OffsetID: lastID}
 		var res tg.MessagesClass
@@ -1015,7 +1016,11 @@ func (e *Engine) executeScrapeActiveUsers(ctx context.Context, task *domain.Task
 		if lastID == 0 {
 			break
 		}
-		time.Sleep(500 * time.Millisecond)
+		select {
+		case <-ctx.Done():
+			break historyLoop
+		case <-time.After(500 * time.Millisecond):
+		}
 	}
 
 	if len(collected) > 0 {
@@ -1024,5 +1029,13 @@ func (e *Engine) executeScrapeActiveUsers(ctx context.Context, task *domain.Task
 		}
 	}
 	taskLog.Printf("[scrape] 历史消息采集完成: 扫描 %d 条消息, %d 个用户", scanned, len(collected))
-	e.updateTaskStatusIfOwned(ctx, task, domain.TaskStatusCompleted)
+	finalStatus := domain.TaskStatusCompleted
+	if ctx.Err() == context.DeadlineExceeded {
+		finalStatus = domain.TaskStatusFailed
+	}
+	persistCtx, persistCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer persistCancel()
+	if err := e.updateTaskStatusIfOwned(persistCtx, task, finalStatus); err != nil {
+		taskLog.Printf("[scrape] final task status update failed: %v", err)
+	}
 }
