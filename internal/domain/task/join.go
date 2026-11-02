@@ -83,7 +83,7 @@ func (e *Engine) executeJoinGroups(ctx context.Context, task *domain.Task) {
 
 	// Check account status before using it
 	acc, err := e.accEngine.GetByID(ctx, task.TenantID, accID)
-	if err != nil || acc == nil || (acc.Status == domain.AccountStatusBanned || acc.Status == domain.AccountStatusRestricted || acc.Status == domain.AccountStatusPendingAuth) {
+	if err != nil || acc == nil || (acc.Status == domain.AccountStatusBanned || acc.Status == domain.AccountStatusRestricted || acc.Status == domain.AccountStatusPendingAuth) || (acc != nil && acc.PoolStatus == "standby") {
 		status := "unknown"
 		if acc != nil {
 			status = string(acc.Status)
