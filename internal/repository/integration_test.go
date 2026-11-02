@@ -94,8 +94,8 @@ func TestTenantSoftDeleteAndPurgeQueries(t *testing.T) {
 	_, err := pool.Exec(ctx, `
 		INSERT INTO tenants (tenant_id, username, password_hash, name, api_key_hash, plan_id)
 		VALUES ('11111111-1111-1111-1111-111111111111', 'integtest', 'x', 'Integ', 'integ-test-key-hash', 'free');
-		INSERT INTO accounts (account_id, tenant_id, phone, status)
-		VALUES ('22222222-2222-2222-2222-222222222222', '11111111-1111-1111-1111-111111111111', '+10000000000', 'active');
+		INSERT INTO accounts (account_id, tenant_id, phone, session_name, status)
+		VALUES ('22222222-2222-2222-2222-222222222222', '11111111-1111-1111-1111-111111111111', '+10000000000', 'integtest_session', 'offline');
 		INSERT INTO campaigns (id, tenant_id, name, status)  -- 注意：主键是 id（D-00 教训）
 		VALUES ('33333333-3333-3333-3333-333333333333', '11111111-1111-1111-1111-111111111111', 'c1', 'running');
 		INSERT INTO campaign_accounts (campaign_id, account_id)
