@@ -33,6 +33,7 @@ function setLoading(loading: boolean) {
 }
 
 export interface RequestOptions {
+  responseType?: 'blob' | 'arrayBuffer'
   method?: string
   headers?: Record<string, string>
   body?: Record<string, unknown> | unknown
