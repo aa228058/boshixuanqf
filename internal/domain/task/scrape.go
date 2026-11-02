@@ -804,19 +804,37 @@ func (e *Engine) executeScrapeLinksReport(ctx context.Context, task *domain.Task
 	}
 
 finish:
+	persistCtx, persistCancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer persistCancel()
+
 	var finalCount int
+	var countErr error
 	if e.scrapedLinkRepo != nil {
-		if cnt, err := e.scrapedLinkRepo.CountByTenantSince(ctx, task.TenantID, taskStart); err == nil {
-			finalCount = cnt
-		}
+		finalCount, countErr = e.scrapedLinkRepo.CountByTenantSince(persistCtx, task.TenantID, taskStart)
+	} else {
+		countErr = fmt.Errorf("scraped link repository is not configured")
 	}
 
 	finalProgress := domain.TaskProgress{Total: finalCount, Done: finalCount}
-	e.repo.UpdateProgressExact(ctx, task.TenantID, task.TaskID, finalProgress)
-	e.publishProgress(task.TenantID, task.TaskID, finalProgress)
+	if countErr == nil {
+		if updated, err := e.repo.UpdateProgressExactIfOwned(persistCtx, task.TenantID, task.TaskID, e.workerID, finalProgress); err != nil {
+			taskLog.Printf("[scrape-links] final progress update failed: %v", err)
+		} else if updated {
+			e.publishProgress(task.TenantID, task.TaskID, finalProgress)
+		}
+	}
 
-	if err := e.repo.UpdateStatus(ctx, task.TenantID, task.TaskID, domain.TaskStatusCompleted); err != nil {
-		taskLog.Printf("[task] UpdateStatus failed: %v", err)
+	finalStatus := domain.TaskStatusCompleted
+	if countErr != nil {
+		finalStatus = domain.TaskStatusFailed
+		taskLog.Printf("[scrape-links] final count failed: %v", countErr)
+	} else if ctx.Err() != nil {
+		finalStatus = domain.TaskStatusPaused
+	}
+	if updated, err := e.repo.UpdateStatusIfOwned(persistCtx, task.TenantID, task.TaskID, e.workerID, finalStatus); err != nil {
+		taskLog.Printf("[task] final scrape-links status update failed: %v", err)
+	} else if !updated {
+		taskLog.Printf("[scrape-links] final status skipped: worker no longer owns task %s", task.TaskID)
 	}
 	// 注意: 这里【不】注销常驻监听。常驻 LinkScraper 由 accountWatcherLoop
 	// 统一管理(每30秒同步), 手动任务结束后把它注销会中断常驻采集,
