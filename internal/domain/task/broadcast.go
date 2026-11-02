@@ -759,7 +759,8 @@ accountLoop:
 					if err != nil {
 						taskLog.Printf("progress update failed: %v\n", err)
 					} else if !updated {
-						taskLog.Printf("[broadcast] 进度刷新时已失去任务租约，停止当前账号 worker task=%s", task.TaskID)
+						taskLog.Printf("[broadcast] 进度刷新时已失去任务租约，取消整个任务以停止其他账号 worker task=%s", task.TaskID)
+						cancel()
 						return
 					}
 				}

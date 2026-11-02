@@ -703,8 +703,11 @@ func (e *Engine) runTask(ctx context.Context, task *domain.Task) {
 		// 必须回滚为 queued，让后续轮询重新认领（"retry later"落到实处）。
 		e.runningTasks.Delete(taskKey)
 		taskLog.Printf("[task] 租户配额已满/系统限压，任务 %s 回滚为 queued 等待重试", task.TaskID)
-		if err := e.repo.UpdateStatus(ctx, task.TenantID, task.TaskID, domain.TaskStatusQueued); err != nil {
+		updated, err := e.repo.UpdateStatusIfOwned(ctx, task.TenantID, task.TaskID, e.workerID, domain.TaskStatusQueued)
+		if err != nil {
 			taskLog.Printf("[task] 回滚任务状态失败 %s: %v", task.TaskID, err)
+		} else if !updated {
+			taskLog.Printf("[task] 回滚任务状态跳过，worker 已失去租约 task=%s", task.TaskID)
 		}
 		return
 	}
@@ -893,8 +896,10 @@ func (e *Engine) executeTask(ctx context.Context, task *domain.Task) {
 		e.executeBroadcast(ctx, task)
 		e.rescheduleLoopTask(ctx, task)
 	default:
-		if err := e.repo.UpdateStatus(ctx, task.TenantID, task.TaskID, domain.TaskStatusFailed); err != nil {
+		if updated, err := e.repo.UpdateStatusIfOwned(ctx, task.TenantID, task.TaskID, e.workerID, domain.TaskStatusFailed); err != nil {
 			taskLog.Printf("[task] UpdateStatus failed: %v", err)
+		} else if !updated {
+			taskLog.Printf("[task] unsupported task status update skipped; worker no longer owns task %s", task.TaskID)
 		}
 	}
 }

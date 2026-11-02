@@ -405,7 +405,7 @@ func (r *TaskRepository) UpdateProgressExactIfOwned(ctx context.Context, tenantI
 	return res.RowsAffected() == 1, nil
 }
 
-// UpdateStatusIfOwned finalizes a task only if the current worker still owns its running lease.
+// UpdateStatusIfOwned changes task status only if the current worker still owns its running lease.
 func (r *TaskRepository) UpdateStatusIfOwned(ctx context.Context, tenantID, taskID uuid.UUID, workerID string, status domain.TaskStatus) (bool, error) {
 	var completedAt interface{}
 	if status == domain.TaskStatusCompleted || status == domain.TaskStatusFailed || status == domain.TaskStatusCancelled {
@@ -414,7 +414,7 @@ func (r *TaskRepository) UpdateStatusIfOwned(ctx context.Context, tenantID, task
 	res, err := r.db.Exec(ctx, `
 		UPDATE tasks SET status = $4, completed_at = $5, locked_at = NULL, worker_id = NULL
 		WHERE tenant_id = $1 AND task_id = $2 AND status = 'running' AND worker_id = $3
-			AND $4 IN ('paused', 'completed', 'failed', 'cancelled')`,
+			AND $4 IN ('queued', 'paused', 'completed', 'failed', 'cancelled')`,
 		tenantID, taskID, workerID, status, completedAt)
 	if err != nil {
 		return false, err
