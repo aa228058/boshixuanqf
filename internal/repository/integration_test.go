@@ -177,3 +177,56 @@ func TestUpdateStatusGuardMatrix(t *testing.T) {
 		t.Fatalf("legal transition running->paused should succeed: %v", err)
 	}
 }
+
+func TestListFailedTargetsPreservesAccountPairsAndExcludesSuccessfulPairs(t *testing.T) {
+	pool := setupTestDB(t)
+	ctx := context.Background()
+	tenantID := uuid.New()
+	accountA := uuid.New()
+	accountB := uuid.New()
+	taskID := uuid.New()
+
+	_, err := pool.Exec(ctx, `
+		INSERT INTO tenants (tenant_id, username, password_hash, name, api_key_hash, plan_id)
+		VALUES ($1, 'retry-pairs-test', 'x', 'Retry pairs', 'retry-pairs-key', 'free');
+		INSERT INTO accounts (account_id, tenant_id, phone, session_name, status)
+		VALUES ($2, $1, '+10000000011', 'retry_a', 'offline'),
+		       ($3, $1, '+10000000012', 'retry_b', 'offline');
+		INSERT INTO tasks (task_id, tenant_id, type, status)
+		VALUES ($4, $1, 'broadcast', 'completed');
+		INSERT INTO task_logs (log_id, task_id, tenant_id, account_id, target_id, action, status)
+		VALUES
+		  (gen_random_uuid(), $4, $1, $2, 'group-1', 'send_message', 'failed'),
+		  (gen_random_uuid(), $4, $1, $2, 'group-1', 'send_message', 'success'),
+		  (gen_random_uuid(), $4, $1, $2, 'group-2', 'send_message', 'failed'),
+		  (gen_random_uuid(), $4, $1, $3, 'group-1', 'send_message', 'failed'),
+		  (gen_random_uuid(), $4, $1, NULL, 'legacy-target', 'send_message', 'failed')
+	`, tenantID, accountA, accountB, taskID)
+	if err != nil {
+		t.Fatalf("seed retry-pair fixture: %v", err)
+	}
+
+	got, err := NewTaskLogRepository(pool).ListFailedTargets(ctx, tenantID, taskID)
+	if err != nil {
+		t.Fatalf("ListFailedTargets: %v", err)
+	}
+	if len(got) != 3 {
+		t.Fatalf("got %d failed pairs, want 3: %#v", len(got), got)
+	}
+	seen := make(map[string]bool, len(got))
+	for _, item := range got {
+		account := "null"
+		if item.AccountID != nil {
+			account = item.AccountID.String()
+		}
+		seen[account+"|"+item.TargetID] = true
+	}
+	if seen[accountA.String()+"|group-1"] {
+		t.Fatal("pair with a later success was returned for retry")
+	}
+	for _, key := range []string{accountA.String()+"|group-2", accountB.String()+"|group-1", "null|legacy-target"} {
+		if !seen[key] {
+			t.Errorf("missing failed pair %q: %#v", key, seen)
+		}
+	}
+}
