@@ -225,13 +225,16 @@ func (e *Engine) executeJoinGroups(ctx context.Context, task *domain.Task) {
 				if chatID != 0 {
 					// Deduplication: skip if already joined this group
 					if e.groupRepo != nil {
-						if existing, _ := e.groupRepo.GetByTGChatID(ctx, task.TenantID, chatID); existing != nil && existing.IsJoined {
-							if err := e.associateJoinedGroup(ctx, task.TenantID, accID, existing.GroupID); err != nil {
-								log.Printf("[join] 关联已加入群到账号失败: %v", err)
+						if existing, getErr := e.groupRepo.GetByTGChatID(ctx, task.TenantID, chatID); getErr == nil && existing != nil {
+							joined, joinCheckErr := e.groupRepo.IsJoinedByAccount(ctx, task.TenantID, accID, existing.GroupID)
+							if joinCheckErr == nil && joined {
+								status = "success"
+								errCode = "already_joined"
+								goto logAndContinue
 							}
-							status = "success"
-							errCode = "already_joined"
-							goto logAndContinue
+							if joinCheckErr != nil {
+								log.Printf("[join] 查询账号群关联失败，继续向 Telegram 确认加入状态: %v", joinCheckErr)
+							}
 						}
 					}
 					var joinErr error
