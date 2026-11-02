@@ -62,9 +62,17 @@ func backupSessionFilesFrom(sourceDir, backupDir string) (int, error) {
 	}
 	defer backupRoot.Close()
 
-	entries, err := sourceRoot.ReadDir(".")
+	dir, err := sourceRoot.Open(".")
 	if err != nil {
-		return 0, fmt.Errorf("read session source directory: %w", err)
+		return 0, fmt.Errorf("open session source directory entries: %w", err)
+	}
+	entries, readErr := dir.ReadDir(-1)
+	closeErr := dir.Close()
+	if readErr != nil {
+		return 0, fmt.Errorf("read session source directory: %w", readErr)
+	}
+	if closeErr != nil {
+		return 0, fmt.Errorf("close session source directory: %w", closeErr)
 	}
 
 	backedUp := 0
