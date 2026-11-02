@@ -137,12 +137,14 @@ func (e *Engine) HandleVerification(ctx context.Context, client *telegram.Client
 	}
 	cand := extractCandidate(msg)
 	cand.chatID = chatID // 会话定位(状态机 key)
+	// Most monitored messages are ordinary chat traffic. Detect a verification
+	// candidate before making the network request needed to resolve its channel peer.
+	if !looksLikeVerification(cand) {
+		return
+	}
 	e.resolvePeer(ctx, client, cand)
 	if cand.peer == nil {
 		return // 私聊类验证无 access_hash 来源, 暂不支持
-	}
-	if !looksLikeVerification(cand) {
-		return
 	}
 	if st := e.vstates.get(accountID, chatID); st != nil && time.Now().Before(st.deadline) {
 		return // 同群已有进行中验证
