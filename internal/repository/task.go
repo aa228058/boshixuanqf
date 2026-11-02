@@ -320,6 +320,26 @@ func (r *TaskRepository) UpdateProgress(ctx context.Context, tenantID, taskID uu
 }
 
 
+// UpdateProgressIfPaused applies a final progress delta only after a user pause.
+// The status predicate prevents an old worker from modifying progress after resume.
+func (r *TaskRepository) UpdateProgressIfPaused(ctx context.Context, tenantID, taskID uuid.UUID, progress domain.TaskProgress) (bool, error) {
+	res, err := r.db.Exec(ctx, `
+		UPDATE tasks
+		SET progress = jsonb_set(
+			jsonb_set(
+				jsonb_set(progress, '{done}', to_jsonb(COALESCE((progress->>'done')::int, 0) + $3)),
+				'{failed}', to_jsonb(COALESCE((progress->>'failed')::int, 0) + $4)
+			),
+			'{current_target}', to_jsonb($5::text)
+		)
+		WHERE tenant_id = $1 AND task_id = $2 AND status = 'paused' AND worker_id IS NULL`,
+		tenantID, taskID, progress.Done, progress.Failed, progress.CurrentTarget)
+	if err != nil {
+		return false, err
+	}
+	return res.RowsAffected() == 1, nil
+}
+
 // UpdateProgressExact sets progress to exact values (use only for final status).
 func (r *TaskRepository) UpdateProgressExact(ctx context.Context, tenantID, taskID uuid.UUID, progress domain.TaskProgress) error {
 	_, err := r.db.Exec(ctx, `
