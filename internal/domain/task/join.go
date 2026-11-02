@@ -17,6 +17,34 @@ import (
 
 
 // classifyJoinError 把 Telegram 拒绝原因细化成可读错误码（原 join_failed 吞掉真因）
+func systemGroupDedupKeyFromJoinLink(link string) string {
+	s := strings.TrimSpace(link)
+	s = strings.TrimPrefix(s, "https://")
+	s = strings.TrimPrefix(s, "http://")
+	s = strings.TrimPrefix(s, "www.")
+	s = strings.TrimPrefix(s, "t.me/")
+	s = strings.TrimPrefix(s, "/")
+	s = strings.SplitN(s, "?", 2)[0]
+	s = strings.TrimSuffix(s, "/")
+	if strings.HasPrefix(s, "+") {
+		return "l:https://t.me/joinchat/" + strings.TrimPrefix(s, "+")
+	}
+	if strings.HasPrefix(s, "joinchat/") {
+		return "l:https://t.me/" + s
+	}
+	s = strings.TrimPrefix(s, "@")
+	if s == "" || strings.HasPrefix(s, "c/") {
+		return ""
+	}
+	if i := strings.IndexByte(s, '/'); i >= 0 {
+		s = s[:i]
+	}
+	if s == "" {
+		return ""
+	}
+	return "u:" + strings.ToLower(s)
+}
+
 func classifyJoinError(err error) string {
 	if err == nil {
 		return ""
@@ -183,7 +211,8 @@ func (e *Engine) executeJoinGroups(ctx context.Context, task *domain.Task) {
 					}
 				} else {
 					status = "failed"
-					errCode = "join_failed"
+					errMsg = joinErr.Error()
+					errCode = classifyJoinError(joinErr)
 					if isGlobalFlood(joinErr) {
 						floodHit = true
 						floodWaitSec = extractFloodSeconds(strings.ToLower(joinErr.Error()))
@@ -207,7 +236,11 @@ func (e *Engine) executeJoinGroups(ctx context.Context, task *domain.Task) {
 			resolveCancel()
 			if resolveErr != nil {
 				status = "failed"
-				errCode = "resolve_failed"
+				errMsg = resolveErr.Error()
+				errCode = classifyJoinError(resolveErr)
+				if errCode == "join_failed" {
+					errCode = "resolve_failed"
+				}
 			} else {
 				var chatID int64
 				var accessHash int64
@@ -375,16 +408,15 @@ func (e *Engine) executeJoinGroups(ctx context.Context, task *domain.Task) {
 		}
 		e.publishLog(task.TenantID, task.TaskID, joinLog)
 
-		// R87-M10: 加入失败 → 回写群库"已失效"状态(按 dedup_key 匹配, 已加入的群不降级)
-		if status == "failed" && e.systemGroupRepo != nil {
-			key := link
-			if strings.HasPrefix(key, "+") || strings.HasPrefix(key, "joinchat/") {
-				key = "l:t.me/" + strings.TrimPrefix(strings.TrimPrefix(key, "+"), "joinchat/")
-			} else if !strings.HasPrefix(key, "u:") && !strings.HasPrefix(key, "l:") {
-				key = "u:" + strings.ToLower(key)
-			}
-			if merr := e.systemGroupRepo.MarkInvalidByDedupKey(ctx, key); merr != nil {
-				log.Printf("[join] 标记群失效失败 %s: %v", key, merr)
+		// Only permanent link/username failures make a shared system-group entry invalid.
+		// Flood waits, account bans, membership limits and private-group access errors
+		// are account-specific or transient and must not poison the cross-tenant catalog.
+		if status == "failed" && e.systemGroupRepo != nil &&
+			(errCode == "invite_expired" || errCode == "invite_invalid" || errCode == "username_invalid") {
+			if key := systemGroupDedupKeyFromJoinLink(link); key != "" {
+				if merr := e.systemGroupRepo.MarkInvalidByDedupKey(ctx, key); merr != nil {
+					log.Printf("[join] 标记群失效失败 %s: %v", key, merr)
+				}
 			}
 		}
 
