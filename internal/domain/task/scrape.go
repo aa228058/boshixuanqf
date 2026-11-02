@@ -1030,8 +1030,11 @@ historyLoop:
 	}
 	taskLog.Printf("[scrape] 历史消息采集完成: 扫描 %d 条消息, %d 个用户", scanned, len(collected))
 	finalStatus := domain.TaskStatusCompleted
-	if ctx.Err() == context.DeadlineExceeded {
-		finalStatus = domain.TaskStatusFailed
+	if ctx.Err() != nil {
+		finalStatus = domain.TaskStatusPaused
+		if ctx.Err() == context.DeadlineExceeded {
+			finalStatus = domain.TaskStatusFailed
+		}
 	}
 	persistCtx, persistCancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer persistCancel()
