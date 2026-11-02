@@ -1,0 +1,90 @@
+/* ══════════════════════════════════════════════════════════════
+   tdesign-skin.css — R125 示例2 玻璃紫皮肤: 一处 CSS 让残留 tdesign
+   组件(17 个页面在用)整体换上玻璃拟态语言, 无需逐页改模板。
+   ══════════════════════════════════════════════════════════════ */
+
+/* 按钮: 玻璃底 + 紫品牌 */
+.t-button {
+  background: var(--t-surface-2) !important;
+  border: 1px solid var(--t-line) !important;
+  color: var(--t-text-1) !important;
+  border-radius: var(--t-r-sm) !important;
+  transition: all 0.15s ease !important;
+}
+.t-button:hover { border-color: var(--t-brand) !important; }
+.t-button.t-button--variant-base,
+.t-button.t-button--variant-primary {
+  background: linear-gradient(135deg, var(--t-brand-active), var(--t-brand)) !important;
+  border-color: transparent !important;
+  color: #fff !important;
+  box-shadow: 0 6px 18px var(--t-brand-dim) !important;
+}
+.t-button.t-is-disabled { opacity: 0.45 !important; }
+
+/* 输入框/文本域: 深底 + 玻璃边框 —— R127 修正: 原写死 rgba(0,0,0,.28) 在浅色主题下
+   呈灰色(22:45 用户反馈), 改用 color-mix 按主题文字色混合, 深浅主题自动协调 */
+.t-input, .t-textarea, .t-select {
+  /* R129: 底=主题底 88% —— 深色下与玻璃卡分层(不再是灰格子), 浅色奶油实底 */
+  background: color-mix(in srgb, var(--t-bg) 82%, transparent) !important;
+  border: 1px solid var(--t-line) !important;
+  border-radius: var(--t-r-sm) !important;
+  color: var(--t-text-1) !important;
+}
+.t-input:hover, .t-textarea:hover, .t-select:hover { border-color: var(--t-line-strong) !important; }
+.t-input.t-is-focused, .t-textarea.t-is-focused, .t-select.t-is-focused {
+  border-color: var(--t-brand) !important;
+  box-shadow: 0 0 0 3px var(--t-brand-dim) !important;
+}
+.t-input__inner, .t-textarea__inner { background: transparent !important; color: var(--t-text-1) !important; }
+.t-input__inner::placeholder, .t-textarea__inner::placeholder { color: var(--t-text-3) !important; }
+
+/* 下拉面板: 玻璃浮层 */
+.t-select__dropdown, .t-popup__content {
+  background: rgba(20, 25, 52, 0.96) !important;
+  border: 1px solid var(--t-line) !important;
+  border-radius: var(--t-r-md) !important;
+  backdrop-filter: blur(20px) !important;
+  color: var(--t-text-1) !important;
+}
+.t-select-option:hover, .t-select-option.t-is-hover { background: var(--t-brand-dim) !important; }
+.t-select-option.t-is-selected { color: var(--t-brand) !important; background: var(--t-brand-dim) !important; }
+
+/* 标签: 状态胶囊(示例2 badge 语言) */
+.t-tag {
+  background: var(--t-surface-2) !important;
+  border: 1px solid var(--t-line) !important;
+  color: var(--t-text-2) !important;
+  border-radius: 99px !important;
+  font-size: 12px !important;
+}
+
+/* 加载: 紫转圈 */
+.t-loading__gradient { stop-color: var(--t-brand) !important; }
+.t-loading { color: var(--t-brand) !important; }
+
+/* 开关: 紫 */
+.t-switch.t-is-checked { background: var(--t-brand) !important; }
+
+/* R128 触屏输入框 16px: iOS Safari 对 font-size<16px 的输入框聚焦时自动放大页面,
+   pointer:coarse 媒体查询只在触屏生效 —— iPhone/iPad 输入不再弹缩, 桌面端不变 */
+@media (pointer: coarse) {
+  input, textarea, select, .t-input, .t-textarea, .t-select {
+    font-size: 16px !important;
+  }
+}
+
+/* 浅色主题(护眼/正常)下: 输入框退回实色 surface-2, 下拉面板实色 surface-1 */
+html.theme-stripe .t-input,
+html.theme-stripe .t-textarea,
+html.theme-stripe .t-select,
+html.theme-eye .t-input,
+html.theme-eye .t-textarea,
+html.theme-eye .t-select {
+  background: var(--t-surface-2) !important;
+}
+html.theme-stripe .t-select__dropdown,
+html.theme-stripe .t-popup__content,
+html.theme-eye .t-select__dropdown,
+html.theme-eye .t-popup__content {
+  background: var(--t-surface-1) !important;
+}

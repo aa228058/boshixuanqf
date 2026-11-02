@@ -1,0 +1,76 @@
+/* ============ TDesign 品牌注入: 紫系 + 双主题 ============
+   骨架层组件吃这里的变量, 深浅切换时自动跟随 */
+
+/* 浅色(默认, 与 theme-stripe 同源) */
+:root,
+html.theme-stripe {
+  /* R87-M10: 旧 Blurple 硬编码 → 品牌令牌(此文件在 theme-dark 之后加载, 曾以
+     高优先级把全站按钮打回紫色, 是"获取验证码"紫按钮的元凶) */
+  --td-brand-color: var(--t-brand);
+  --td-brand-color-hover: var(--t-brand-hover);
+  --td-brand-color-active: var(--t-brand-active);
+  --td-brand-color-focus: var(--t-brand-dim);
+  --td-brand-color-light: color-mix(in srgb, var(--t-brand) 8%, transparent);
+  --td-brand-color-light-hover: color-mix(in srgb, var(--t-brand) 16%, transparent);
+
+  --td-success-color: #10b981;
+  --td-warning-color: #f59e0b;
+  --td-error-color: #f0524f;
+
+  --td-radius-small: 6px;
+  --td-radius-default: 10px;
+  --td-radius-medium: 12px;
+  --td-radius-large: 16px;
+  --td-radius-round: 999px;
+  --td-radius-circle: 50%;
+
+  --td-font-family: inherit;
+  --td-text-color-primary: #0a2540;
+  --td-text-color-secondary: #425466;
+  --td-text-color-placeholder: #8898ab;
+  --td-text-color-disabled: #c2ccd8;
+  --td-bg-color-page: #f6f9fc;
+  --td-bg-color-container: #ffffff;
+  --td-bg-color-container-hover: #f0f4f9;
+  --td-component-border: #e3e9f0;
+  --td-component-stroke: #e6ebf2;
+  --td-component-shadow: rgba(10, 37, 64, 0.08);
+}
+
+/* 深色(theme-dark 下自动生效) */
+html.theme-dark {
+  --td-brand-color: var(--t-brand);
+  --td-brand-color-hover: var(--t-brand-hover);
+  --td-brand-color-active: #6d76e8;
+  --td-brand-color-focus: rgba(129, 140, 248, 0.18);
+  --td-brand-color-light: rgba(129, 140, 248, 0.12);
+  --td-brand-color-light-hover: rgba(129, 140, 248, 0.20);
+
+  --td-text-color-primary: #e8eaf6;
+  --td-text-color-secondary: #b9c0da;
+  --td-text-color-placeholder: #8b93b8;
+  --td-text-color-disabled: #555c7d;
+  --td-bg-color-page: #0d1020;
+  --td-bg-color-container: #161a30;
+  --td-bg-color-container-hover: #1c2140;
+  --td-component-border: rgba(255, 255, 255, 0.10);
+  --td-component-stroke: rgba(255, 255, 255, 0.08);
+  --td-component-shadow: rgba(0, 0, 0, 0.45);
+  --td-bg-color-secondarypanel: #12152a;
+  --td-bg-color-table-hover: rgba(255, 255, 255, 0.04);
+  --td-bg-color-table-expand: #161a30;
+}
+
+/* ===== 移动端弹窗: 底部抽屉式(占满宽, 顶部露出页面背景, 内容区内滚动) ===== */
+@media (max-width: 768px) {
+  .t-dialog__wrap { padding: 0; align-items: flex-end; }
+  .t-dialog {
+    width: 100% !important;
+    max-width: 100%;
+    border-radius: 16px 16px 0 0;
+    max-height: 92dvh;
+    display: flex;
+    flex-direction: column;
+  }
+  .t-dialog__body { overflow-y: auto; -webkit-overflow-scrolling: touch; }
+}

@@ -1,0 +1,130 @@
+/* ============================================================
+   模态框设计规范 · 标准按钮体系
+   详见 docs/modal-design-system.md
+   用法: <button class="modal-btn-primary">创建任务</button>
+   ============================================================ */
+
+/* ---- 设计令牌映射(规范 §8.4): 弹窗代码只用 --modal-* 变量 ----
+   将来替换 UI 库时只需改这一个映射文件, 弹窗组件零改动 */
+:root {
+  /* R128: --modal-bg 已并入 tokens.css 的 --t-modal-bg(三主题统一), 此处删除;
+     文字色保留(与背景无关) */
+  --modal-text-primary: var(--td-text-color-primary, #1a1a2e);
+  --modal-text-secondary: var(--td-text-color-secondary, #6b7280);
+}
+
+/* ---- 主按钮: 紫渐变, 白字 ---- */
+.modal-btn-primary {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  width: 100%;
+  min-height: 46px;
+  padding: 10px 20px;
+  border: none;
+  border-radius: 12px;
+  font-size: 15px;
+  font-weight: 500;
+  color: #fff;
+  background: linear-gradient(135deg, var(--t-brand-active) 0%, var(--t-brand) 100%);
+  cursor: pointer;
+  transition: opacity 0.2s, transform 0.1s;
+}
+.modal-btn-primary:hover { opacity: 0.9; }
+.modal-btn-primary:active { transform: scale(0.98); }
+.modal-btn-primary:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+  transform: none;
+}
+
+/* ---- 次按钮: 透明底 + 边框 ---- */
+.modal-btn-ghost {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  width: 100%;
+  min-height: 46px;
+  padding: 10px 20px;
+  border: 1px solid rgba(128, 128, 128, 0.28);
+  border-radius: 12px;
+  font-size: 15px;
+  font-weight: 500;
+  /* 用弹窗自己的设计令牌: 旧写法引用 td 变量, 主题与弹窗背景不匹配时文字同色不可见(有框无字) */
+  color: var(--modal-text-secondary, var(--td-text-color-secondary, #6b7280));
+  background: transparent;
+  cursor: pointer;
+  transition: background 0.2s, color 0.2s;
+}
+.modal-btn-ghost:hover {
+  background: rgba(128, 128, 128, 0.08);
+  /* 用弹窗令牌: 旧 td 直用在主题不匹配时 hover 文字同色不可见 */
+  color: var(--modal-text-primary, var(--td-text-color-primary, #1a1a2e));
+}
+
+/* ---- 危险按钮: 红色系 ---- */
+.modal-btn-danger {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  width: 100%;
+  min-height: 46px;
+  padding: 10px 20px;
+  border: none;
+  border-radius: 12px;
+  font-size: 15px;
+  font-weight: 500;
+  color: #fff;
+  background: linear-gradient(135deg, #f43f5e 0%, #fb7185 100%);
+  cursor: pointer;
+  transition: opacity 0.2s, transform 0.1s;
+}
+.modal-btn-danger:hover { opacity: 0.9; }
+.modal-btn-danger:active { transform: scale(0.98); }
+
+/* ---- 深色模式微调 ---- */
+html.theme-dark .modal-btn-ghost {
+  border-color: rgba(255, 255, 255, 0.15);
+  color: var(--td-text-color-secondary, #9ca3af);
+}
+html.theme-dark .modal-btn-ghost:hover {
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--td-text-color-primary, #e8eaf6);
+}
+
+/* ---- 桌面端: footer 横向排列, 按钮恢复自动宽 ---- */
+@media (min-width: 769px) {
+  .modal-btn-primary,
+  .modal-btn-ghost,
+  .modal-btn-danger {
+    width: auto;
+    min-height: 36px;
+    padding: 7px 18px;
+    font-size: 14px;
+    border-radius: 10px;
+  }
+  .modal-footer {
+    flex-direction: row !important;
+    justify-content: flex-end;
+    gap: 10px !important;
+  }
+  /* 覆盖上一版移动端的全宽规则, 桌面端按钮不强制全宽 */
+  .modal-footer button,
+  .modal-footer .t-button {
+    width: auto !important;
+    min-height: 36px !important;
+  }
+}
+
+/* ---- 键盘弹起适配(规范 §8.2): 变量由 Modal.vue 的
+   visualViewport 监听写入 --modal-kb, 弹窗整体上移同样距离 ----
+   写在 .modal-card 而非 .modal-content: 避免和进入动画的 transform 冲突 */
+@media (max-width: 768px) {
+  .modal-card {
+    transform: translateY(calc(-1 * var(--modal-kb, 0px)));
+    transition: transform 0.15s ease-out;
+  }
+}

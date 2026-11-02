@@ -1,0 +1,590 @@
+/* P1-01 审计修复: 原 Google Fonts @import Inter——国内网络下阻塞首屏渲染,
+   且违反设计规范"系统字体栈"原则。删除外链, 字体栈见下方 --font-sans。 */
+@import "tailwindcss";
+
+@theme {
+  /* === Accent: desaturated steel-cyan, restrained === */
+  --color-cyan: var(--t-brand);
+  --color-cyan-bright: var(--t-brand-hover);
+  --color-cyan-glow: color-mix(in srgb, var(--t-brand) 9%, transparent);
+  --color-cyan-dim: color-mix(in srgb, var(--t-brand) 12%, transparent);
+
+  /* Semantic states — muted, low-chroma */
+  --color-emerald: var(--t-ok);
+  --color-emerald-dim: color-mix(in srgb, var(--t-ok) 12%, transparent);
+  --color-rose: var(--t-err);
+  --color-rose-dim: color-mix(in srgb, var(--t-err) 12%, transparent);
+  --color-amber: var(--t-warn);
+  --color-amber-dim: color-mix(in srgb, var(--t-warn) 12%, transparent);
+
+  /* Surfaces — neutral ink, no blue cast */
+  --color-bg-primary: var(--t-bg);
+  --color-bg-secondary: var(--t-surface-1);
+  --color-bg-card: var(--t-surface-2);
+  --color-bg-hover: color-mix(in srgb, var(--t-text-1) 6%, transparent);
+  --color-bg-elevated: var(--t-surface-3);
+
+  /* Borders — neutral hairlines */
+  --color-border: color-mix(in srgb, var(--t-text-1) 8%, transparent);
+  --color-border-hover: color-mix(in srgb, var(--t-text-1) 16%, transparent);
+  --color-border-light: color-mix(in srgb, var(--t-text-1) 4%, transparent);
+
+  /* Text — cool gray scale */
+  --color-text-primary: var(--t-text-1);
+  --color-text-secondary: var(--t-text-2);
+  --color-text-muted: var(--t-text-3);
+  --color-text-inverse: var(--t-bg);
+
+  /* Typography */
+  /* P1-01: Inter 已删(外链阻塞首屏), 系统字体栈打头 */
+  --font-sans: -apple-system, BlinkMacSystemFont, 'SF Pro Display', 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+  --font-mono: 'SF Mono', 'SFMono-Regular', 'Consolas', 'Courier New', ui-monospace, monospace;
+
+  /* R146: 字号阶梯令牌 → text-display / text-title / text-body / text-small / text-caption 工具类 */
+  --text-display: var(--t-fs-display);
+  --text-title: var(--t-fs-title);
+  --text-body: var(--t-fs-body);
+  --text-small: var(--t-fs-small);
+  --text-caption: var(--t-fs-caption);
+  /* R146: 主题感知遮罩色(替代 bg-black/bg-white 半透明硬编码, 浅色不发灰/深色不透字) */
+  --color-ink-005: color-mix(in srgb, var(--t-text-1) 5%, transparent);
+  --color-ink-01: color-mix(in srgb, var(--t-text-1) 10%, transparent);
+  --color-ink-016: color-mix(in srgb, var(--t-text-1) 16%, transparent);
+  --color-ink-02: color-mix(in srgb, var(--t-text-1) 20%, transparent);
+  --color-ink-03: color-mix(in srgb, var(--t-text-1) 30%, transparent);
+  --color-milk-01: color-mix(in srgb, #ffffff 10%, transparent);
+  --color-milk-02: color-mix(in srgb, #ffffff 20%, transparent);
+  --color-milk-03: color-mix(in srgb, #ffffff 30%, transparent);
+
+  /* R87-M4: success/danger 语义别名 → 状态色令牌(sessions/Login 等页在用) */
+  --color-success: var(--t-ok);
+  --color-danger: var(--t-err);
+
+  /* Surface overlay tokens (white-on-dark defaults; themes override) */
+  --surf-002: color-mix(in srgb, var(--t-text-1) 2%, transparent);
+  --surf-003: color-mix(in srgb, var(--t-text-1) 3%, transparent);
+  --surf-004: color-mix(in srgb, var(--t-text-1) 4%, transparent);
+  --surf-0045: color-mix(in srgb, var(--t-text-1) 4%, transparent);
+  --surf-005: color-mix(in srgb, var(--t-text-1) 5%, transparent);
+  --surf-006: color-mix(in srgb, var(--t-text-1) 6%, transparent);
+  --surf-008: color-mix(in srgb, var(--t-text-1) 8%, transparent);
+  --surf-009: color-mix(in srgb, var(--t-text-1) 9%, transparent);
+  --surf-01: color-mix(in srgb, var(--t-text-1) 10%, transparent);
+  --surf-016: color-mix(in srgb, var(--t-text-1) 16%, transparent);
+  --surf-02: color-mix(in srgb, var(--t-text-1) 20%, transparent);
+  --surf-03: color-mix(in srgb, var(--t-text-1) 30%, transparent);
+}
+
+@layer base {
+  /* R86 保险丝: 任何来源(含 :global 编译错位/浏览器注入)都不得压低整页透明度 */
+  html {
+    opacity: 1 !important;
+    /* R87-M2 TDesign 瘦身: 压缩组件尺寸与圆角, 去"企业库味" */
+    --td-comp-size-m: 34px;
+    --td-comp-paddingLR-m: 12px;
+    --td-radius-default: 8px;
+    --td-radius-medium: 10px;
+    --td-radius-large: 14px;
+  }
+  body {
+    background-color: var(--color-bg-primary);
+    color: var(--color-text-primary);
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    font-family: var(--font-sans);
+    letter-spacing: 0.01em;
+    /* R87-M2 排版基线: 13.5px 正文 / 1.55 行高 / 等宽数字 */
+    font-size: var(--t-fs-body);
+    line-height: 1.55;
+    font-variant-numeric: tabular-nums;
+    /* R125 示例2 光晕: 深空蓝紫光晕背景(仅深色主题有定义) */
+    background-image: var(--t-glow, none);
+    background-attachment: fixed;
+  }
+  /* R87-M2 导航选中态: 极淡品牌底 + 品牌字 */
+  .menu-on {
+    background: var(--t-brand-dim) !important;
+    color: var(--t-brand) !important;
+  }
+  /* R87-M2 TDesign 表格 hover / 弹窗质感 */
+  .t-table__row:hover { background: var(--t-surface-3) !important; }
+  .t-dialog {
+    border-radius: var(--t-r-lg) !important;
+    box-shadow: var(--t-shadow-pop) !important;
+    border: 1px solid var(--t-line) !important;
+  }
+  /* R87-M6: 输入框无框化 —— 默认无边(背景色块感), 聚焦时亮品牌色边框 */
+  .t-input__wrap,
+  .t-textarea__wrap {
+    border-color: transparent !important;
+    background: var(--t-surface-1);
+  }
+  .t-input__wrap.t-is-focused,
+  .t-textarea__wrap.t-is-focused,
+  .t-input__wrap:focus-within,
+  .t-textarea__wrap:focus-within {
+    border-color: var(--t-brand) !important;
+    box-shadow: 0 0 0 3px var(--t-brand-dim) !important;
+  }
+  /* R87-M8: 登录页自定义输入框(原样式在 ui-refined 的 .input-box 覆盖里,
+     该覆盖删除后变裸框白底)。无框令牌样式在此统一补回。 */
+  .input-box, .apple-input {
+    background: var(--t-surface-1) !important;
+    border: 1px solid transparent !important;
+    border-radius: var(--t-r-sm) !important;
+    color: var(--t-text-1) !important;
+    transition: border-color .15s var(--t-ease), box-shadow .15s var(--t-ease);
+  }
+  .input-box:focus, .apple-input:focus {
+    border-color: var(--t-brand) !important;
+    box-shadow: 0 0 0 3px var(--t-brand-dim) !important;
+    outline: none !important;
+  }
+  .input-box::placeholder, .apple-input::placeholder {
+    color: var(--t-text-3) !important;
+  }
+  /* R87-M6: 次要操作去边框纯文字化(账号卡片主操作 ghost 化) */
+  .ghost-act {
+    background: transparent !important;
+    border-color: transparent !important;
+    color: var(--t-text-2) !important;
+  }
+  .ghost-act:hover {
+    background: var(--t-surface-3) !important;
+    color: var(--t-text-1) !important;
+  }
+  /* R87-M6: 移动端下拉全宽化 —— Select/Dropdown/Cascader 弹层贴底大圆角(demo 范式) */
+  @media (max-width: 640px) {
+    .t-popup[class*="select__dropdown"],
+    .t-popup[class*="dropdown__menu"],
+    .t-popup[class*="cascader"],
+    .t-popup[class*="date-picker"] {
+      position: fixed !important;
+      left: 0 !important;
+      right: 0 !important;
+      bottom: 0 !important;
+      top: auto !important;
+      width: 100% !important;
+      max-width: 100% !important;
+      transform: none !important;
+      margin: 0 !important;
+      border-radius: 14px 14px 0 0 !important;
+      max-height: 60dvh !important;
+      overflow-y: auto !important;
+      box-shadow: var(--t-shadow-pop) !important;
+    }
+  }
+  /* R138: toast 样式/动画/关键帧全部收口到 ui-kit.css 尾部(终极灵动岛 10号原生系统风),
+     tailwind 层不再保留任何 toast 规则(旧 ts-toast-in/out 关键帧已删)。 */
+  /* R122: toast 动画统一收口到 ui-polish.css 的 .ts-toast(进/出两段完整)。
+     此处的 toastRise 保底块与它争抢 !important 导致动画错乱, 整块删除。 */
+  /* R87-M5: 移动端弹窗底部 Sheet 化(demo 交互范式, 去 TDesign 居中硬框库味) */
+  @media (max-width: 640px) {
+    .t-dialog__position {
+      align-items: flex-end !important;
+      justify-content: stretch !important;
+      padding: 0 !important;
+    }
+    .t-dialog {
+      width: 100% !important;
+      max-width: 100% !important;
+      margin: 0 !important;
+      border-radius: 16px 16px 0 0 !important;
+      border-bottom: none !important;
+      max-height: 88dvh !important;
+      display: flex !important;
+      flex-direction: column !important;
+    }
+    .t-dialog__body { overflow-y: auto !important; -webkit-overflow-scrolling: touch; }
+  }
+  ::selection {
+    background: var(--t-brand-dim);
+  }
+  ::-webkit-scrollbar { width: 6px; height: 6px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: color-mix(in srgb, var(--t-text-1) 10%, transparent); border-radius: 10px; }
+  ::-webkit-scrollbar-thumb:hover { background: color-mix(in srgb, var(--t-text-1) 20%, transparent); }
+  @media (max-width: 640px) {
+    input, textarea, select { font-size: 16px !important; }
+  }
+  select {
+    -webkit-appearance: none;
+    -moz-appearance: none;
+    appearance: none;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%239aa4b2' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: right 0.7rem center;
+    background-size: 0.9rem;
+    padding-right: 2.2rem;
+  }
+  /* 聚焦 glow 不再作用于 TDesign 组件内部(它们自带 focus 描边, 叠加会出双框) */
+  :focus-visible:not(.t-input__inner):not(.t-textarea__inner):not([class*="t-"]) {
+    outline: none;
+    box-shadow: 0 0 0 2px var(--t-brand-dim);
+  }
+}
+
+@layer utilities {
+  /* === Glassmorphism — whisper-quiet elevation === */
+  .glass {
+    background: color-mix(in srgb, var(--t-text-1) 3%, transparent);
+    backdrop-filter: blur(20px) saturate(1.2);
+    -webkit-backdrop-filter: blur(20px) saturate(1.2);
+    border: 1px solid color-mix(in srgb, var(--t-text-1) 7%, transparent);
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.25), 0 4px 16px rgba(0, 0, 0, 0.18);
+    will-change: transform;
+    contain: layout style paint;
+  }
+  .glass-strong {
+    background: rgba(16, 20, 28, 0.92);
+    backdrop-filter: blur(24px) saturate(1.2);
+    -webkit-backdrop-filter: blur(24px) saturate(1.2);
+    border: 1px solid color-mix(in srgb, var(--t-text-1) 9%, transparent);
+    box-shadow: 0 4px 24px rgba(0, 0, 0, 0.35);
+    will-change: transform;
+    contain: layout style paint;
+  }
+  .glass-hover {
+    transition: background 0.25s ease, border-color 0.25s ease, box-shadow 0.25s ease;
+  }
+  .glass-hover:hover {
+    background: color-mix(in srgb, var(--t-text-1) 5%, transparent);
+    border-color: color-mix(in srgb, var(--t-text-1) 13%, transparent);
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.28);
+  }
+
+
+  /* === Primary Button — solid, flat, no glow === */
+  .glow-btn {
+    background: var(--t-brand);
+    color: var(--t-bg);
+    font-weight: 600;
+    transition: background 0.2s ease, box-shadow 0.2s ease, transform 0.2s ease;
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.3);
+  }
+
+/* P1-17 审计修复: 原主按钮扫光 3.2s infinite——全站所有 glow-btn 持续闪烁,
+   违反"禁止无意义动画"。删除扫光动画(静态按钮 + hover 反馈已足够);
+   保留 ::after 元素的其余定义以防个别主题覆盖引用。 */
+.glow-btn { position: relative; overflow: hidden; }
+.glow-btn::after {
+  content: '';
+  position: absolute;
+  top: -50%;
+  left: -60%;
+  width: 40%;
+  height: 200%;
+  background: linear-gradient(90deg, transparent, color-mix(in srgb, var(--t-text-1) 45%, transparent), transparent);
+  transform: skewX(-20deg);
+  animation: none;
+}
+  .glow-btn:hover {
+    background: color-mix(in srgb, var(--t-brand) 80%, transparent);
+    box-shadow: 0 2px 6px rgba(0, 0, 0, 0.32);
+    transform: translateY(-1px);
+  }
+  .glow-btn:active {
+    transform: translateY(0);
+    background: var(--t-brand-active);
+    box-shadow: none;
+  }
+
+  /* === Ghost Button === */
+  .ghost-btn {
+    background: color-mix(in srgb, var(--t-text-1) 4%, transparent);
+    border: 1px solid color-mix(in srgb, var(--t-text-1) 8%, transparent);
+    color: var(--t-text-2);
+    transition: background 0.2s ease, border-color 0.2s ease, color 0.2s ease;
+  }
+  .ghost-btn:hover {
+    background: color-mix(in srgb, var(--t-text-1) 7%, transparent);
+    border-color: color-mix(in srgb, var(--t-text-1) 15%, transparent);
+    color: var(--t-text-1);
+  }
+
+  /* P2-71: Status Badges 6 类(.status-badge/.status-running/.status-success/.status-failed/
+     .status-pending/.status-paused)已删——全项目零模板引用(状态标签实际用
+     bg-success/15 等原子类), 属设计系统收敛前的旧映射残留。 */
+
+  /* === Icon Button — quiet === */
+  .icon-glow {
+    background: color-mix(in srgb, var(--t-text-1) 4%, transparent);
+    border: 1px solid color-mix(in srgb, var(--t-text-1) 7%, transparent);
+    transition: background 0.2s ease, border-color 0.2s ease;
+  }
+  .icon-glow:hover {
+    background: color-mix(in srgb, var(--t-text-1) 8%, transparent);
+    border-color: color-mix(in srgb, var(--t-text-1) 14%, transparent);
+    transform: none;
+  }
+
+  /* === Text Effects — minimal === */
+  .text-glow {
+    text-shadow: none;
+  }
+  .text-glow-subtle {
+    text-shadow: none;
+  }
+  .text-gradient {
+    background: linear-gradient(135deg, var(--t-text-1) 0%, var(--t-text-2) 100%);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+  }
+  .text-gradient-cyan {
+    background: linear-gradient(135deg, var(--t-brand-hover) 0%, var(--t-brand) 100%);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+  }
+
+  /* === Card — quiet surface, no lift === */
+  .apple-card {
+    background: color-mix(in srgb, var(--t-text-1) 3%, transparent);
+    backdrop-filter: blur(20px) saturate(1.2);
+    -webkit-backdrop-filter: blur(20px) saturate(1.2);
+    border-radius: 0.9rem;
+    border: 1px solid color-mix(in srgb, var(--t-text-1) 7%, transparent);
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.22);
+    transition: background 0.25s ease, border-color 0.25s ease, box-shadow 0.25s ease;
+    will-change: transform;
+    contain: layout style paint;
+  }
+  .apple-card:hover {
+    background: color-mix(in srgb, var(--t-text-1) 4%, transparent);
+    border-color: color-mix(in srgb, var(--t-text-1) 12%, transparent);
+    box-shadow: 0 2px 10px rgba(0, 0, 0, 0.28);
+    transform: none;
+  }
+
+  /* === Navigation === */
+  .apple-nav {
+    background: rgba(10, 13, 19, 0.85);
+    backdrop-filter: blur(24px) saturate(1.2);
+    -webkit-backdrop-filter: blur(24px) saturate(1.2);
+    border-bottom: 1px solid color-mix(in srgb, var(--t-text-1) 6%, transparent);
+    box-shadow: none;
+    will-change: transform;
+    contain: layout style paint;
+  }
+
+  /* === Form Input === */
+  .glow-input {
+    background: color-mix(in srgb, var(--t-text-1) 3%, transparent);
+    border: 1px solid color-mix(in srgb, var(--t-text-1) 8%, transparent);
+    transition: background 0.2s ease, border-color 0.2s ease, box-shadow 0.2s ease;
+  }
+  .glow-input:focus {
+    border-color: var(--t-brand);
+    box-shadow: 0 0 0 3px var(--t-brand-dim);
+    background: color-mix(in srgb, var(--t-text-1) 4%, transparent);
+  }
+
+  /* === Sidebar === */
+  .sidebar-glass {
+    background: var(--t-surface-1);
+    backdrop-filter: blur(24px) saturate(1.2);
+    -webkit-backdrop-filter: blur(24px) saturate(1.2);
+    border-right: 1px solid color-mix(in srgb, var(--t-text-1) 6%, transparent);
+    box-shadow: none;
+    will-change: transform;
+    contain: layout style paint;
+  }
+
+  /* === Pill Buttons === */
+  .apple-button {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0.55rem 1.3rem;
+    border-radius: 0.6rem;
+    background: var(--t-brand);
+    color: var(--t-bg);
+    font-size: 0.85rem;
+    font-weight: 600;
+    transition: background 0.2s ease, box-shadow 0.2s ease;
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.3);
+  }
+  .apple-button:hover {
+    background: color-mix(in srgb, var(--t-brand) 80%, transparent);
+    box-shadow: 0 2px 6px rgba(0, 0, 0, 0.32);
+    transform: none;
+  }
+  .apple-button-secondary {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0.55rem 1.3rem;
+    border-radius: 0.6rem;
+    background: color-mix(in srgb, var(--t-text-1) 5%, transparent);
+    color: var(--t-text-1);
+    font-size: 0.85rem;
+    font-weight: 500;
+    transition: background 0.2s ease, border-color 0.2s ease;
+    border: 1px solid color-mix(in srgb, var(--t-text-1) 9%, transparent);
+  }
+  .apple-button-secondary:hover {
+    background: color-mix(in srgb, var(--t-text-1) 9%, transparent);
+    border-color: color-mix(in srgb, var(--t-text-1) 16%, transparent);
+  }
+
+  /* === Progress === */
+  .glow-progress {
+    box-shadow: none;
+  }
+}
+
+/* ========== Mobile Performance Optimization ========== */
+@media (max-width: 768px) {
+  .glass, .glass-strong, .apple-card, .sidebar-glass, .apple-nav {
+    backdrop-filter: none !important;
+    -webkit-backdrop-filter: none !important;
+  }
+  .glow-btn, .apple-button {
+    box-shadow: none !important;
+  }
+}
+
+/* ========== Keyframes (kept for compat) ========== */
+@keyframes pulse-glow-cyan {
+  0%, 100% { box-shadow: 0 0 8px var(--t-brand-dim); }
+  50% { box-shadow: 0 0 14px color-mix(in srgb, var(--t-brand) 12%, transparent); }
+}
+@keyframes pulse-glow-amber {
+  0%, 100% { box-shadow: 0 0 8px color-mix(in srgb, var(--t-warn) 20%, transparent); }
+  50% { box-shadow: 0 0 14px color-mix(in srgb, var(--t-warn) 12%, transparent); }
+}
+@keyframes float {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-6px); }
+}
+@keyframes shimmer {
+  0% { background-position: -200% 0; }
+  100% { background-position: 200% 0; }
+}
+@keyframes pulse-ring {
+  0% { transform: scale(0.8); opacity: 0.5; }
+  100% { transform: scale(2); opacity: 0; }
+}
+
+.animate-float {
+  animation: float 3s cubic-bezier(0.32, 0.72, 0, 1) infinite;
+}
+.animate-shimmer {
+  background: linear-gradient(90deg, transparent, color-mix(in srgb, var(--t-text-1) 8%, transparent), transparent);
+  background-size: 200% 100%;
+  animation: shimmer 2s infinite;
+}
+.animate-pulse-ring {
+  animation: pulse-ring 2s cubic-bezier(0.215, 0.61, 0.355, 1) infinite;
+}
+.animate-pulse-slow {
+  animation: pulse-glow-cyan 3s ease-in-out infinite;
+}
+
+/* ========== Fade Transition for v-if ========== */
+.fade-enter-active, .fade-leave-active {
+  transition: opacity 0.25s ease;
+}
+.fade-enter-from, .fade-leave-to {
+  opacity: 0;
+}
+
+/* ========== prefers-reduced-motion ========== */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* === Elevation utility classes (base definitions; themes may override tint) === */
+.elev-pop {
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35), 0 2px 6px rgba(0, 0, 0, 0.25);
+}
+/* P2-71: .elev-bar 已删(零引用死类); .elev-pop 有模板使用, 保留 */
+
+/* === 防横向溢出保险: 任何意外超宽元素都不会撑出页面横向滚动 === */
+html, body {
+  overflow-x: hidden;
+  max-width: 100vw;
+}
+main {
+  overflow-x: hidden;
+}
+/* 长内容(手机号/卡密/ID)自动断行, 避免撑破卡片 */
+.text-mono, .font-mono {
+  word-break: break-all;
+}
+
+/* ===== 卡片微交互 ===== */
+/* hover 浮起 */
+.card-lift {
+  transition: transform 0.2s ease, box-shadow 0.2s ease, border-color 0.2s ease;
+}
+.card-lift:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 8px 24px -8px var(--t-brand-dim);
+}
+
+/* 首次进入: 淡入 + 上滑, 依次错位出现 */
+.card-enter {
+  animation: card-enter 0.4s cubic-bezier(0.22, 1, 0.36, 1) both;
+  animation-delay: calc(var(--i, 0) * 60ms);
+}
+@keyframes card-enter {
+  from {
+    opacity: 0;
+    transform: translateY(12px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* 运行中状态点: 脉冲呼吸 */
+.dot-pulse {
+  position: relative;
+}
+.dot-pulse::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: 9999px;
+  background: currentColor;
+  animation: dot-pulse-ring 1.6s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+}
+@keyframes dot-pulse-ring {
+  0% { transform: scale(1); opacity: 0.6; }
+  80%, 100% { transform: scale(2.4); opacity: 0; }
+}
+
+/* ===== 华丽增强 ===== */
+/* P1-17/P2-71: .btn-shine 整块已删——死类(全项目零引用)且带 3.2s 无限扫光动画,
+   是 glow-btn 扫光的废弃前身。glow-btn(7 个页面在用)的扫光已在上文改 animation:none */
+
+/* 运行中卡片: 呼吸渐变边框 */
+.card-running {
+  position: relative;
+  border: 1px solid transparent !important;
+  background:
+    linear-gradient(var(--color-bg-card, var(--t-text-1)), var(--color-bg-card, var(--t-text-1))) padding-box,
+    linear-gradient(120deg, var(--t-brand), color-mix(in srgb, var(--t-brand) 55%, #fff), var(--t-brand)) border-box !important;
+  background-size: 100% 100%, 300% 300% !important;
+  animation: border-breathe 3s ease-in-out infinite;
+}
+@keyframes border-breathe {
+  0%, 100% { background-position: 0 0, 0% 50%; }
+  50% { background-position: 0 0, 100% 50%; }
+}
+
+/* P1-06: .app-aurora + aurora-drift 已删——Layout 的两层背景叠加层已移除
+   (深色收敛为星空+柔光 2 层), 这是全仓唯一使用处。 */
+
+/* R126 头像菜单淡入缩放 */
+@keyframes fadeInScale { from { opacity: 0; transform: scale(.95) translateY(-4px); } to { opacity: 1; transform: none; } }
+.animate-fade-in-scale { animation: fadeInScale .16s ease-out both; }
+

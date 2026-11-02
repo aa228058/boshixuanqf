@@ -1,0 +1,302 @@
+/* ============ Stripe LIGHT theme — activated via html.theme-stripe ============ */
+/* R87 demo 风浅色: var(--t-bg) 底 + var(--t-surface-2) 卡片 + 墨字 var(--t-text-1) + 青绿 var(--t-brand) */
+
+html.theme-stripe {
+  /* P1-01: Inter 已删, 与 tailwind.css 字体栈对齐 */
+  --font-sans: -apple-system, BlinkMacSystemFont, 'SF Pro Display', 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+  --font-mono: 'SF Mono', 'SFMono-Regular', ui-monospace, monospace;
+
+  /* Light canvas — Stripe signature */
+  --color-bg-primary: var(--t-bg);
+  --color-bg-secondary: var(--t-surface-1);
+  --color-bg-card: var(--t-surface-2);
+  --color-bg-hover: color-mix(in srgb, var(--t-text-1) 3%, transparent);
+  --color-bg-elevated: var(--t-surface-3);
+  --color-border: color-mix(in srgb, var(--t-text-1) 8%, transparent);
+  --color-border-hover: color-mix(in srgb, var(--t-text-1) 14%, transparent);
+  --color-border-light: color-mix(in srgb, var(--t-text-1) 5%, transparent);
+  --color-text-primary: var(--t-text-1);
+  --color-text-secondary: var(--t-text-2);  /* 加深(2026-10-20): 原 var(--t-text-2) 手机端偏淡, 用户反馈"加粗加黑" */
+  --color-text-muted: var(--t-text-3);      /* 原 var(--t-text-2), 同步提深一档 */
+  --color-text-inverse: var(--t-bg);
+
+  /* Accent — blurple on light */
+  --color-cyan: var(--t-brand);
+  --color-cyan-bright: var(--t-brand-hover);
+  --color-cyan-glow: color-mix(in srgb, var(--t-brand) 10%, transparent);
+  --color-cyan-dim: color-mix(in srgb, var(--t-brand) 7%, transparent);
+  --color-emerald: var(--t-ok);
+  --color-emerald-dim: rgba(14, 159, 110, 0.09);
+  --color-rose: var(--t-err);
+  --color-rose-dim: rgba(223, 27, 65, 0.07);
+  --color-amber: var(--t-warn);
+  --color-amber-dim: rgba(183, 121, 31, 0.09);
+
+  /* Surface overlays — ink-on-light equivalents */
+  --surf-002: color-mix(in srgb, var(--t-text-1) 2%, transparent);
+  --surf-003: color-mix(in srgb, var(--t-text-1) 3%, transparent);
+  --surf-004: color-mix(in srgb, var(--t-text-1) 3%, transparent);
+  --surf-0045: color-mix(in srgb, var(--t-text-1) 4%, transparent);
+  --surf-005: color-mix(in srgb, var(--t-text-1) 4%, transparent);
+  --surf-006: color-mix(in srgb, var(--t-text-1) 5%, transparent);
+  --surf-008: color-mix(in srgb, var(--t-text-1) 7%, transparent);
+  --surf-009: color-mix(in srgb, var(--t-text-1) 8%, transparent);
+  --surf-01: color-mix(in srgb, var(--t-text-1) 9%, transparent);
+  --surf-016: color-mix(in srgb, var(--t-text-1) 14%, transparent);
+  --surf-02: color-mix(in srgb, var(--t-text-1) 18%, transparent);
+  /* Spacing tokens per spec: 2/4/8/12/16/24/32/64 */
+  --sp-xxs: 2px; --sp-xs: 4px; --sp-sm: 8px; --sp-md: 12px;
+  --sp-lg: 16px; --sp-xl: 24px; --sp-xxl: 32px; --sp-huge: 64px;
+
+  /* Elevation per spec — rgba(0,55,112,…) blue-tinted shadows */
+  --elev-1: rgba(0, 55, 112, 0.08) 0 1px 3px;
+  --elev-2: rgba(0, 55, 112, 0.08) 0 8px 24px, rgba(0, 55, 112, 0.04) 0 2px 6px;
+
+  /* Radius scale per spec */
+  --r-xs: 4px; --r-sm: 6px; --r-md: 8px; --r-lg: 12px; --r-xl: 16px; --r-pill: 9999px;
+}
+
+/* P1-18 审计修复: 原 theme-stripe 用 --sp-* 变量覆盖 main 的 padding——
+   Layout 模板自带响应式 padding(p-4 sm:p-6 md:p-8), 切换主题时布局跳动。
+   删除覆盖, 全主题统一走 Layout 的 padding。 */
+
+/* === Spec: Body 15px === */
+html.theme-stripe body {
+  font-size: 15px;
+}
+
+/* === Spec: Headings — weight 300, negative tracking === */
+html.theme-stripe h1 { font-size: 26px; font-weight: 300; letter-spacing: -0.26px; line-height: 1.12; }
+html.theme-stripe h2 { font-size: 22px; font-weight: 300; letter-spacing: -0.22px; line-height: 1.1; }
+html.theme-stripe h3 { font-size: 18px; font-weight: 400; letter-spacing: -0.18px; line-height: 1.2; }
+
+/* === Spec: Touch targets — 40px min, 44px on mobile === */
+html.theme-stripe .glow-btn,
+html.theme-stripe .apple-button,
+html.theme-stripe .apple-button-secondary,
+html.theme-stripe .ghost-btn {
+  min-height: 40px;
+}
+@media (max-width: 768px) {
+  html.theme-stripe .glow-btn,
+  html.theme-stripe .apple-button,
+  html.theme-stripe .apple-button-secondary,
+  html.theme-stripe .ghost-btn {
+    min-height: 44px;
+  }
+}
+html.theme-stripe body {
+  background-color: var(--t-bg);
+  color: var(--t-text-1);
+  letter-spacing: 0;
+  font-feature-settings: 'ss01';
+}
+
+/* Links — scoped to content area only (NOT nav/sidebar) */
+html.theme-stripe main a {
+  color: var(--t-brand);
+  text-decoration: none;
+}
+html.theme-stripe main a:hover {
+  color: var(--t-brand);
+}
+
+/* Numeric alignment for tabular data */
+html.theme-stripe .tnum,
+html.theme-stripe td,
+html.theme-stripe th {
+  font-variant-numeric: tabular-nums;
+}
+
+html.theme-stripe ::selection {
+  background: color-mix(in srgb, var(--t-brand) 16%, transparent);
+}
+
+/* Scrollbar — light */
+html.theme-stripe ::-webkit-scrollbar-thumb {
+  background: color-mix(in srgb, var(--t-text-1) 14%, transparent) !important;
+}
+html.theme-stripe ::-webkit-scrollbar-thumb:hover {
+  background: color-mix(in srgb, var(--t-text-1) 26%, transparent) !important;
+}
+
+/* Surfaces — white cards, soft gray shadow, generous radius */
+html.theme-stripe .glass,
+html.theme-stripe .apple-card {
+  background: var(--t-brand-ink) !important;
+  border: 1px solid color-mix(in srgb, var(--t-text-1) 8%, transparent) !important;
+  border-radius: 12px !important;
+  box-shadow: rgba(0, 55, 112, 0.08) 0 1px 3px !important;
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+}
+html.theme-stripe .glass-strong {
+  background: var(--t-brand-ink) !important;
+  border: 1px solid color-mix(in srgb, var(--t-text-1) 8%, transparent) !important;
+  border-radius: 14px !important;
+  box-shadow: rgba(0, 55, 112, 0.08) 0 8px 24px, rgba(0, 55, 112, 0.04) 0 2px 6px !important;
+}
+html.theme-stripe .glass-hover:hover,
+html.theme-stripe .apple-card:hover,
+html.theme-stripe .sidebar-glass {
+  background: var(--t-brand-ink) !important;
+  border-color: color-mix(in srgb, var(--t-text-1) 8%, transparent) !important;
+  box-shadow: none !important;
+}
+html.theme-stripe .apple-nav {
+  background: color-mix(in srgb, var(--t-text-1) 88%, transparent) !important;
+  border-color: color-mix(in srgb, var(--t-text-1) 8%, transparent) !important;
+  backdrop-filter: blur(16px) !important;
+  -webkit-backdrop-filter: blur(16px) !important;
+  box-shadow: rgba(0, 55, 112, 0.08) 0 1px 3px !important;
+}
+
+/* Primary — blurple pill with soft lift */
+html.theme-stripe .glow-btn,
+html.theme-stripe .apple-button {
+  background: var(--t-brand) !important;
+  color: var(--t-brand-ink) !important;
+  border-radius: 99px !important;
+  box-shadow: rgba(0, 55, 112, 0.08) 0 2px 6px, color-mix(in srgb, var(--t-brand) 25%, transparent) 0 1px 3px !important;
+  font-weight: 600 !important;
+}
+html.theme-stripe .glow-btn:hover,
+html.theme-stripe .apple-button:hover {
+  background: var(--t-brand-hover) !important;
+  box-shadow: rgba(0, 55, 112, 0.08) 0 6px 20px, color-mix(in srgb, var(--t-brand) 30%, transparent) 0 2px 6px !important;
+  transform: translateY(-1px) !important;
+}
+html.theme-stripe .glow-btn:active {
+  background: var(--t-brand) !important;
+  transform: translateY(0) !important;
+}
+
+html.theme-stripe .ghost-btn,
+html.theme-stripe .apple-button-secondary {
+  background: var(--t-brand-ink) !important;
+  border: 1px solid color-mix(in srgb, var(--t-text-1) 14%, transparent) !important;
+  color: var(--t-text-1) !important;
+  border-radius: 99px !important;
+  box-shadow: rgba(0, 55, 112, 0.08) 0 1px 3px !important;
+}
+html.theme-stripe .ghost-btn:hover,
+html.theme-stripe .apple-button-secondary:hover {
+  background: var(--t-bg) !important;
+  border-color: var(--t-text-3) !important;
+}
+
+
+/* Inputs — per spec: 6px radius, 8px 12px padding, hairline, primary focus */
+html.theme-stripe .glow-input {
+  border: 1px solid rgba(226, 232, 240, 0.9) !important;
+  box-shadow: 0 1px 2px rgba(16, 24, 40, 0.04) !important;
+  background: var(--t-brand-ink) !important;
+}
+/* 聚焦时才亮紫, 常态紫圈会造成"双框"观感 */
+html.theme-stripe .glow-input:focus {
+  border-color: var(--t-brand) !important;
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--t-brand) 10%, transparent) !important;
+}
+
+/* Status badges — soft tint pills with strong text */
+html.theme-stripe .status-badge { border-radius: 9999px !important; }
+html.theme-stripe .status-running { background: color-mix(in srgb, var(--t-brand) 8%, transparent) !important; color: var(--t-brand) !important; border: 1px solid color-mix(in srgb, var(--t-brand) 22%, transparent) !important; }
+html.theme-stripe .status-success { background: rgba(14,159,110,0.08) !important; color: var(--t-ok) !important; border: 1px solid rgba(14,159,110,0.22) !important; }
+html.theme-stripe .status-failed  { background: rgba(223,27,65,0.07) !important; color: var(--t-err) !important; border: 1px solid rgba(223,27,65,0.2) !important; }
+html.theme-stripe .status-pending { background: rgba(183,121,31,0.09) !important; color: var(--t-warn) !important; border: 1px solid rgba(183,121,31,0.22) !important; }
+html.theme-stripe .status-paused  { background: color-mix(in srgb, var(--t-text-1) 5%, transparent) !important; color: var(--t-text-2) !important; border: 1px solid color-mix(in srgb, var(--t-text-1) 7%, transparent) !important; }
+
+html.theme-stripe .icon-glow {
+  background: var(--t-brand-ink) !important;
+  border: 1px solid color-mix(in srgb, var(--t-text-1) 8%, transparent) !important;
+  border-radius: 10px !important;
+  box-shadow: rgba(0, 55, 112, 0.08) 0 1px 3px !important;
+}
+html.theme-stripe .icon-glow:hover {
+  background: var(--t-bg) !important;
+  border-color: var(--t-text-3) !important;
+  transform: none !important;
+}
+
+/* Icon/text defaults on light */
+html.theme-stripe .text-gradient-cyan {
+  background: linear-gradient(135deg, var(--t-brand-hover) 0%, var(--t-brand) 100%) !important;
+  -webkit-background-clip: text !important;
+  background-clip: text !important;
+}
+
+/* Toast — white on light */
+html.theme-stripe [class*="toast"],
+html.theme-stripe .vp-toast {
+  background: var(--t-brand-ink) !important;
+  border: 1px solid color-mix(in srgb, var(--t-text-1) 8%, transparent) !important;
+  box-shadow: rgba(0, 55, 112, 0.08) 0 8px 24px, rgba(0, 55, 112, 0.04) 0 2px 6px !important;
+}
+
+/* Dropdown popups */
+html.theme-stripe select {
+  background-color: var(--t-brand-ink) !important;
+  color: var(--t-text-1) !important;
+  border-color: color-mix(in srgb, var(--t-text-1) 14%, transparent) !important;
+}
+html.theme-stripe option {
+  background: var(--t-brand-ink);
+  color: var(--t-text-1);
+}
+
+/* Mobile perf */
+@media (max-width: 768px) {
+  html.theme-stripe .apple-nav {
+    backdrop-filter: none !important;
+    -webkit-backdrop-filter: none !important;
+  }
+}
+
+/* === Spec: button padding never below 8px 16px === */
+/* Spec: pressed state uses primary-press */
+html.theme-stripe .glow-btn:active,
+html.theme-stripe .apple-button:active {
+  background: var(--t-brand) !important;
+}
+/* Spec: pill-tag-soft — 4px 8px, micro-cap tracking */
+html.theme-stripe .status-badge {
+  padding: 4px 8px !important;
+  font-size: 11px !important;
+  letter-spacing: 0.03em !important;
+  text-transform: none;
+}
+/* Spec: display stair-steps 56/48/32/26/22 across breakpoints */
+html.theme-stripe h1 { font-size: 26px; }
+@media (min-width: 768px) { html.theme-stripe h1 { font-size: 32px; } }
+@media (min-width: 1440px) { html.theme-stripe h1 { font-size: 48px; letter-spacing: -0.48px; } }
+/* Spec: card-feature-light padding xxl(32px) on generous surfaces */
+html.theme-stripe .apple-card--padded { padding: var(--sp-xxl); }
+
+/* === Spec: dashboard card padding 24px (16px mobile) — default for cards without explicit padding === */
+html.theme-stripe .apple-card:not([class*="p-"]) {
+  padding: var(--sp-lg);
+}
+@media (min-width: 768px) {
+  html.theme-stripe .apple-card:not([class*="p-"]) {
+    padding: var(--sp-xl);
+  }
+}
+
+/* === Elevation tokens wired: 规范蓝调投影, 替代 Tailwind 黑色阴影 === */
+html.theme-stripe .elev-pop {
+  box-shadow: rgba(0, 55, 112, 0.08) 0 8px 24px, rgba(0, 55, 112, 0.04) 0 2px 6px !important;
+}
+html.theme-stripe .elev-bar {
+  box-shadow: rgba(0, 55, 112, 0.1) 0 4px 16px, rgba(0, 55, 112, 0.05) 0 1px 3px !important;
+}
+
+/* 定时任务群组选择器层级高于弹窗 */
+/* 已删除: 该覆盖会把群组选择器弹窗的 position:fixed 改成 relative, 导致弹窗定位错误不可见 */
+
+/* ---------- R87 设计令牌: TDesign 品牌色映射为 demo 青绿 ---------- */
+html.theme-stripe {
+  --td-brand-color: var(--t-brand)!important;
+  --td-brand-color-hover: var(--t-brand-hover)!important;
+  --td-brand-color-active: var(--t-brand-active)!important;
+  --td-brand-color-focus: var(--t-brand-dim)!important;
+}

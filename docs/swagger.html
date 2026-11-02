@@ -1,0 +1,224 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>TG Sender API - Swagger UI</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/swagger-ui-dist@5/swagger-ui.css">
+</head>
+<body>
+<div id="swagger-ui"></div>
+<script src="https://cdn.jsdelivr.net/npm/swagger-ui-dist@5/swagger-ui-bundle.js"></script>
+<script>
+const spec = {
+  "openapi": "3.0.0",
+  "info": {
+    "title": "TG Sender API",
+    "version": "1.8.1",
+    "description": "Telegram消息发送与群组管理平台"
+  },
+  "servers": [{"url": "/api/v1"}],
+  "paths": {
+    "/auth/login": {
+      "post": {
+        "tags": ["认证"],
+        "summary": "租户登录/注册",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {"$ref": "#/components/schemas/LoginRequest"}
+            }
+          }
+        },
+        "responses": {
+          "200": {"description": "成功", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/LoginResponse"}}}},
+          "400": {"description": "请求错误"},
+          "401": {"description": "认证失败"}
+        }
+      }
+    },
+    "/auth/refresh": {
+      "post": {
+        "tags": ["认证"],
+        "summary": "刷新访问令牌",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {"$ref": "#/components/schemas/RefreshRequest"}
+            }
+          }
+        },
+        "responses": {
+          "200": {"description": "成功", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/RefreshResponse"}}}},
+          "401": {"description": "刷新令牌无效"}
+        }
+      }
+    },
+    "/accounts": {
+      "get": {
+        "tags": ["账号"],
+        "summary": "获取账号列表",
+        "security": [{"BearerAuth": []}],
+        "responses": {
+          "200": {"description": "成功"}
+        }
+      },
+      "post": {
+        "tags": ["账号"],
+        "summary": "创建账号",
+        "security": [{"BearerAuth": []}],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {"$ref": "#/components/schemas/CreateAccountRequest"}
+            }
+          }
+        },
+        "responses": {
+          "201": {"description": "创建成功"},
+          "400": {"description": "请求错误"}
+        }
+      }
+    },
+    "/tasks": {
+      "get": {
+        "tags": ["任务"],
+        "summary": "获取任务列表",
+        "security": [{"BearerAuth": []}],
+        "parameters": [
+          {"name": "status", "in": "query", "schema": {"type": "string"}},
+          {"name": "page", "in": "query", "schema": {"type": "integer", "default": 1}},
+          {"name": "pageSize", "in": "query", "schema": {"type": "integer", "default": 20}}
+        ],
+        "responses": {
+          "200": {"description": "成功"}
+        }
+      },
+      "post": {
+        "tags": ["任务"],
+        "summary": "创建任务",
+        "security": [{"BearerAuth": []}],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {"$ref": "#/components/schemas/CreateTaskRequest"}
+            }
+          }
+        },
+        "responses": {
+          "201": {"description": "创建成功"},
+          "400": {"description": "请求错误"}
+        }
+      }
+    },
+    "/tasks/{id}": {
+      "get": {
+        "tags": ["任务"],
+        "summary": "获取任务详情",
+        "security": [{"BearerAuth": []}],
+        "parameters": [
+          {"name": "id", "in": "path", "required": true, "schema": {"type": "string"}}
+        ],
+        "responses": {
+          "200": {"description": "成功"},
+          "404": {"description": "任务不存在"}
+        }
+      }
+    },
+    "/tasks/{id}/cancel": {
+      "post": {
+        "tags": ["任务"],
+        "summary": "取消任务",
+        "security": [{"BearerAuth": []}],
+        "parameters": [
+          {"name": "id", "in": "path", "required": true, "schema": {"type": "string"}}
+        ],
+        "responses": {
+          "200": {"description": "取消成功"},
+          "400": {"description": "请求错误"}
+        }
+      }
+    },
+    "/tasks/{id}/logs": {
+      "get": {
+        "tags": ["任务"],
+        "summary": "获取任务日志",
+        "security": [{"BearerAuth": []}],
+        "parameters": [
+          {"name": "id", "in": "path", "required": true, "schema": {"type": "string"}}
+        ],
+        "responses": {
+          "200": {"description": "成功"}
+        }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "BearerAuth": {
+        "type": "http",
+        "scheme": "bearer",
+        "bearerFormat": "JWT"
+      }
+    },
+    "schemas": {
+      "LoginRequest": {
+        "type": "object",
+        "properties": {
+          "api_key": {"type": "string", "example": "your-api-key"}
+        }
+      },
+      "LoginResponse": {
+        "type": "object",
+        "properties": {
+          "token": {"type": "string"},
+          "refresh_token": {"type": "string"},
+          "expires_in": {"type": "integer"}
+        }
+      },
+      "RefreshRequest": {
+        "type": "object",
+        "properties": {
+          "refresh_token": {"type": "string"}
+        }
+      },
+      "RefreshResponse": {
+        "type": "object",
+        "properties": {
+          "token": {"type": "string"},
+          "refresh_token": {"type": "string"},
+          "expires_in": {"type": "integer"}
+        }
+      },
+      "CreateAccountRequest": {
+        "type": "object",
+        "properties": {
+          "phone": {"type": "string", "example": "+8613800138000"},
+          "level": {"type": "string", "example": "normal"}
+        }
+      },
+      "CreateTaskRequest": {
+        "type": "object",
+        "properties": {
+          "type": {"type": "string", "example": "broadcast"},
+          "account_ids": {"type": "array", "items": {"type": "string"}},
+          "target_ids": {"type": "array", "items": {"type": "string"}},
+          "payload": {"type": "string"},
+          "description": {"type": "string"}
+        }
+      }
+    }
+  }
+};
+SwaggerUIBundle({
+  spec: spec,
+  dom_id: '#swagger-ui',
+  presets: [SwaggerUIBundle.presets.apis, SwaggerUIBundle.presets.standalone],
+  layout: "BaseLayout"
+});
+</script>
+</body>
+</html>

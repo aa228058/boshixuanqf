@@ -1,0 +1,11 @@
+{
+  "swagger": "2.0",
+  "info": {
+    "title": "TG Sender API",
+    "description": "Telegram消息发送与群组管理平台 - 运行 `swag init -g cmd/server/main.go` 生成完整文档",
+    "version": "1.9.12"
+  },
+  "host": "localhost:8080",
+  "basePath": "/api/v1",
+  "paths": {}
+}

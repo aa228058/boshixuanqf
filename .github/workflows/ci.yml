@@ -1,0 +1,183 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+
+jobs:
+  # 字段覆盖审计：防「上层有值、底层丢字段」类 bug（accounts.source / plans 配额列教训）
+  sql-audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: SQL coverage scan (INSERT coverage + SELECT/Scan count)
+        run: python3 scripts/check-sql-coverage.py
+
+  # T 工作流：裸 SQL 集成测试（需 Docker，GitHub runner 自带）
+  integration:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26.6'
+      - name: Run integration tests (testcontainers PG16 + 全量迁移)
+        run: go test -tags=integration -timeout 600s ./internal/repository/
+
+  # E-04: 密钥扫描——防止 F-30（.env 打入源码包）类事故再次进入仓库
+  secrets:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Run gitleaks
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  frontend:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: web/package-lock.json
+
+      - name: Install dependencies
+        working-directory: ./web
+        run: npm ci
+
+      - name: Typecheck
+        working-directory: ./web
+        run: npm run typecheck
+
+      - name: Run frontend tests
+        working-directory: ./web
+        run: npm test
+
+      - name: Build
+        working-directory: ./web
+        run: npm run build
+
+  build:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: tg_sender_test
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.26.2'
+
+      - name: Cache Go modules
+        uses: actions/cache@v4
+        with:
+          path: ~/go/pkg/mod
+          key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
+          restore-keys: |
+            ${{ runner.os }}-go-
+
+      - name: Download dependencies
+        run: go mod download
+
+      - name: Check formatting
+        run: |
+          UNFORMATTED=$(gofmt -l internal/ cmd/)
+          if [ -n "$UNFORMATTED" ]; then
+            echo "These files are not gofmt-formatted:"
+            echo "$UNFORMATTED"
+            exit 1
+          fi
+
+      - name: Run go vet
+        run: go vet ./...
+
+      - name: Run gosec (security scan)
+        run: |
+          go install github.com/securego/gosec/v2/cmd/gosec@latest
+          gosec -exclude-generated ./...
+
+      - name: Run tests
+        env:
+          DB_HOST: localhost
+          DB_PORT: 5432
+          DB_USER: postgres
+          DB_PASSWORD: postgres
+          DB_NAME: tg_sender_test
+          DB_SSLMODE: disable
+          JWT_SECRET: test-secret-key-32-char-long!!! # gitleaks:allow 测试夹具，非真实密钥
+          TG_API_ID: 12345
+          TG_API_HASH: test_hash
+        run: go test -race -coverprofile=coverage.out ./...
+
+      - name: Upload coverage
+        uses: codecov/codecov-action@v4
+        with:
+          files: ./coverage.out
+          fail_ci_if_error: false
+
+      - name: Build binary
+        run: go build -o tg-sender ./cmd/server
+
+      - name: Run migrations
+        env:
+          DB_HOST: localhost
+          DB_PORT: 5432
+          DB_USER: postgres
+          DB_PASSWORD: postgres
+          DB_NAME: tg_sender_test
+          DB_SSLMODE: disable
+        run: |
+          go install github.com/pressly/goose/v3/cmd/goose@latest
+          goose -dir migrations postgres "postgres://postgres:postgres@localhost:5432/tg_sender_test?sslmode=disable" up
+
+  # Phase 10: 前端 typecheck + 单测门禁——此前 CI 只跑 Go, 前端类型失效无人发现
+  # (ListResponse/SystemMetrics 等 4 类型缺失曾静默存在, 本仓修复后立此门禁)
+  frontend-check:
+    name: Frontend Typecheck + Unit Tests
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install dependencies
+        run: npm install --no-audit --no-fund
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Unit tests
+        run: npm run test:unit

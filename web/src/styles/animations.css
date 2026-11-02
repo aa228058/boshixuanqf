@@ -1,0 +1,102 @@
+/* Apple 风格平滑动画 */
+@keyframes fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+@keyframes fade-in-up {
+  from { transform: translateY(30px); opacity: 0; }
+  to { transform: translateY(0); opacity: 1; }
+}
+@keyframes fade-in-scale {
+  from { transform: scale(0.96); opacity: 0; }
+  to { transform: scale(1); opacity: 1; }
+}
+@keyframes slide-in-right {
+  from { transform: translateX(30px); opacity: 0; }
+  to { transform: translateX(0); opacity: 1; }
+}
+@keyframes slide-in-left {
+  from { transform: translateX(-30px); opacity: 0; }
+  to { transform: translateX(0); opacity: 1; }
+}
+@keyframes shimmer {
+  0% { background-position: -200% 0; }
+  100% { background-position: 200% 0; }
+}
+@keyframes pulse-soft {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.6; }
+}
+@keyframes float {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-8px); }
+}
+
+.animate-fade-in {
+  animation: fade-in 0.3s cubic-bezier(0.22, 1, 0.36, 1) forwards;
+}
+.animate-fade-in-up {
+  animation: fade-in-up 0.7s cubic-bezier(0.22, 1, 0.36, 1) forwards;
+}
+.animate-fade-in-scale {
+  animation: fade-in-scale 0.3s cubic-bezier(0.22, 1, 0.36, 1) forwards;
+}
+.animate-slide-in-right {
+  animation: slide-in-right 0.3s cubic-bezier(0.22, 1, 0.36, 1) forwards;
+}
+.animate-slide-in-left {
+  animation: slide-in-left 0.3s cubic-bezier(0.22, 1, 0.36, 1) forwards;
+}
+.animate-shimmer {
+  background: linear-gradient(90deg, transparent, rgba(90,184,232,0.08), transparent);
+  background-size: 200% 100%;
+  animation: shimmer 2.5s infinite;
+}
+.animate-pulse-soft {
+  animation: pulse-soft 3s cubic-bezier(0.32, 0.72, 0, 1) infinite;
+}
+.animate-float {
+  animation: float 4s cubic-bezier(0.32, 0.72, 0, 1) infinite;
+}
+
+/* 延迟类 */
+.delay-100 { animation-delay: 0.1s; }
+.delay-200 { animation-delay: 0.2s; }
+.delay-300 { animation-delay: 0.3s; }
+.delay-400 { animation-delay: 0.4s; }
+.delay-500 { animation-delay: 0.5s; }
+
+/* ===== Scroll Reveal（苹果产品页滚动进入动画）===== */
+/* R87-M8: reveal 动画降级为静态显示 —— 原 opacity:0 起始依赖 JS 加 .revealed,
+   时序/路由切换问题会导致元素永久透明占位(用户实测"顶部一大块空白"),
+   动画收益不值得这个风险。保留类名兼容现有 JS。 */
+.reveal {
+  opacity: 1;
+  transform: none;
+  transition: opacity 0.8s cubic-bezier(0.22, 1, 0.36, 1),
+              transform 0.8s cubic-bezier(0.22, 1, 0.36, 1);
+}
+.reveal.revealed {
+  opacity: 1;
+  transform: translateY(0);
+}
+.reveal-delay-1 { transition-delay: 0.1s; }
+.reveal-delay-2 { transition-delay: 0.2s; }
+.reveal-delay-3 { transition-delay: 0.3s; }
+.reveal-delay-4 { transition-delay: 0.4s; }
+.reveal-delay-5 { transition-delay: 0.5s; }
+.reveal-delay-6 { transition-delay: 0.6s; }
+
+/* 统计卡片入场(纯 CSS, 替代 v-motion——motion 指令与 Vue 卸载时序竞争会导致渲染崩溃) */
+@keyframes card-fade-up {
+  from { opacity: 0; transform: translateY(18px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+.stat-card-enter {
+  animation: card-fade-up 0.42s cubic-bezier(0.22, 0.61, 0.36, 1) both;
+}
+
+/* 尊重系统"减少动态效果"设置(原 v-motion 未处理, 此处为改进) */
+@media (prefers-reduced-motion: reduce) {
+  .stat-card-enter { animation: none; }
+}

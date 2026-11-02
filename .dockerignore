@@ -1,0 +1,27 @@
+# Build artifacts
+.env
+.env.*
+.git
+.gitignore
+*.md
+*.log
+tmp/
+web/node_modules/
+web/dist/
+*.zip
+*.bak
+*.tar.gz
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Test
+coverage/
+*.test

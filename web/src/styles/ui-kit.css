@@ -1,0 +1,234 @@
+/* ══════════════════════════════════════════════════════════════
+   ui-kit.css —— 规范 v2.0 五大基类(唯一组件层真相源)
+   原则: 卡片/输入/徽章=实底(surface-1/2); 玻璃只属浮层(.glass-float)。
+   页面禁止再手写散装的卡片/按钮/输入样式, 一律挂基类。
+   ══════════════════════════════════════════════════════════════ */
+
+/* ---------- .ui-card 内容卡片: 实底 + 细边框 + 极弱弥散阴影 ---------- */
+.ui-card {
+  background: var(--t-card, var(--t-surface-1));
+  /* R131-2 用户拍板: 边框加深一档, 增强浅色下轮廓感 */
+  border: 1px solid var(--t-line-strong);
+  border-radius: 20px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.03);
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+.ui-card--lg { border-radius: 24px; }
+.ui-card--hover:hover { border-color: var(--t-text-3); }
+
+/* ---------- .ui-btn 按钮: 全圆 + 按压反馈, 主=品牌纯色 / 次=surface-2 ---------- */
+.ui-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  height: 40px;
+  padding: 0 20px;
+  border-radius: 999px;
+  font-size: 13.5px;
+  font-weight: 700;
+  border: none;
+  cursor: pointer;
+  transition: transform 0.1s ease, opacity 0.15s ease, background-color 0.15s ease;
+  -webkit-tap-highlight-color: transparent;
+}
+.ui-btn:active { transform: scale(0.95); }
+.ui-btn--primary { background: var(--t-brand); color: #fff; }
+.ui-btn--primary:hover { background: var(--t-brand-hover); }
+.ui-btn--secondary { background: var(--t-surface-2); color: var(--t-text-2); }
+.ui-btn--secondary:hover { color: var(--t-text-1); }
+.ui-btn:disabled { opacity: 0.45; cursor: not-allowed; }
+.ui-btn:disabled:active { transform: none; }
+.ui-btn--sm { height: 30px; padding: 0 12px; font-size: 12px; }
+
+/* ---------- .ui-input 输入框: 无边框实底, 聚焦只亮边 ---------- */
+.ui-input {
+  width: 100%;
+  min-height: 44px;           /* h-11 */
+  padding: 10px 14px;
+  background: var(--t-surface-2);
+  border: 1px solid transparent;
+  border-radius: 12px;
+  color: var(--t-text-1);
+  font-size: 14.5px;
+  outline: none;
+  transition: border-color 0.15s ease, background-color 0.15s ease;
+}
+.ui-input::placeholder { color: var(--t-text-3); }
+.ui-input:hover { background: color-mix(in srgb, var(--t-surface-2) 80%, var(--t-text-1) 4%); }
+.ui-input:focus { border-color: var(--t-brand); background: var(--t-surface-1); }
+textarea.ui-input { min-height: 88px; resize: vertical; line-height: 1.55; }
+
+/* ---------- .ui-badge 状态徽章: 半透明浅底 + 同色文字 ---------- */
+.ui-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  border-radius: 8px;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1.4;
+  white-space: nowrap;
+}
+.ui-badge--ok    { background: rgba(16, 185, 129, 0.10); color: #10b981; }
+.ui-badge--warn  { background: rgba(245, 158, 11, 0.10); color: #f59e0b; }
+.ui-badge--err   { background: rgba(239, 68, 68, 0.10);  color: #ef4444; }
+.ui-badge--info  { background: var(--t-brand-dim);         color: var(--t-brand); }
+.ui-badge--mute  { background: var(--t-surface-2);         color: var(--t-text-3); }
+.ui-badge i { width: 5px; height: 5px; border-radius: 50%; background: currentColor; opacity: 0.85; }
+
+/* ---------- .glass-float 浮层玻璃(仅 5 处): 统一配方 ---------- */
+/* Modal 遮罩 / 底部 TabBar / 顶栏(滚动) / Toast 灵动岛 / 批量操作栏 */
+.glass-float {
+  background: color-mix(in srgb, var(--t-bg) 82%, transparent) !important;
+  backdrop-filter: blur(20px) saturate(1.4) !important;
+  -webkit-backdrop-filter: blur(20px) saturate(1.4) !important;
+  border: 1px solid var(--t-line-light);
+}
+
+/* ---------- Toast 灵动岛: 固定黑岛(三主题不变, 同 iPhone 硬件岛) ---------- */
+[data-sonner-toast].ts-toast,
+[data-sonner-toast] {
+  background: rgba(20, 22, 38, 0.85) !important;   /* 黑毛玻璃, 任何主题下不变 */
+  color: rgba(255, 255, 255, 0.92) !important;
+  border: 1px solid rgba(255, 255, 255, 0.14) !important;
+  backdrop-filter: blur(22px) saturate(1.5) !important;
+  -webkit-backdrop-filter: blur(22px) saturate(1.5) !important;
+}
+[data-sonner-toast] .ts-toast-title,
+[data-sonner-toast] [data-title] { color: rgba(255, 255, 255, 0.95) !important; }
+
+/* ==================================================================
+   R138 终极灵动岛 Toast (10号原生系统风 · 用户终态版 · 唯一收口处)
+   - top: 72px + env(safe-area-inset-top) —— 自动适配刘海/各家浏览器地址栏
+   - flex 居中(弃 transform) + z-index 999999 + blur 12px + GPU 加速
+   - 动画: 进场 island-drop-system(系统回弹), 退场 island-suck-out(吸回顶部)
+   ================================================================== */
+
+/* 1. 外层容器: 全宽 + Flex 居中 + 上移到顶栏正下方 */
+[data-sonner-toaster] {
+  position: fixed !important;
+  /* 72px + 安全区, 完美贴住顶栏底部(刘海/地址栏自动适配) */
+  top: calc(72px + env(safe-area-inset-top, 0px)) !important;
+  left: 0 !important;
+  right: 0 !important;
+  width: 100% !important; /* 占满宽, 防止左边被切 */
+  display: flex !important;
+  justify-content: center !important; /* flex 居中, 彻底抛弃 transform */
+  pointer-events: none !important; /* 空白区域点透 */
+  z-index: 999999 !important; /* 核武器层级: 不被任何大卡片盖住 */
+}
+
+/* 2. 卡片本体: 真·黑岛毛玻璃(性能优化版: blur 20→12 + GPU 加速) */
+[data-sonner-toast] {
+  pointer-events: auto !important; /* 恢复卡片自身点击 */
+  width: fit-content !important;
+  min-width: 0 !important;
+  max-width: 90vw !important;
+  margin: 0 !important; /* 不要 margin auto, flex 已居中 */
+
+  /* 核心玻璃态(12px 肉眼无差, 性能提升约半) */
+  background: rgba(20, 22, 38, 0.85) !important;
+  backdrop-filter: blur(12px) saturate(1.5) !important;
+  -webkit-backdrop-filter: blur(12px) saturate(1.5) !important;
+
+  /* GPU 硬件加速, 防滚动掉帧 */
+  transform: translateZ(0) !important;
+  will-change: transform, opacity !important;
+
+  /* 圆润胶囊 + 白边高光 + 阴影 */
+  border-radius: 9999px !important;
+  border: 1px solid rgba(255, 255, 255, 0.12) !important;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.3) !important;
+
+  padding: 10px 20px !important;
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  gap: 8px !important;
+
+  /* 灵魂: 10号 原生系统风滑出动画(越过终点的回弹);
+     R139 第二条动画 = CSS 生命周期兜底: 2.3s 后无论 sonner 删不删元素,
+     岛强制 opacity→0 并点透(该环境实测 duration=2500 可能从未生效, 老毛病) */
+  animation: island-drop-system 0.55s cubic-bezier(0.175, 0.885, 0.32, 1.275) both,
+             toast-auto-hide 0.3s linear 2.3s forwards !important;
+}
+
+/* 进场: 从上方较远处滑出, 带有明显的回弹 */
+@keyframes island-drop-system {
+  0%   { opacity: 0; transform: translateY(-40px); }
+  70%  { opacity: 1; transform: translateY(4px); } /* 稍微越过终点, 形成回弹 */
+  100% { opacity: 1; transform: translateY(0); }
+}
+
+/* 退场: 像被吸回顶部一样, 平滑收缩消失 */
+[data-sonner-toast][data-mounted="false"] {
+  animation: island-suck-out 0.25s cubic-bezier(0.6, -0.28, 0.735, 0.045) both !important;
+}
+
+@keyframes island-suck-out {
+  0%   { opacity: 1; transform: translateY(0) scale(1); }
+  100% { opacity: 0; transform: translateY(-20px) scale(0.85); }
+}
+
+/* R139: 生命周期兜底 —— 2.3s 后强制淡出+点透(视觉移除, 不赌 sonner 的 duration) */
+@keyframes toast-auto-hide {
+  to { opacity: 0; pointer-events: none; }
+}
+
+/* 3. 强制文字纯白 */
+[data-sonner-toast] [data-title],
+[data-sonner-toast] [data-description] {
+  color: #ffffff !important;
+  font-size: 13px !important;
+  font-weight: 500 !important;
+  margin: 0 !important;
+  line-height: 1.2 !important;
+}
+
+/* 4. 图标大小(r137 随岛微增大) */
+[data-sonner-toast] [data-icon] {
+  margin: 0 !important;
+  width: 18px !important;
+  height: 18px !important;
+}
+
+/* ==================================================================
+   R137 移动端毛玻璃减负: theme-dark 的 .glass blur 带 !important,
+   在移动端盖过了 tailwind 的性能剥离(437行), 深色模式手机发烫的元凶。
+   此处(ui-kit 尾部)夺回最终话语权: 移动端内容卡一律不模糊。
+   白名单不动: 顶栏/底栏/Modal遮罩/Toast(12px)/下拉面板(瞬态)。
+   ================================================================== */
+@media (max-width: 768px) {
+  html.theme-dark .glass,
+  html.theme-dark .glass-strong,
+  html.theme-dark .sidebar-glass,
+  html.theme-dark .apple-card {
+    backdrop-filter: none !important;
+    -webkit-backdrop-filter: none !important;
+  }
+}
+
+
+/* ═══════════ R146 新皮肤收敛: 旧玻璃类 → 实底卡(深色不透字 / 浅色不发灰) ═══════════ */
+.glass, .apple-card {
+  background: var(--t-card) !important;
+  -webkit-backdrop-filter: none !important;
+  backdrop-filter: none !important;
+  border-color: var(--t-line-strong) !important;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.03) !important;
+}
+.glass-strong {
+  background: var(--t-card) !important;
+  -webkit-backdrop-filter: none !important;
+  backdrop-filter: none !important;
+  color: var(--t-text-1) !important;
+  border-color: var(--t-line-strong) !important;
+}
+.apple-card:hover, .glass-hover:hover {
+  background: var(--t-card) !important;
+  border-color: var(--t-line-strong) !important;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.06) !important;
+}
+.elev-pop { box-shadow: var(--t-shadow-card) !important; }

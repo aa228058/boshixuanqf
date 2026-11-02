@@ -1,0 +1,136 @@
+/* ══════════════════════════════════════════════════════════════
+   tokens.css —— 设计令牌唯一真相源 (R87 · R123 视觉体系重做)
+   R123: 全线换肤为"奶油陶土"设计语言(租户提供的示例1/示例3) ——
+   米暖底 #f7f4ef + 陶橙 #c45d3c + 大圆角柔和卡片; 深色 = 深灰蓝 + 亮陶橙。
+   规则: 除本文件外, 任何地方不得出现 # 开头的色值与硬编码 rgba。
+   ══════════════════════════════════════════════════════════════ */
+
+/* ══════════════════════════════════════════════════════════════
+   R126 三主题(结构统一示例2 语言, 三套配色):
+   :root        = 正常模式(示例3): 靛蓝灰底 + #5b62f6
+   html.theme-eye = 护眼模式(示例1): 奶油陶土 + #c45d3c
+   html.theme-dark = 深色模式(示例2): 玻璃蓝紫 + #8b7bff
+   ══════════════════════════════════════════════════════════════ */
+
+:root {
+  /* 正常模式(示例3) */
+  --t-bg:          #f6f7fb;
+  --t-surface-1:   #ffffff;
+  --t-surface-2:   #f0f2f8;
+  --t-surface-3:   #e4e7f0;
+  --t-text-1:      #192234;
+  --t-text-2:      #5d6678;
+  --t-text-3:      #8a93a3;
+  --t-line:        #e8ebf2;
+  --t-line-strong: #d4d9e5;
+  --t-line-light:  #f2f4f9;
+  --t-brand:       #5b62f6;
+  --t-brand-hover: #4a51e0;
+  --t-brand-active:#3d43c4;
+  --t-brand-dim:   rgba(91, 98, 246, 0.10);
+  --t-brand-ink:   #ffffff;
+  --t-ok:          #15966b;
+  --t-warn:        #d58a22;
+  --t-err:         #d95757;
+  /* 形状与动效(三主题共享) */
+  --t-r-lg: 20px;
+  --t-r-md: 14px;
+  --t-r-sm: 10px;
+  --t-ease: cubic-bezier(.22, 1, .36, 1);
+  --t-glow: none;
+  /* R128 模态框实底(三主题各自定义, 见各主题块) */
+  --t-modal-bg: #ffffff;
+  /* R131 规范 v2.0: 内容卡片实底令牌(与玻璃浮层体系分离, 深色必须为实色) */
+  --t-card: #ffffff;
+}
+
+html.theme-eye {
+  /* 护眼模式(示例1): 奶油陶土, 暖纸感 */
+  --t-bg:          #f7f4ef;
+  --t-surface-1:   #fffdf9;
+  --t-surface-2:   #f1ece4;
+  --t-surface-3:   #e8dfd4;
+  --t-text-1:      #28251f;
+  --t-text-2:      #6b6357;
+  --t-text-3:      #9a9184;
+  --t-line:        #e8dfd4;
+  --t-line-strong: #d8ccbc;
+  --t-line-light:  #efe8de;
+  --t-brand:       #c45d3c;
+  --t-brand-hover: #a94e32;
+  --t-brand-active:#8f4229;
+  --t-brand-dim:   rgba(196, 93, 60, 0.10);
+  --t-brand-ink:   #ffffff;
+  --t-ok:          #1d9b72;
+  --t-warn:        #d58a22;
+  --t-err:         #d95757;
+  --t-glow: none;
+  /* 护眼模式: 模态框奶油实底 */
+  --t-modal-bg: #fffdf9;
+  /* R131 规范 v2.0: 内容卡片实底(奶油纸感) */
+  --t-card: #fffdf9;
+}
+
+html.theme-dark {
+  /* 深色模式(示例2): 玻璃拟态深空蓝紫 + 紫光晕 */
+  --t-bg:          #070b1a;
+  --t-surface-1:   rgba(255, 255, 255, 0.06);
+  --t-surface-2:   rgba(255, 255, 255, 0.10);
+  --t-surface-3:   rgba(255, 255, 255, 0.14);
+  /* R129 文字提亮一档: 原 text-2/3 在玻璃卡上发闷("文字和背景夹在一起"), 上调 */
+  --t-text-1:      #eef1fb;
+  --t-text-2:      #c9cfe8;
+  --t-text-3:      #9aa2c6;
+  --t-line:        rgba(255, 255, 255, 0.10);
+  --t-line-strong: rgba(255, 255, 255, 0.20);
+  --t-line-light:  rgba(255, 255, 255, 0.06);
+  --t-brand:       #8b7bff;
+  --t-brand-hover: #a193ff;
+  --t-brand-active:#6b5bff;
+  --t-brand-dim:   rgba(107, 91, 255, 0.16);
+  --t-brand-ink:   #ffffff;
+  --t-ok:          #34d399;
+  --t-warn:        #fbbf24;
+  --t-err:         #f87171;
+  --t-glow: radial-gradient(420px 300px at 0% -5%, #1d2357 0, transparent 70%),
+            radial-gradient(360px 260px at 110% 20%, #173b5c 0, transparent 70%);
+  /* 深色模式: 模态框近实底(97% 不透明, 保留轻微玻璃语言但不透字) */
+  --t-modal-bg: rgba(13, 18, 48, 0.97);
+  /* R131 规范 v2.0: 内容卡片实底(深灰蓝实色, 与 6% 玻璃 surface-1 区分——
+     surface-1 继续服务浮层玻璃体系, 不可改) */
+  --t-card: #121830;
+}
+
+/* ---------- 浅色: 奶油陶土(示例1) ---------- */
+html.theme-stripe {
+  --t-bg:          #f7f4ef;
+  --t-surface-1:   #fffdf9;
+  --t-surface-2:   #f1ece4;
+  --t-surface-3:   #e8dfd4;
+  --t-text-1:      #28251f;
+  --t-text-2:      #6b6357;
+  --t-text-3:      #9a9184;
+  --t-line:        #e8dfd4;
+  --t-line-strong: #d8ccbc;
+  --t-line-light:  #efe8de;
+  --t-brand:       #c45d3c;
+  --t-brand-hover: #a94e32;
+  --t-brand-active:#8f4229;
+  --t-brand-dim:   rgba(196, 93, 60, 0.10);
+  --t-brand-ink:   #ffffff;
+  --t-ok:          #1d9b72;
+  --t-warn:        #d58a22;
+  --t-err:         #d95757;
+}
+
+/* ---------- R87-M2 字号阶梯(克制五级, 页面严禁写死 font-size) ---------- */
+:root {
+  --t-fs-display: 21.5px;  /* KPI 大数字 */
+  --t-fs-title:   16.5px;  /* 页面/弹窗标题 */
+  --t-fs-body:    15px;    /* 正文、列表标题 */
+  --t-fs-small:   13.5px;  /* 按钮、标签 */
+  --t-fs-caption: 13px;    /* 时间戳、辅助说明 */
+  /* 阴影: R125 玻璃感(柔+浅) */
+  --t-shadow-pop:  0 24px 64px -20px rgba(0, 0, 0, 0.5);
+  --t-shadow-card: 0 10px 32px rgba(0, 0, 0, 0.18);
+}

@@ -1,0 +1,240 @@
+/* ============================================================
+   深色主题(重写版) —— 自包含, 全部带 !important, 一个组件都不漏
+   机制: html.theme-dark (JS切换加的class), 浅色 = theme-stripe
+   与浅色完全对称: 浅色stripe的所有覆盖, 这里逐条给出深色对应值
+   ============================================================ */
+html.theme-dark {
+  /* ---------- 颜色变量(与浅色stripe一一对应) ---------- */
+  /* R86 深色"雾罩"修复: 原配色 page/card/secondary 仅相差 3~5 个色阶, 叠在
+     一起糊成一块黑板(用户实测"像被雾罩住, 浅色正常")。这里把三个层级拉开:
+     页面最暗 → 次级面 → 卡片明显提亮, 边框与次级文字同步加亮。 */
+  --color-bg-primary: var(--t-bg)!important;
+  --color-bg-secondary: var(--t-surface-1)!important;
+  --color-bg-card: var(--t-surface-2)!important;
+  --color-bg-hover: color-mix(in srgb, var(--t-text-1) 7%, transparent) !important;
+  --color-bg-elevated: var(--t-surface-3)!important;
+  --color-border: color-mix(in srgb, var(--t-text-1) 10%, transparent) !important;
+  --color-border-hover: color-mix(in srgb, var(--t-text-1) 18%, transparent) !important;
+  --color-border-light: color-mix(in srgb, var(--t-text-1) 6%, transparent) !important;
+  --color-text-primary: var(--t-text-1)!important;
+  --color-text-secondary: var(--t-text-2)!important;
+  --color-text-muted: var(--t-text-3)!important;  /* 对比度修复: 55%→65%, 小字在深色底可读 */
+  --color-text-inverse: var(--t-bg)!important;
+  --color-cyan: var(--t-brand)!important;  /* 身份色统一: 深色下用亮青, 对比度 7:1 */
+  --color-cyan-bright: var(--t-brand-hover)!important;
+  --color-cyan-glow: color-mix(in srgb, var(--t-brand) 16%, transparent) !important;
+  --color-cyan-dim: color-mix(in srgb, var(--t-brand) 12%, transparent) !important;
+  --color-emerald: var(--t-ok)!important;
+  --color-emerald-dim: color-mix(in srgb, var(--t-ok) 12%, transparent) !important;
+  --color-rose: var(--t-err)!important;
+  --color-rose-dim: color-mix(in srgb, var(--t-err) 12%, transparent) !important;
+  --color-amber: var(--t-warn)!important;
+  --color-amber-dim: color-mix(in srgb, var(--t-warn) 12%, transparent) !important;
+
+  /* TDesign 组件变量(随 R86 层级分离同步提亮) */
+  --td-bg-color-container: var(--t-surface-2)!important;
+  --td-bg-color-container-hover: var(--t-surface-3)!important;
+  --td-bg-color-container-select: var(--t-surface-3)!important;
+  --td-bg-color-page: var(--t-bg)!important;
+  --td-bg-color-secondarycontainer: var(--t-surface-1)!important;
+  --td-text-color-primary: var(--t-text-1)!important;
+  --td-text-color-secondary: var(--t-text-2)!important;
+  --td-text-color-placeholder: var(--t-text-3)!important;
+  --td-border-level-1-color: color-mix(in srgb, var(--t-text-1) 10%, transparent) !important;
+  --td-component-border: color-mix(in srgb, var(--t-text-1) 10%, transparent) !important;
+  --td-brand-color: var(--t-brand)!important;
+  --td-brand-color-hover: var(--t-brand-hover)!important;
+  --td-brand-color-active: var(--t-brand-active)!important;
+  --td-brand-color-focus: var(--t-brand-dim)!important;
+
+  color-scheme: dark !important;
+}
+
+/* ---------- 页面底层背景 ---------- */
+html.theme-dark body {
+  background: var(--t-bg) !important;
+}
+
+/* ---------- 玻璃拟态组件(R86: 与新卡片色一致, 提高不透明度让边界可辨) ---------- */
+html.theme-dark .glass,
+html.theme-dark .glass-strong,
+html.theme-dark .sidebar-glass {
+  background: color-mix(in srgb, var(--t-surface-1) 92%, transparent) !important;
+  border-color: color-mix(in srgb, var(--t-text-1) 10%, transparent) !important;
+  backdrop-filter: blur(20px) saturate(1.2) !important;
+  -webkit-backdrop-filter: blur(20px) saturate(1.2) !important;
+}
+
+/* ---------- 滚动条 ---------- */
+html.theme-dark ::-webkit-scrollbar { width: 8px; height: 8px; }
+html.theme-dark ::-webkit-scrollbar-track { background: var(--t-bg); }
+html.theme-dark ::-webkit-scrollbar-thumb { background: color-mix(in srgb, var(--t-text-1) 16%, transparent); border-radius: 4px; }
+html.theme-dark ::-webkit-scrollbar-thumb:hover { background: color-mix(in srgb, var(--t-text-1) 26%, transparent); }
+
+/* ---------- 输入控件兜底(个别组件写死白底) ---------- */
+html.theme-dark input,
+html.theme-dark textarea,
+html.theme-dark select {
+  background-color: var(--t-surface-2) !important;
+  color: var(--t-text-1) !important;
+  border-color: color-mix(in srgb, var(--t-text-1) 10%, transparent) !important;
+}
+html.theme-dark input::placeholder,
+html.theme-dark textarea::placeholder {
+  color: var(--t-text-3) !important;
+}
+
+/* ---------- R86 保险: TDesign 输入框文字/占位符强制可读 ---------- */
+html.theme-dark .t-input__inner {
+  color: var(--t-text-1) !important;
+}
+html.theme-dark .t-input__inner::placeholder {
+  color: var(--t-text-2) !important;
+}
+
+/* ---------- R86 移动端兜底: 安卓 WebView 的 backdrop-filter 会糊成"牛奶雾",
+   小屏下强制关闭毛玻璃(桌面端保留) ---------- */
+@media (max-width: 768px) {
+  html.theme-dark .glass,
+  html.theme-dark .glass-strong,
+  html.theme-dark .sidebar-glass {
+    backdrop-filter: none !important;
+    -webkit-backdrop-filter: none !important;
+    background: var(--t-surface-2) !important;
+  }
+}
+
+/* ===== 全站背景网格深色抑制(灰布修复: 不依赖组件内 :global, 双保险) ===== */
+html.theme-dark .mesh-svg { opacity: .1 !important; filter: brightness(.55) saturate(.6); }
+html.theme-dark .dot-grid { opacity: .5; }
+
+/* ---------- R87 设计令牌: TDesign 品牌色映射为 demo 青绿 ---------- */
+html.theme-dark {
+  --td-brand-color: var(--t-brand)!important;
+  --td-brand-color-hover: var(--t-brand-hover)!important;
+  --td-brand-color-active: var(--t-brand-active)!important;
+  --td-brand-color-focus: var(--t-brand-dim)!important;
+  /* R87-M8: 组件背景/边框深色映射 —— 缺失会导致 default 按钮/输入框
+     深色下白底白字("分组管理"白按钮、输入框白底探照灯同款根因) */
+  --td-component-bg: var(--t-surface-2)!important;
+  --td-component-bg-hover: var(--t-surface-3)!important;
+  --td-fill-color-hover: var(--t-surface-3)!important;
+}
+
+/* ═══════ R87-M8 未分层覆盖层(优先级高于 TDesign 与分层样式) ═══════ */
+/* R98 核规则: TDesign 边框实际画在内层元素(.t-input 本体等), 而非外层 wrap —
+   之前只罩 wrap 导致白边漏网。此处内外双层通杀。 */
+html.theme-dark .t-input,
+html.theme-dark .t-select,
+html.theme-dark .t-textarea,
+html.theme-dark .t-input-number,
+html.theme-dark .t-date-picker,
+html.theme-dark .t-tag-input,
+html.theme-dark .t-cascader {
+  background: var(--t-surface-1) !important;
+  border-color: var(--t-line) !important;
+  box-shadow: none !important;
+  color: var(--t-text-1) !important;
+}
+html.theme-dark .t-input:hover,
+html.theme-dark .t-select:hover,
+html.theme-dark .t-input-number:hover,
+html.theme-dark .t-date-picker:hover {
+  border-color: var(--t-line-strong) !important;
+}
+html.theme-dark .t-input.t-is-focused,
+html.theme-dark .t-select.t-is-focused,
+html.theme-dark .t-input-number.t-is-focused,
+html.theme-dark .t-date-picker.t-is-focused {
+  border-color: var(--t-brand) !important;
+  box-shadow: 0 0 0 3px var(--t-brand-dim) !important;
+}
+/* R87-M10: 组件边框色(此前缺失, t-input-number/选择器等白边元凶) */
+html.theme-dark {
+  --td-component-border: color-mix(in srgb, var(--t-text-1) 14%, transparent) !important;
+}
+/* R87-M10: 裸 input/textarea 深色统一(群发/设置弹窗里的原生输入框白边修复) */
+html.theme-dark input:not([type="checkbox"]):not([type="radio"]):not([type="file"]):not([type="hidden"]),
+html.theme-dark textarea {
+  background: var(--t-surface-1) !important;
+  border-color: var(--t-line) !important;
+  color: var(--t-text-1) !important;
+}
+html.theme-dark input::placeholder,
+html.theme-dark textarea::placeholder {
+  color: var(--t-text-3) !important;
+}
+/* R87-M10: TDesign 全部输入控件容器统一(此前只罩了 t-input, 白边漏网:
+   t-select/t-date-picker/t-input-number/tag-input/cascader 各有独立 wrap 类名) */
+html.theme-dark .t-input__wrap,
+html.theme-dark .t-select__wrap,
+html.theme-dark .t-select-input__wrap,
+html.theme-dark .t-date-picker__wrap,
+html.theme-dark .t-input-number,
+html.theme-dark .t-tag-input,
+html.theme-dark .t-cascader__wrap,
+html.theme-dark .t-textarea__wrap {
+  background: var(--t-surface-1) !important;
+  border-color: var(--t-line) !important;
+  box-shadow: none !important;
+  color: var(--t-text-1) !important;
+}
+html.theme-dark .t-input__wrap.t-is-focused,
+html.theme-dark .t-select__wrap.t-is-focused,
+html.theme-dark .t-date-picker__wrap.t-is-focused,
+html.theme-dark .t-input-number.t-is-focused,
+html.theme-dark .t-cascader__wrap.t-is-focused,
+html.theme-dark .t-input__wrap:focus-within,
+html.theme-dark .t-select__wrap:focus-within,
+html.theme-dark .t-date-picker__wrap:focus-within,
+html.theme-dark .t-input-number:focus-within {
+  border-color: var(--t-brand) !important;
+  box-shadow: 0 0 0 3px var(--t-brand-dim) !important;
+}
+/* R107: 深色桌面端玻璃卡实底化 —— 半透明+毛玻璃在暗底上发灰发脏("总感觉怪怪的"根源之二),
+   一律改不透明实底 */
+@media (min-width: 641px) {
+  html.theme-dark .glass,
+  html.theme-dark .glass-strong,
+  html.theme-dark .sidebar-glass {
+    background: var(--t-surface-2) !important;
+    backdrop-filter: none !important;
+    -webkit-backdrop-filter: none !important;
+  }
+  html.theme-dark .glass-strong { background: var(--t-surface-1) !important; }
+}
+/* R87-M10: 深色默认按钮(取消/分组管理等"有框无颜色"按钮)实底兜底 */
+html.theme-dark .t-button--variant-base {
+  background: var(--t-surface-2) !important;
+  color: var(--t-text-1) !important;
+  border-color: var(--t-line) !important;
+}
+html.theme-dark .t-button--variant-base:hover {
+  background: var(--t-surface-3) !important;
+  border-color: var(--t-line-strong) !important;
+  color: var(--t-text-1) !important;
+}
+/* 弹窗遮罩: 纯黑半透明无模糊 —— 根治"毛玻璃发脏/屏幕进水"观感 */
+.vfm__overlay, .vfm__mask,
+.t-overlay__active, .t-dialog__mask {
+  background-color: rgba(0, 0, 0, 0.6) !important;
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+}
+/* 输入框无框化(最高优先级): 色块底 + 聚焦亮品牌边 */
+.t-input__wrap, .t-textarea__wrap {
+  background: var(--t-surface-1) !important;
+  border-color: transparent !important;
+  box-shadow: none !important;
+}
+.t-input__wrap.t-is-focused, .t-textarea__wrap.t-is-focused,
+.t-input__wrap:focus-within, .t-textarea__wrap:focus-within {
+  border-color: var(--t-brand) !important;
+  box-shadow: 0 0 0 3px var(--t-brand-dim) !important;
+}
+/* 移动端弹窗底部安全区(全面屏手势防误触) */
+@media (max-width: 640px) {
+  .vfm__content, .t-dialog__footer, .t-dialog__body {
+    padding-bottom: calc(12px + env(safe-area-inset-bottom, 0px)) !important;
+  }
+}

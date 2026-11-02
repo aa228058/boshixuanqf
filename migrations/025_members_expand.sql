@@ -1,0 +1,14 @@
+-- +goose Up
+-- 成员采集完善: members 表补齐 BatchCreate 需要的列(此前 CopyFrom 引用了不存在的列导致全部入库失败)。
+ALTER TABLE members ADD COLUMN IF NOT EXISTS first_name VARCHAR(255) NOT NULL DEFAULT '';
+ALTER TABLE members ADD COLUMN IF NOT EXISTS last_name  VARCHAR(255) NOT NULL DEFAULT '';
+ALTER TABLE members ADD COLUMN IF NOT EXISTS phone      VARCHAR(50)  NOT NULL DEFAULT '';
+ALTER TABLE members ADD COLUMN IF NOT EXISTS bio        TEXT         NOT NULL DEFAULT '';
+ALTER TABLE members ADD COLUMN IF NOT EXISTS last_seen  TIMESTAMPTZ;
+
+-- +goose Down
+ALTER TABLE members DROP COLUMN IF EXISTS last_seen;
+ALTER TABLE members DROP COLUMN IF EXISTS bio;
+ALTER TABLE members DROP COLUMN IF EXISTS phone;
+ALTER TABLE members DROP COLUMN IF EXISTS last_name;
+ALTER TABLE members DROP COLUMN IF EXISTS first_name;

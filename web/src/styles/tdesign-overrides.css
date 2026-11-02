@@ -1,0 +1,192 @@
+/* ============ TDesign 覆盖层 ============
+   必须在 tdesign-vue-next 样式之后加载(main.ts 里最后引入)。
+   关键声明一律 !important, 防止被组件库默认样式(更高特异性)覆盖。 */
+
+/* ===== 移动端弹窗: 底部抽屉式 =====
+   占满宽, 顶部留页面背景, 内容区滚动, footer 固定吸底
+   TDesign 真实 DOM: .t-dialog__wrap(overflow:auto) > .t-dialog__position(flex, padding:48px 0)
+   > .t-dialog。之前把 align-items 写在 __wrap 上无效(它不是 flex 容器),
+   且 __wrap 的 overflow:auto 让整窗随内容滚动 → 出现"下滑看全、底角无圆角"。 */
+@media (max-width: 768px) {
+  /* 外层: 禁止整窗滚动, 弹窗永远固定在屏幕可视区内 */
+  .t-dialog__ctx .t-dialog__wrap { padding: 0 !important; overflow: hidden !important; }
+
+  /* 真正的 flex 容器: 吸底 + 去掉默认 48px 纵向 padding(吃高度的元凶) */
+  .t-dialog__ctx .t-dialog__position {
+    padding: 0 !important;
+    align-items: flex-end !important;
+    min-height: 100% !important;
+  }
+
+  .t-dialog__ctx .t-dialog {
+    width: 100% !important;
+    max-width: 100% !important;
+    border-radius: 18px 18px 0 0 !important;
+    max-height: 88vh !important;
+    max-height: 88dvh !important;
+    display: flex !important;
+    flex-direction: column !important;
+    overflow: hidden !important;
+  }
+
+  /* 顶部拖拽把手: 原生抽屉观感 */
+  .t-dialog__header { position: relative; flex-shrink: 0; }
+  .t-dialog__header::after {
+    content: '';
+    position: absolute;
+    top: 8px;
+    left: 50%;
+    transform: translateX(-50%);
+    width: 40px;
+    height: 4px;
+    border-radius: 9999px;
+    background: rgba(128, 128, 128, 0.35);
+    pointer-events: none;
+  }
+  .t-dialog__header { padding-top: 20px !important; }
+
+  /* 内容区滚动, footer 固定吸底 */
+  .t-dialog__body {
+    overflow-y: auto !important;
+    -webkit-overflow-scrolling: touch;
+    flex: 1 1 auto !important;
+    min-height: 0 !important;
+  }
+  .t-dialog__footer { flex-shrink: 0 !important; }
+  .t-dialog { background-color: var(--td-bg-color-container, #fff) !important; }
+
+  /* ===== 遗留自绘弹窗(.legacy-modal): 与抽屉同规格 ===== */
+  .legacy-modal { align-items: flex-end !important; overflow: hidden !important; }
+  .legacy-modal > div {
+    width: 100% !important;
+    max-width: 100% !important;
+    max-height: 88vh !important;
+    max-height: 88dvh !important;
+    border-radius: 18px 18px 0 0 !important;
+    overflow-y: auto !important;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  /* ===== 移动端弹窗视觉美化 ===== */
+  /* 隐藏滚动条 */
+  .t-dialog__body { scrollbar-width: none !important; }
+  .t-dialog__body::-webkit-scrollbar { display: none !important; }
+
+  /* footer 吸底 + 分隔线 + 安全区 */
+  .t-dialog__footer {
+    padding: 12px 16px max(12px, env(safe-area-inset-bottom)) !important;
+    border-top: 1px solid rgba(128,128,128,0.10) !important;
+    flex-shrink: 0 !important;
+  }
+
+  /* 弹窗内按钮全宽堆叠、大触控区、圆角 */
+  .t-dialog__footer button,
+  .t-dialog__footer .t-button,
+  .t-dialog button[type="button"] {
+    width: 100% !important;
+    min-height: 46px !important;
+    border-radius: 12px !important;
+    font-size: 15px !important;
+    font-weight: 500 !important;
+    justify-content: center !important;
+  }
+
+  /* 头部标题加大加粗 */
+  .t-dialog__header { padding: 22px 16px 10px !important; }
+  .t-dialog__header .t-dialog__header-content {
+    font-size: 18px !important;
+    font-weight: 700 !important;
+    letter-spacing: 0.02em !important;
+  }
+
+  /* 内容区留白统一 */
+  .t-dialog__body { padding: 8px 16px !important; }
+
+  /* ===== vue-final-modal 弹窗: 移动端贴底 + 按钮全宽 =====
+     必须写在这里(全局)而非组件 scoped: slot 里的按钮不带 Modal.vue 的
+     scope 属性, scoped 样式匹配不到; 过渡类名也是全局的 */
+  .modal-wrapper {
+    position: fixed !important;
+    inset: 0 !important;
+    display: flex !important;
+    align-items: flex-end !important;
+    justify-content: center !important;
+    padding: 0 !important;
+  }
+  .modal-overlay {
+    position: absolute !important;
+    inset: 0 !important;
+    background: rgba(0, 0, 0, 0.45) !important;
+    backdrop-filter: blur(4px);
+    -webkit-backdrop-filter: blur(4px);
+  }
+  .modal-content {
+    width: 100% !important;
+    max-width: 100% !important;
+    max-height: 92vh !important;
+    max-height: 92dvh !important;
+    display: flex !important;
+    flex-direction: column !important;
+    overflow: hidden !important;
+  }
+  .modal-footer button,
+  .modal-footer .t-button {
+    width: 100% !important;
+    min-height: 46px !important;
+    border-radius: 12px !important;
+    font-size: 15px !important;
+    font-weight: 500 !important;
+    justify-content: center !important;
+  }
+
+  /* 过渡动画(类名是全局的, 不能放 scoped) */
+  .modal-enter-active { transition: transform 0.28s cubic-bezier(0.16, 1, 0.3, 1), opacity 0.28s; }
+  .modal-leave-active { transition: transform 0.22s cubic-bezier(0.4, 0, 0.2, 1), opacity 0.22s; }
+  .modal-enter-from, .modal-leave-to { transform: translateY(100%); opacity: 0; }
+  .modal-enter-to, .modal-leave-from { transform: translateY(0); opacity: 1; }
+
+  /* legacy-modal(添加账号等自绘弹窗): 按钮全宽对齐新风格 */
+  .legacy-modal button,
+  .legacy-modal .t-button {
+    min-height: 44px !important;
+    border-radius: 12px !important;
+    font-size: 15px !important;
+  }
+}
+
+/* ===== 桌面端: 弹窗居中卡片 ===== */
+@media (min-width: 769px) {
+  .modal-wrapper {
+    align-items: center !important;
+    padding: 24px !important;
+  }
+  .modal-content {
+    max-width: 520px !important;
+  }
+}
+
+/* ===== 移动端工具栏换行(面包屑下的筛选/操作栏) =====
+   窄屏下横滚容器改为自动换行, 避免内容直接溢出屏幕 */
+@media (max-width: 768px) {
+  main > .flex.items-center.gap-2.overflow-x-auto,
+  main > div > .flex.items-center.gap-2.overflow-x-auto {
+    flex-wrap: wrap !important;
+    overflow-x: visible !important;
+    row-gap: 8px;
+  }
+  main > .flex.items-center.gap-2.overflow-x-auto > .shrink-0,
+  main > div > .flex.items-center.gap-2.overflow-x-auto > .shrink-0 {
+    flex-shrink: 1 !important;
+  }
+}
+
+/* ===== 全局请求进度条动画(定义在此, App.vue 内联引用) ===== */
+@keyframes global-load-slide {
+  0%   { transform: translateX(-120%); }
+  100% { transform: translateX(320%); }
+}
+
+/* ===== 全局路由加载遮罩转圈动画 ===== */
+@keyframes global-load-spin {
+  to { transform: rotate(360deg); }
+}

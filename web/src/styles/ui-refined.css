@@ -1,0 +1,89 @@
+/* =========================================================
+   ui-refined.css · 视觉令牌与组件统一覆盖(2026-10-20 中和版)
+   目标: 去渐变/去霓虹, Clean SaaS 克制科技风, 双端统一
+   原则: 本文件是唯一组件外观来源, scoped style 不再定义颜色
+   ========================================================= */
+
+/* ========== 1. 形状与阴影令牌(供各主题覆盖) ========== */
+:root {
+  --radius: 14px;
+  --radius-sm: 9px;
+  --shadow-card: 0 1px 2px rgba(16,24,40,.04), 0 12px 32px rgba(16,24,40,.07);
+  --shadow-pop: 0 1px 2px rgba(16,24,40,.05), 0 20px 48px rgba(16,24,40,.12);
+  --ring-primary: 0 0 0 3px color-mix(in srgb, var(--color-cyan, #0891b2) 16%, transparent);
+}
+
+/* ========== 2. TDesign 输入框: 根治"双框"
+   病因: t-input 的 wrap 层自带背景, inner 又一层 → 两层边框/背景叠出"框中框"
+   治法: wrap 透明无边框, 只保留 inner 单层 */
+/* R87-M7 删除: 此处原有一整套 .t-input/.t-textarea/.input-box/.apple-input 覆盖
+   (未分层样式优先级高于 tailwind.css 组件层, 会盖住 r92 的"无框输入框"新样式
+   并造成 wrap/inner 双框)。输入框样式统一由 tailwind.css 的 .t-input__wrap 规则管理。 */
+
+/* ========== 3. 按钮四级规范 ========== */
+/* 主按钮: 纯色, 无渐变无发光 */
+/* 精确匹配 glow-btn 类, 不用属性选择器(会误伤类名带 glow 的菜单项/图标, 造成实心色块盖字) */
+.glow-btn {
+  background: var(--color-cyan, #0891b2) !important;
+  background-image: none !important;
+  border: 1px solid transparent !important;
+  border-radius: var(--radius-sm) !important;
+  box-shadow: none !important;
+  transition: transform .12s ease, filter .15s ease, background-color .15s ease;
+}
+.glow-btn:hover { filter: brightness(1.08); transform: translateY(-1px); }
+.glow-btn:active { transform: translateY(0); }
+/* 成功/失败态(useAsyncBtn 用) */
+.btn-success { background: var(--color-emerald, #10b981) !important; background-image: none !important; }
+.btn-error { background: var(--color-rose, #ef4444) !important; background-image: none !important; }
+/* 标题去渐变: 纯色主色 */
+.text-gradient-cyan {
+  background: none !important;
+  -webkit-text-fill-color: currentColor !important;
+  color: var(--color-cyan, #0891b2) !important;
+}
+
+/* ========== 4. 徽章 soft 风(14%底+34%边+深色字) ========== */
+.badge-soft, [class*="badge"] {
+  border-radius: 999px;
+  font-weight: 600;
+}
+.bg-cyan-glow\/50, .bg-cyan-glow\/30 { backdrop-filter: none; }
+
+/* ========== 5. 卡片: 静态安静, 悬浮才动 ========== */
+.glass {
+  border: 1px solid var(--color-border, #e6e8f0);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-card);
+  backdrop-filter: none; /* 玻璃层叠是深色对比度杀手, 全部弃用 */
+}
+.glass.lift, .glass[class*="lift"] { transition: transform .18s cubic-bezier(.2,.9,.3,1), border-color .18s ease, box-shadow .18s ease; }
+.glass.lift:hover, .glass[class*="lift"]:hover {
+  transform: translateY(-2px);
+  border-color: color-mix(in srgb, var(--color-cyan, #0891b2) 45%, var(--color-border, #e6e8f0));
+  box-shadow: var(--shadow-pop);
+}
+
+/* ========== 6. 弹窗入场(统一) ========== */
+.modal-enter-active, .t-dialog__wrap { animation: refinedPop .22s cubic-bezier(.2,.9,.3,1.2); }
+@keyframes refinedPop {
+  from { opacity: 0; transform: translateY(12px) scale(.98); }
+  to { opacity: 1; transform: none; }
+}
+
+/* ========== 7. 数字: 负字距等宽(统计卡"贵"起来的秘诀) ========== */
+.stat-value, [class*="stat"] b, .text-2xl.font-semibold {
+  letter-spacing: -1px;
+  font-variant-numeric: tabular-nums;
+}
+
+/* ========== 8. 滚动条(全端统一细条) ========== */
+* { scrollbar-width: thin; scrollbar-color: color-mix(in srgb, var(--color-text, #1a1d29) 22%, transparent) transparent; }
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-thumb { background: color-mix(in srgb, var(--color-text, #1a1d29) 18%, transparent); border-radius: 99px; }
+::-webkit-scrollbar-thumb:hover { background: color-mix(in srgb, var(--color-text, #1a1d29) 32%, transparent); }
+
+/* ========== 9. R109 已删除 vue-sonner 死样式补丁 ==========
+   原 ToastContainer 时代的遗产: 强制右上角定位(与 App.vue top-center 打架)、
+   !important 全家桶压扁 sonner 自带动画与 R90 紧凑化。现由 tailwind.css 的
+   [data-sonner-toast] 块统一接管。 */

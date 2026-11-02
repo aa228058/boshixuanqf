@@ -1,0 +1,332 @@
+/* ============================================================
+   ui-polish.css — 全局交互精修(2026-10-21)
+   纯 CSS 增强层: 页面过渡/按钮反馈/表单聚焦/列表入场/滚动条。
+   在 main.ts 中最后引入(覆盖 ui-refined 与 tailwind 的工具类层)。
+   ============================================================ */
+
+/* ---------- 1. 页面路由过渡: 上移淡入 + 旧页快速下沉淡出 ---------- */
+.page-enter-active {
+  transition: opacity 0.32s cubic-bezier(0.22, 1, 0.36, 1),
+    transform 0.32s cubic-bezier(0.22, 1, 0.36, 1);
+}
+.page-leave-active {
+  transition: opacity 0.18s ease-in, transform 0.18s ease-in;
+}
+.page-enter-from {
+  opacity: 0;
+  transform: translateY(14px) scale(0.995);
+}
+.page-leave-to {
+  opacity: 0;
+  transform: translateY(-8px);
+}
+
+/* ---------- 2. 按钮按压反馈: 主按钮/幽灵按钮/文字按钮统一手感 ---------- */
+.glow-btn:active,
+button:not(.t-button):not([role='switch']):not(:disabled):active {
+  transform: scale(0.97);
+}
+.glow-btn,
+button {
+  transition: transform 0.15s ease, box-shadow 0.2s ease, background-color 0.2s ease,
+    border-color 0.2s ease, color 0.2s ease, opacity 0.2s ease;
+}
+/* 主按钮悬停光晕加深 */
+.glow-btn:hover:not(:disabled) {
+  box-shadow: 0 0 0 1px var(--t-brand-dim), 0 8px 24px -8px var(--t-brand-dim);
+}
+
+/* ---------- 3. 表单聚焦: 输入框/文本域统一柔和聚焦环(带扩散动画) ---------- */
+input:not([type='checkbox']):not([type='radio']):not(.t-input__inner),
+textarea {
+  transition: border-color 0.22s ease, box-shadow 0.22s ease, background-color 0.22s ease;
+}
+input:not([type='checkbox']):not([type='radio']):focus:not(.t-input__inner),
+textarea:focus {
+  border-color: rgba(34, 211, 238, 0.55);
+  box-shadow: 0 0 0 3px rgba(34, 211, 238, 0.14);
+  outline: none;
+}
+/* TDesign 输入框聚焦扩散 */
+.t-input__inner:focus,
+.t-textarea__inner:focus {
+  box-shadow: 0 0 0 3px rgba(34, 211, 238, 0.14) !important;
+  transition: box-shadow 0.22s ease;
+}
+
+/* ---------- 4. 列表交错入场: 卡片/表格行依次上浮出现 ---------- */
+.stagger > * {
+  animation: polish-fade-up 0.45s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+.stagger > *:nth-child(1) { animation-delay: 0.02s; }
+.stagger > *:nth-child(2) { animation-delay: 0.06s; }
+.stagger > *:nth-child(3) { animation-delay: 0.1s; }
+.stagger > *:nth-child(4) { animation-delay: 0.14s; }
+.stagger > *:nth-child(5) { animation-delay: 0.18s; }
+.stagger > *:nth-child(6) { animation-delay: 0.22s; }
+.stagger > *:nth-child(7) { animation-delay: 0.26s; }
+.stagger > *:nth-child(8) { animation-delay: 0.3s; }
+.stagger > *:nth-child(n + 9) { animation-delay: 0.34s; }
+@keyframes polish-fade-up {
+  from { opacity: 0; transform: translateY(10px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+/* ---------- 5. 卡片悬浮: lift 类统一抬升 + 阴影过渡 ---------- */
+.lift {
+  transition: transform 0.25s cubic-bezier(0.22, 1, 0.36, 1), box-shadow 0.25s ease,
+    border-color 0.25s ease;
+}
+.lift:hover {
+  transform: translateY(-3px);
+  box-shadow: 0 12px 32px -12px rgba(80, 60, 200, 0.25);
+}
+
+/* ---------- 6. 表格行交互: 悬停高亮 + 入场 ---------- */
+table tbody tr {
+  transition: background-color 0.18s ease;
+}
+table tbody tr:hover {
+  background-color: var(--t-brand-dim);
+}
+
+/* ---------- 7. 链接/菜单项: 图标随文字变色联动 ---------- */
+a,
+.router-link-active {
+  transition: color 0.18s ease, background-color 0.18s ease;
+}
+a svg,
+button svg {
+  transition: transform 0.2s ease, color 0.2s ease;
+}
+
+/* ---------- 8. 滚动条: 细圆角、悬停增宽显色 ---------- */
+*::-webkit-scrollbar { width: 6px; height: 6px; }
+*::-webkit-scrollbar-thumb {
+  background: var(--t-brand-dim);
+  border-radius: 99px;
+  transition: background 0.2s ease;
+}
+*::-webkit-scrollbar-thumb:hover { background: var(--t-brand); opacity: 0.5; }
+*::-webkit-scrollbar-track { background: transparent; }
+
+/* ---------- 9. 开关(switch): 拨动球加弹性缓动 ---------- */
+[role='switch'] span {
+  transition: left 0.25s cubic-bezier(0.34, 1.56, 0.64, 1),
+    background-color 0.25s ease;
+}
+
+/* ---------- 10. 弹窗/模态框过渡(2026-10-21 实证重写) ----------
+   重要: 我们的 Modal 组件走 VueFinalModal, 过渡类名是 modal-enter-active 等,
+   且渲染在组件外部(无 scoped data-v)——此前 CSS 全写错目标, 弹窗从未有过动画。
+   以下类名与 Modal.vue 传入 VueFinalModal 的完全一致。 */
+.modal-enter-active {
+  transition: opacity 0.28s cubic-bezier(0.2, 0.9, 0.3, 1.15), transform 0.28s cubic-bezier(0.2, 0.9, 0.3, 1.15);
+}
+.modal-leave-active {
+  transition: opacity 0.16s ease-in, transform 0.16s ease-in;
+}
+.modal-enter-from {
+  opacity: 0;
+  transform: translateY(18px) scale(0.92);
+}
+.modal-enter-to { opacity: 1; transform: none; }
+.modal-leave-to {
+  opacity: 0;
+  transform: translateY(10px) scale(0.96);
+}
+.modal-overlay {
+  transition: opacity 0.22s ease;
+}
+/* TDesign 原生对话框兜底(管理端部分页面可能直接用) */
+.t-dialog__mask { animation: polish-mask-in 0.22s ease both; }
+@keyframes polish-mask-in { from { opacity: 0; } to { opacity: 1; } }
+
+/* ---------- 11. 数据变更呼吸提示(数值更新时微闪) ---------- */
+@keyframes polish-value-pop {
+  0% { transform: scale(1); }
+  40% { transform: scale(1.12); color: #22d3ee; }
+  100% { transform: scale(1); }
+}
+.value-pop {
+  animation: polish-value-pop 0.4s ease;
+}
+
+/* ---------- 13. Tab 下划线: 切换时从中心生长(替代生硬闪现) ---------- */
+.tab-underline {
+  transform-origin: center;
+  animation: tab-underline-in 0.3s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+@keyframes tab-underline-in {
+  from { transform: scaleX(0); opacity: 0.4; }
+  to { transform: scaleX(1); opacity: 1; }
+}
+
+/* ---------- 14. 骨架屏: 加载占位微光扫过(给 .skeleton 用) ---------- */
+.skeleton {
+  position: relative;
+  overflow: hidden;
+  background: var(--t-brand-dim);
+  border-radius: 8px;
+}
+.skeleton::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  transform: translateX(-100%);
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.35), transparent);
+  animation: skeleton-sweep 1.4s ease infinite;
+}
+@keyframes skeleton-sweep {
+  to { transform: translateX(100%); }
+}
+
+/* ---------- 15. 表格行轻入场 ---------- */
+/* P1-05 审计修复: 原 polish-row-in 0.28s 入场动画已删——15 秒轮询整表重渲染时
+   所有行重播入场动画, 列表持续闪烁。行渲染现在即时无动画(hover 过渡保留在上文)。 */
+
+/* ---------- 16. 精致空状态: 虚线圈图标 + 说明文字 ---------- */
+.empty-pretty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 32px 16px;
+  color: rgba(107, 124, 147, 0.9);
+  text-align: center;
+}
+.empty-pretty .ep-icon {
+  width: 52px;
+  height: 52px;
+  border-radius: 50%;
+  border: 1.5px dashed var(--t-brand-dim);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--t-brand);
+  animation: ep-breathe 3s ease-in-out infinite;
+}
+@keyframes ep-breathe {
+  0%, 100% { transform: scale(1); opacity: 0.85; }
+  50% { transform: scale(1.05); opacity: 1; }
+}
+.empty-pretty p { margin: 0; }
+.empty-pretty p:last-child { color: rgba(107, 124, 147, 0.6); }
+
+/* ---------- 17. 登录页内容交错入场(卡片容器已有淡入, 内部子项依次浮现) ---------- */
+.animate-fade-in-scale > * {
+  animation: polish-fade-up 0.5s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+.animate-fade-in-scale > *:nth-child(1) { animation-delay: 0.08s; }
+.animate-fade-in-scale > *:nth-child(2) { animation-delay: 0.16s; }
+.animate-fade-in-scale > *:nth-child(3) { animation-delay: 0.24s; }
+.animate-fade-in-scale > *:nth-child(4) { animation-delay: 0.32s; }
+
+/* ---------- 18. 焦点可见环(键盘导航无障碍) ---------- */
+/* 输入框/文本域撤销: 它们有自己的聚焦扩散环, 叠 outline 会变成"双圈" */
+:focus-visible {
+  outline: 2px solid rgba(34, 211, 238, 0.6);
+  outline-offset: 2px;
+  border-radius: 6px;
+}
+input:focus-visible,
+textarea:focus-visible,
+.t-input__inner:focus-visible,
+.t-textarea__inner:focus-visible {
+  outline: none;
+}
+
+/* ---------- 19. 在线状态点呼吸(带 .dot-live 的圆点) ---------- */
+.dot-live {
+  position: relative;
+}
+.dot-live::after {
+  content: '';
+  position: absolute;
+  inset: -3px;
+  border-radius: 50%;
+  border: 1.5px solid currentColor;
+  opacity: 0;
+  animation: dot-live-ping 2s cubic-bezier(0, 0, 0.2, 1) infinite;
+}
+@keyframes dot-live-ping {
+  0% { transform: scale(0.6); opacity: 0.7; }
+  80%, 100% { transform: scale(1.6); opacity: 0; }
+}
+
+/* ---------- 20. 头像悬浮放大: 悬停头像容器时图片缓慢放大 ---------- */
+.avatar-zoom {
+  transition: transform 0.4s cubic-bezier(0.22, 1, 0.36, 1);
+}
+.group\/avatar:hover .avatar-zoom {
+  transform: scale(1.12);
+}
+
+/* ---------- 23. vue-sonner Toast = 灵动岛(R129 重做) ----------
+   用户定稿: 紧凑胶囊(不横跨全屏/不抢数据区注意力) + 毛玻璃 + 顶栏下方悬浮
+   + 2.5s 自动消失(App.vue duration) + 可滑走(sonner 原生手势) + 点击收起。
+   进入: 自顶栏上方"落下"回弹(灵动岛手感); 退出: 上浮收进。 */
+/* R138: toast 全部样式/动画已收口到 ui-kit.css 尾部"终极灵动岛(10号原生系统风)",
+   此处旧岛样式(ts-island-in/out + 主题底玻璃)整段删除 —— 黑岛不再跟随主题色,
+   固定深灰黑底+白字, 与 iPhone 真灵动岛一致。 */
+
+/* ---------- 21+. 全局氛围光斑(2026-10-21 视觉翻新): 极淡紫青渐变, 固定不随滚动 ---------- */
+/* R107: 光斑颜色从旧紫(124,92,255 品牌换代前的遗留)改为品牌青绿系, 深色下减弱防"脏" */
+body::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  background:
+    radial-gradient(600px 400px at 12% -5%, rgba(94, 234, 212, 0.06), transparent 60%),
+    radial-gradient(500px 380px at 88% 8%, rgba(94, 234, 212, 0.05), transparent 60%);
+}
+html.theme-dark body::before {
+  background:
+    radial-gradient(600px 400px at 12% -5%, rgba(94, 234, 212, 0.07), transparent 60%),
+    radial-gradient(500px 380px at 88% 8%, rgba(94, 234, 212, 0.05), transparent 60%);
+}
+
+/* ---------- 22. 按钮状态机(交互示例05, 全局可 Adoption) ----------
+   用法: 提交按钮在请求期间加 .loading, 成功后加 .done——
+   转圈 → 变绿✓ → 1.9s 后自动恢复(由页面 JS 控制类切换) */
+.btn-state.loading,
+button.loading {
+  position: relative;
+  pointer-events: none;
+}
+.btn-state.loading > .label,
+button.loading > .label { opacity: 0; }
+.btn-state.loading::after,
+button.loading::after {
+  content: '';
+  position: absolute;
+  width: 16px; height: 16px;
+  border-radius: 50%;
+  border: 2px solid rgba(255, 255, 255, 0.35);
+  border-top-color: #fff;
+  animation: spin 0.7s linear infinite;
+}
+.btn-state.done,
+button.done {
+  background: #10b981 !important;
+  border-color: #10b981 !important;
+  color: #fff !important;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* ---------- 21. 批量操作悬浮栏过渡(交互示例38, 账号页勾选后底部浮条) ---------- */
+.batch-bar-enter-active { transition: opacity 0.3s cubic-bezier(0.2, 0.9, 0.3, 1.15), transform 0.3s cubic-bezier(0.2, 0.9, 0.3, 1.15); }
+.batch-bar-leave-active { transition: opacity 0.2s ease-in, transform 0.2s ease-in; }
+.batch-bar-enter-from { opacity: 0; transform: translate(-50%, 16px); }
+.batch-bar-leave-to { opacity: 0; transform: translate(-50%, 16px); }
+
+/* ---------- 12. 减弱动效偏好(系统级无障碍) ---------- */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}

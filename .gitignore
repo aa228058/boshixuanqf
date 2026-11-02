@@ -1,0 +1,8 @@
+web/node_modules/
+web/dist/
+.env
+.env.*
+!.env.example
+backups/
+media/
+*.session
