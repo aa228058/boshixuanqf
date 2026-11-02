@@ -691,6 +691,12 @@ func (e *Engine) runTask(ctx context.Context, task *domain.Task) {
 	if statusErr != nil || dbTask == nil {
 		e.runningTasks.Delete(taskKey)
 		taskLog.Printf("[task] 无法确认任务状态，跳过执行 task=%s err=%v", task.TaskID, statusErr)
+		// ClaimTasks 已将任务置为 running；尽力将其标记失败，避免长期占用 running。
+		failCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if updateErr := e.repo.UpdateStatus(failCtx, task.TenantID, task.TaskID, domain.TaskStatusFailed); updateErr != nil {
+			taskLog.Printf("[task] 状态读取失败后的失败状态回写也失败 task=%s: %v", task.TaskID, updateErr)
+		}
 		return
 	}
 	if dbTask.Status == domain.TaskStatusCompleted || dbTask.Status == domain.TaskStatusCancelled {
@@ -773,7 +779,16 @@ func (e *Engine) runTask(ctx context.Context, task *domain.Task) {
 
 		// Check if task was cancelled before starting
 		freshTask, err := e.repo.GetByID(ctx, task.TenantID, task.TaskID)
-		if err == nil && freshTask.Status == domain.TaskStatusCancelled {
+		if err != nil || freshTask == nil {
+			taskLog.Printf("[task] 启动前再次读取任务状态失败，停止执行 task=%s err=%v", task.TaskID, err)
+			failCtx, failCancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer failCancel()
+			if updateErr := e.repo.UpdateStatus(failCtx, task.TenantID, task.TaskID, domain.TaskStatusFailed); updateErr != nil {
+				taskLog.Printf("[task] 状态复核失败后的失败状态回写失败 task=%s: %v", task.TaskID, updateErr)
+			}
+			return
+		}
+		if freshTask.Status == domain.TaskStatusCancelled || freshTask.Status == domain.TaskStatusPaused {
 			return
 		}
 
