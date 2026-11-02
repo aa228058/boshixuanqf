@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -91,7 +92,11 @@ func (h *AIConfigHandler) Save(c echo.Context) error {
 		model = req.Model
 	}
 	if req.APIKey != "" {
-		encStr, err := crypto.Encrypt([]byte(strings.TrimSpace(req.APIKey)))
+		apiKey := strings.TrimSpace(req.APIKey)
+		if apiKey == "" {
+			return echo.NewHTTPError(http.StatusBadRequest, "API Key 不能只包含空白字符")
+		}
+		encStr, err := crypto.Encrypt([]byte(apiKey))
 		if err != nil {
 			return echo.NewHTTPError(http.StatusInternalServerError, "Key 加密失败")
 		}
@@ -127,8 +132,10 @@ func (h *AIConfigHandler) Test(c echo.Context) error {
 	if err != nil {
 		return echo.NewHTTPError(http.StatusBadGateway, "AI 调用失败: "+err.Error())
 	}
-	ok := strings.Contains(ans, "8")
-	return c.JSON(http.StatusOK, map[string]interface{}{"ok": ok, "answer": strings.TrimSpace(ans)})
+	answer := strings.TrimSpace(ans)
+	n, parseErr := strconv.Atoi(answer)
+	ok := parseErr == nil && n == 8
+	return c.JSON(http.StatusOK, map[string]interface{}{"ok": ok, "answer": answer})
 }
 
 // Toggle handles POST /verifier/toggle {"enabled": bool}
@@ -160,9 +167,15 @@ func (h *AIConfigHandler) RaffleStatus(c echo.Context) error {
 	if err != nil {
 		return echo.NewHTTPError(http.StatusInternalServerError, err.Error())
 	}
-	// 中奖回复(060)/私聊激活(061)设置一并返回, 前端设置卡片初始化用
-	replyOn, replyText, _ := h.tenantRepo.GetRaffleReply(ctx, tenantID)
-	pingOn, pingText, _ := h.tenantRepo.GetRaffleBotPing(ctx, tenantID)
+	// 中奖回复(060)/私聊激活(061)设置一并返回, 任一配置读取失败都不能伪装成关闭状态。
+	replyOn, replyText, err := h.tenantRepo.GetRaffleReply(ctx, tenantID)
+	if err != nil {
+		return echo.NewHTTPError(http.StatusInternalServerError, "中奖回复配置读取失败")
+	}
+	pingOn, pingText, err := h.tenantRepo.GetRaffleBotPing(ctx, tenantID)
+	if err != nil {
+		return echo.NewHTTPError(http.StatusInternalServerError, "私聊激活配置读取失败")
+	}
 	return c.JSON(http.StatusOK, map[string]interface{}{
 		"enabled":       en,
 		"reply_enabled": replyOn,
@@ -227,29 +240,37 @@ func (h *AIConfigHandler) RaffleToggle(c echo.Context) error {
 		return err
 	}
 	ctx := c.Request().Context()
-	current, _ := h.tenantRepo.IsRaffleEnabled(ctx, tenantID)
-	next := !current
+	var body []byte
 	if c.Request().Body != nil {
-		body, _ := io.ReadAll(c.Request().Body)
-		trimmed := strings.TrimSpace(string(body))
-		if trimmed != "" && trimmed != "{}" {
-			var req struct {
-				Enabled bool `json:"enabled"`
-			}
-			if err := json.Unmarshal(body, &req); err != nil {
-				return echo.NewHTTPError(http.StatusBadRequest, "invalid body")
-			}
-			next = req.Enabled
+		body, err = io.ReadAll(c.Request().Body)
+		if err != nil {
+			return echo.NewHTTPError(http.StatusBadRequest, "读取请求体失败")
 		}
 	}
-	if err := h.tenantRepo.SetRaffleEnabled(ctx, tenantID, next); err != nil {
-		return echo.NewHTTPError(http.StatusInternalServerError, err.Error())
+	trimmed := strings.TrimSpace(string(body))
+	var next bool
+	if trimmed == "" || trimmed == "{}" {
+		// 旧版前端未传 enabled 时仍按取反处理，但切换由数据库原子完成。
+		next, err = h.tenantRepo.ToggleRaffleEnabled(ctx, tenantID)
+		if err != nil {
+			return echo.NewHTTPError(http.StatusInternalServerError, "抽奖开关切换失败")
+		}
+	} else {
+		var req struct {
+			Enabled *bool `json:"enabled"`
+		}
+		if err := json.Unmarshal(body, &req); err != nil || req.Enabled == nil {
+			return echo.NewHTTPError(http.StatusBadRequest, "invalid body: enabled is required")
+		}
+		next = *req.Enabled
+		if err := h.tenantRepo.SetRaffleEnabled(ctx, tenantID, next); err != nil {
+			return echo.NewHTTPError(http.StatusInternalServerError, err.Error())
+		}
 	}
 	// 开启后异步拉起勾选账号的监听会话(不等 60 秒对账周期), 失败不影响开关响应
 	if next && h.watchSync != nil {
 		go h.watchSync(context.Background(), tenantID)
 	}
-	// 必须回传最新状态: 前端依此更新开关 UI, 缺省 undefined 会被判 false("点开启却提示已关闭"的元凶)
 	return c.JSON(http.StatusOK, map[string]interface{}{"ok": true, "enabled": next})
 }
 
