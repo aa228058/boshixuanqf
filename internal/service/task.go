@@ -280,10 +280,8 @@ func (s *TaskService) Create(ctx context.Context, tenantID uuid.UUID, taskType d
 		return nil, fmt.Errorf("count queued tasks: %w", err)
 	}
 	maxConcurrent := s.cfg.MaxConcurrent
-	if s.tenantRepo != nil {
-		if tenant, err := s.tenantRepo.GetByID(ctx, tenantID); err == nil && tenant.MaxConcurrentTasks > 0 {
-			maxConcurrent = tenant.MaxConcurrentTasks
-		}
+	if tenant.MaxConcurrentTasks > 0 {
+		maxConcurrent = tenant.MaxConcurrentTasks
 	}
 	if runningCount+queuedCount >= maxConcurrent {
 		return nil, fmt.Errorf("max concurrent tasks reached for tenant: %d/%d", runningCount+queuedCount, maxConcurrent)
