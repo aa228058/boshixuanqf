@@ -934,22 +934,32 @@ func (h *AccountHandler) ImportSessionFiles(c echo.Context) error {
 				return echo.NewHTTPError(http.StatusBadRequest, ext+" 解压失败: "+err.Error())
 			}
 			defer os.RemoveAll(outDir)
+			// 限定文件访问在解压目录内，并拒绝归档中的符号链接，防止借助链接读取目录外文件。
+			archiveRoot, rootErr := os.OpenRoot(outDir)
+			if rootErr != nil {
+				return echo.NewHTTPError(http.StatusInternalServerError, "打开解压目录失败")
+			}
+			defer archiveRoot.Close()
 			arcCount := 0
-			walkErr := filepath.Walk(outDir, func(p string, info os.FileInfo, werr error) error {
-				if werr != nil || info.IsDir() || !strings.HasSuffix(strings.ToLower(info.Name()), ".session") {
+			walkErr := filepath.WalkDir(outDir, func(p string, entry os.DirEntry, werr error) error {
+				if werr != nil || entry.IsDir() || entry.Type()&os.ModeSymlink != 0 ||
+					!strings.HasSuffix(strings.ToLower(entry.Name()), ".session") {
 					return nil
 				}
 				if len(paths) >= 50 {
 					return echo.NewHTTPError(http.StatusBadRequest, "解压后文件超 50 个上限, 请分包导入")
 				}
-				dest, derr := os.CreateTemp("", tempPrefixFromName(info.Name())+"*.session")
-				if derr != nil {
+				rel, relErr := filepath.Rel(outDir, p)
+				if relErr != nil {
 					return nil
 				}
-				in, ierr := os.Open(p)
+				in, ierr := archiveRoot.Open(rel)
 				if ierr != nil {
-					dest.Close()
-					os.Remove(dest.Name())
+					return nil
+				}
+				dest, derr := os.CreateTemp("", tempPrefixFromName(entry.Name())+"*.session")
+				if derr != nil {
+					in.Close()
 					return nil
 				}
 				written, cerr := io.Copy(dest, io.LimitReader(in, 10<<20+1))
@@ -959,9 +969,14 @@ func (h *AccountHandler) ImportSessionFiles(c echo.Context) error {
 					os.Remove(dest.Name())
 					return nil
 				}
-				// R182: 同 stem .json 跟随拷贝(rar/7z 包内 sidecar, 同 zip 规则)
-				if jdata, jerr := os.ReadFile(strings.TrimSuffix(p, ".session") + ".json"); jerr == nil {
-					_ = os.WriteFile(strings.TrimSuffix(dest.Name(), ".session")+".json", jdata, 0600)
+				// sidecar 同样通过 os.Root 读取，并限制大小。
+				sidecarRel := strings.TrimSuffix(rel, ".session") + ".json"
+				if jdata, jerr := archiveRoot.Open(sidecarRel); jerr == nil {
+					data, readErr := io.ReadAll(io.LimitReader(jdata, (1<<20)+1))
+					jdata.Close()
+					if readErr == nil && len(data) <= 1<<20 {
+						_ = os.WriteFile(strings.TrimSuffix(dest.Name(), ".session")+".json", data, 0600)
+					}
 				}
 				paths = append(paths, dest.Name())
 				arcCount++
