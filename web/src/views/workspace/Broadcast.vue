@@ -667,6 +667,7 @@ const statusLabelMap: Record<string, string> = {
 function statusLabel(s: string) { return statusLabelMap[s] || s }
 function broadcastModeLabel(task: any) {
   const mode = task?.payload?.mode
+  if (task?.payload?.retry_original_mode === 'cartesian') return '全部账号都发（失败组合续发）'
   if (mode === 'mapping') return '指定账号发送'
   if (mode === 'balanced') return '自动均分群组'
   return '全部账号都发'

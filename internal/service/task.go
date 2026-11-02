@@ -473,12 +473,16 @@ func (s *TaskService) createBroadcastWithMode(ctx context.Context, tenantID uuid
 			expected[target] = true
 		}
 		assigned := make(map[string]uuid.UUID, len(targetIDs))
+		allowSharedTargets := false
+		if extraPayload != nil {
+			allowSharedTargets, _ = extraPayload["retry_exact_pairs"].(bool)
+		}
 		for _, mapping := range mappings {
 			for _, target := range mapping.Targets {
 				if len(expected) > 0 && !expected[target] {
 					return nil, fmt.Errorf("分配的群组不在本次选择列表中")
 				}
-				if owner, exists := assigned[target]; exists && owner != mapping.AccountID {
+				if owner, exists := assigned[target]; exists && owner != mapping.AccountID && !allowSharedTargets {
 					return nil, fmt.Errorf("同一个群组不能分配给多个账号")
 				}
 				assigned[target] = mapping.AccountID
@@ -991,6 +995,17 @@ func (s *TaskService) Cancel(ctx context.Context, tenantID, taskID uuid.UUID) er
 	return nil
 }
 
+// broadcastRetryExtras preserves user-selected broadcast behavior when cloning failed targets.
+func broadcastRetryExtras(payload map[string]any) map[string]any {
+	extra := make(map[string]any)
+	for _, key := range []string{"priority", "auto_vary", "obfuscate", "media", "buttons"} {
+		if value, ok := payload[key]; ok {
+			extra[key] = value
+		}
+	}
+	return extra
+}
+
 // Retry retries a failed task.
 // Retry 重试任务。scope 为空: 原任务重置回队列(全部目标重跑);
 // scope="failed": 断点续发——仅对日志中失败的目标克隆一个新任务, 已成功的目标不会收到重复消息。
@@ -1007,21 +1022,16 @@ func (s *TaskService) Retry(ctx context.Context, tenantID, taskID uuid.UUID, sco
 		if len(failed) == 0 {
 			return fmt.Errorf("该任务没有失败目标, 无需续发")
 		}
-		// P1-15 审计修复: mapping 模式的续发任务必须保留原定向映射。
-		// 原来直接走 Create → CreateBroadcast(mapping=nil) → cartesian,
-		// 把"账号A只发群1"退化成"所有账号×所有失败目标", 既发错群又浪费额度。
-		// 现在从原 payload 取出 mappings, 按失败目标过滤后走 CreateBroadcastWithMapping。
+		message, _ := task.Payload["message"].(string)
+		intervalMin, _ := task.Payload["interval_min"].(float64)
+		intervalMax, _ := task.Payload["interval_max"].(float64)
+		extra := broadcastRetryExtras(task.Payload)
+
+		// Explicit mapping/balanced tasks already have an exact account-target plan.
 		if raw, ok := task.Payload["mappings"].([]any); ok && len(raw) > 0 {
 			failedSet := make(map[string]bool, len(failed))
 			for _, t := range failed {
 				failedSet[t] = true
-			}
-			message, _ := task.Payload["message"].(string)
-			intervalMin, _ := task.Payload["interval_min"].(float64)
-			intervalMax, _ := task.Payload["interval_max"].(float64)
-			extra := map[string]any{}
-			if p, ok := task.Payload["priority"].(float64); ok && p >= 1 && p <= 10 {
-				extra["priority"] = p
 			}
 			var filtered []domain.AccountTargetMapping
 			for _, item := range raw {
@@ -1058,8 +1068,29 @@ func (s *TaskService) Retry(ctx context.Context, tenantID, taskID uuid.UUID, sco
 			}
 			return nil
 		}
-		// 优先级透传已在 Create 的 broadcast 分支内从 payload 读取，这里直接重建即可
-		if _, err := s.Create(ctx, tenantID, task.Type, task.AccountIDs, failed, task.Payload, nil); err != nil {
+
+		// Cartesian tasks must retry failed account-target pairs, not target IDs.
+		// Otherwise a target failed on account A but succeeded on B is sent twice to B.
+		failedPairs, err := s.logRepo.ListFailedAccountTargets(ctx, tenantID, taskID)
+		if err != nil {
+			return fmt.Errorf("获取失败账号目标组合失败: %w", err)
+		}
+		if len(failedPairs) == 0 {
+			return fmt.Errorf("失败日志缺少账号信息，无法安全续发")
+		}
+		uniqueTargets := make([]string, 0, len(failed))
+		seenTargets := make(map[string]bool, len(failed))
+		for _, pair := range failedPairs {
+			for _, target := range pair.Targets {
+				if !seenTargets[target] {
+					seenTargets[target] = true
+					uniqueTargets = append(uniqueTargets, target)
+				}
+			}
+		}
+		extra["retry_exact_pairs"] = true
+		extra["retry_original_mode"] = string(domain.BroadcastModeCartesian)
+		if _, err := s.CreateBroadcastWithMode(ctx, tenantID, domain.BroadcastModeMapping, failedPairs, nil, uniqueTargets, message, nil, int(intervalMin), int(intervalMax), extra); err != nil {
 			return fmt.Errorf("创建续发任务失败: %w", err)
 		}
 		return nil

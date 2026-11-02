@@ -321,3 +321,37 @@ func (r *TaskLogRepository) ListFailedTargets(ctx context.Context, tenantID, tas
 	}
 	return targets, rows.Err()
 }
+
+// ListFailedAccountTargets returns failed (account, target) pairs.
+// A Cartesian broadcast may have succeeded for one account and failed for another;
+// retrying only distinct target IDs would incorrectly resend to every account.
+func (r *TaskLogRepository) ListFailedAccountTargets(ctx context.Context, tenantID, taskID uuid.UUID) ([]domain.AccountTargetMapping, error) {
+	rows, err := r.db.Query(ctx, `
+		SELECT DISTINCT account_id, target_id
+		FROM task_logs
+		WHERE tenant_id = $1 AND task_id = $2
+		  AND status = 'failed' AND target_id <> '' AND account_id IS NOT NULL
+		ORDER BY account_id, target_id`, tenantID, taskID)
+	if err != nil {
+		return nil, fmt.Errorf("list failed account targets: %w", err)
+	}
+	defer rows.Close()
+
+	byAccount := make(map[uuid.UUID]int)
+	var mappings []domain.AccountTargetMapping
+	for rows.Next() {
+		var accountID uuid.UUID
+		var targetID string
+		if err := rows.Scan(&accountID, &targetID); err != nil {
+			return nil, err
+		}
+		index, ok := byAccount[accountID]
+		if !ok {
+			index = len(mappings)
+			byAccount[accountID] = index
+			mappings = append(mappings, domain.AccountTargetMapping{AccountID: accountID})
+		}
+		mappings[index].Targets = append(mappings[index].Targets, targetID)
+	}
+	return mappings, rows.Err()
+}
