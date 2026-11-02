@@ -3,6 +3,7 @@ package task
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"math/rand/v2"
@@ -156,7 +157,9 @@ func (e *Engine) executeBroadcast(ctx context.Context, task *domain.Task) {
 	flushTicker := time.NewTicker(5 * time.Second)
 	defer flushTicker.Stop()
 	flushDone := make(chan struct{})
+	flushExited := make(chan struct{})
 	safego.Go(func() {
+		defer close(flushExited)
 		for {
 			select {
 			case <-flushTicker.C:
@@ -167,6 +170,9 @@ func (e *Engine) executeBroadcast(ctx context.Context, task *domain.Task) {
 					mu.Unlock()
 					if err := e.logRepo.CreateBatch(ctx, logs); err != nil {
 						taskLog.Printf("[task] periodic flush logs failed: %v", err)
+						mu.Lock()
+						batchLogs = append(logs, batchLogs...)
+						mu.Unlock()
 					}
 				} else {
 					mu.Unlock()
@@ -229,18 +235,8 @@ func (e *Engine) executeBroadcast(ctx context.Context, task *domain.Task) {
 	semaphore := make(chan struct{}, maxConcurrentAccounts)
 	var wg sync.WaitGroup
 
-	// Deduplicate targets globally to prevent multiple accounts sending to the same target
-	seenTargets := make(map[string]bool)
-	for accID := range accountTargets {
-		unique := make([]string, 0, len(accountTargets[accID]))
-		for _, t := range accountTargets[accID] {
-			if !seenTargets[t] {
-				seenTargets[t] = true
-				unique = append(unique, t)
-			}
-		}
-		accountTargets[accID] = unique
-	}
+	// Preserve per-account target assignments: the same destination can be
+	// intentionally sent by more than one account.
 
 	// P1-47 审计修复: 续传防重原先是每目标一次 count(*) 查询(N+1), 上千目标时
 	// 拖慢发送循环。这里在 worker 扇出前一次性批量查回成功目标集; 运行期新成功
@@ -257,26 +253,31 @@ func (e *Engine) executeBroadcast(ctx context.Context, task *domain.Task) {
 	}
 	successSet := map[string]bool{}
 	if ss, err := e.logRepo.HasSuccessForTargets(ctx, task.TenantID, task.TaskID, allTargets); err != nil {
-		log.Printf("[broadcast] 批量查询已发目标失败 task=%s: %v(防重降级为不检查)", task.TaskID, err)
+		// Fail closed: sending without the idempotency set may duplicate messages.
+		taskLog.Printf("[broadcast] 查询续发防重记录失败，终止任务 task=%s: %v", task.TaskID, err)
+		persistCtx, persistCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		_ = e.repo.UpdateStatus(persistCtx, task.TenantID, task.TaskID, domain.TaskStatusFailed)
+		persistCancel()
+		return
 	} else {
 		successSet = ss
 	}
 
+accountLoop:
 	for _, accID := range task.AccountIDs {
 		targets := accountTargets[accID]
 		if len(targets) == 0 {
 			continue
 		}
 
-		wg.Add(1)
-		// P0-16 审计修复: 原写法 semaphore 不响应 ctx——任务取消且 worker 全占满时,
-		// 主协程永久阻塞在 <-struct{}{}, 任务永远停 running。select 让取消信号可中断。
+		// Acquire the slot before adding to the wait group. Cancellation exits
+		// the loop without starting a worker that does not own a semaphore slot.
 		select {
 		case semaphore <- struct{}{}:
 		case <-ctx.Done():
-			wg.Done()
-			break
+			break accountLoop
 		}
+		wg.Add(1)
 		safego.Go(func() {
 			// 群名映射: 日志里显示群名而不是 ID
 			titleByChatID := map[int64]string{}
@@ -412,6 +413,12 @@ func (e *Engine) executeBroadcast(ctx context.Context, task *domain.Task) {
 				mu.Unlock()
 				if alreadySent {
 					accDone++
+					mu.Lock()
+					done++
+					progressAccum.Done++
+					progressAccum.Total++
+					progressAccum.CurrentTarget = targetID
+					mu.Unlock()
 					continue
 				}
 
@@ -466,22 +473,24 @@ func (e *Engine) executeBroadcast(ctx context.Context, task *domain.Task) {
 						e.recordRiskEvent(ctx, task.TenantID, accID, "broadcast_fail", "medium", errCode)
 						taskLog.Printf("[broadcast] target %s resolve failed for account %s: %s (target may be invalid or account restricted)\n",
 							targetID, accID, resolveErr.Error())
-						continue
-					}
-					switch p := peer.(type) {
-					case *tg.InputPeerUser:
-						chatID = p.UserID
-					case *tg.InputPeerChat:
-						chatID = p.ChatID
-					case *tg.InputPeerChannel:
-						chatID = p.ChannelID
+					} else {
+						switch p := peer.(type) {
+						case *tg.InputPeerUser:
+							chatID = p.UserID
+						case *tg.InputPeerChat:
+							chatID = p.ChatID
+						case *tg.InputPeerChannel:
+							chatID = p.ChannelID
+						}
 					}
 				}
 				if chatID == 0 {
-					status = "failed"
-					errCode = "unsupported peer type"
-					accFailed++
-					e.recordRiskEvent(ctx, task.TenantID, accID, "broadcast_fail", "medium", errCode)
+					if status != "failed" {
+						status = "failed"
+						errCode = "unsupported_peer_type"
+						accFailed++
+						e.recordRiskEvent(ctx, task.TenantID, accID, "broadcast_fail", "medium", errCode)
+					}
 				} else {
 					// Replace template variables with target info before sending
 					// 先 spintax 随机语法(每个目标独立), 再变量替换
@@ -716,6 +725,7 @@ func (e *Engine) executeBroadcast(ctx context.Context, task *domain.Task) {
 	}
 	wg.Wait()
 	close(flushDone)
+	<-flushExited
 	close(sseDone)
 
 	// Final SSE flush: push any remaining pending data
@@ -732,17 +742,19 @@ func (e *Engine) executeBroadcast(ctx context.Context, task *domain.Task) {
 		e.publishProgress(task.TenantID, task.TaskID, prog)
 	}
 
+	// Final persistence must not reuse the expired/cancelled send context.
+	persistCtx, persistCancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer persistCancel()
+
 	// Final flush of remaining logs
 	mu.Lock()
-	if len(batchLogs) > 0 {
-		logs := batchLogs
-		batchLogs = nil
-		mu.Unlock()
-		if err := e.logRepo.CreateBatch(ctx, logs); err != nil {
+	logsToFlush := batchLogs
+	batchLogs = nil
+	mu.Unlock()
+	if len(logsToFlush) > 0 {
+		if err := e.logRepo.CreateBatch(persistCtx, logsToFlush); err != nil {
 			taskLog.Printf("[task] final flush logs failed: %v", err)
 		}
-	} else {
-		mu.Unlock()
 	}
 
 	// Build account_progress slice
@@ -758,17 +770,37 @@ func (e *Engine) executeBroadcast(ctx context.Context, task *domain.Task) {
 		Failed:          failed,
 		AccountProgress: accProgList,
 	}
-	if err := e.repo.UpdateProgressExact(ctx, task.TenantID, task.TaskID, finalProgress); err != nil {
+	if err := e.repo.UpdateProgressExact(persistCtx, task.TenantID, task.TaskID, finalProgress); err != nil {
 		log.Printf("[broadcast] 更新进度失败: %v", err)
 	}
 	e.publishProgress(task.TenantID, task.TaskID, finalProgress)
 
+	current, currentErr := e.repo.GetByID(persistCtx, task.TenantID, task.TaskID)
+	if currentErr != nil {
+		taskLog.Printf("[broadcast] 无法确认最终任务状态，保留现有状态 task=%s: %v", task.TaskID, currentErr)
+		return
+	}
+	if current != nil && (current.Status == domain.TaskStatusPaused || current.Status == domain.TaskStatusCancelled) {
+		return
+	}
+	if ctx.Err() != nil {
+		// Explicit cancellation is normally persisted by CancelTask first. If the
+		// parent engine context stopped instead, pause rather than report success.
+		targetStatus := domain.TaskStatusPaused
+		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			targetStatus = domain.TaskStatusFailed
+		}
+		if err := e.repo.UpdateStatus(persistCtx, task.TenantID, task.TaskID, targetStatus); err != nil {
+			taskLog.Printf("[task] interrupted status update failed: %v", err)
+		}
+		return
+	}
 	if failed == total && total > 0 {
-		if err := e.repo.UpdateStatus(ctx, task.TenantID, task.TaskID, domain.TaskStatusFailed); err != nil {
+		if err := e.repo.UpdateStatus(persistCtx, task.TenantID, task.TaskID, domain.TaskStatusFailed); err != nil {
 			taskLog.Printf("[task] UpdateStatus failed: %v", err)
 		}
 	} else {
-		if err := e.repo.UpdateStatus(ctx, task.TenantID, task.TaskID, domain.TaskStatusCompleted); err != nil {
+		if err := e.repo.UpdateStatus(persistCtx, task.TenantID, task.TaskID, domain.TaskStatusCompleted); err != nil {
 			taskLog.Printf("[task] UpdateStatus failed: %v", err)
 		}
 	}
