@@ -279,7 +279,7 @@ func newEchoServer(cfg *config.Config, c *app.Container) *echo.Echo {
 	api.POST("/accounts/:id/reconnect", c.AccountHandler.Reconnect)
 	api.POST("/accounts/:id/leave-all-groups", c.TaskHandler.LeaveAllGroups)
 	// R181 群转移: 源号导出邀请链接 → 目标号创建 join_groups 任务(间隔租户可调)
-	api.POST("/accounts/:id/transfer-groups", c.AccountHandler.TransferGroups)
+	api.POST("/accounts/:id/transfer-groups", c.AccountHandler.TransferGroups, c.PlanChecker.RequirePlanFeature(middleware.FeatureJoinGroups))
 	api.PUT("/accounts/:id/raffle", c.PlanChecker.RequirePlanFeature(middleware.FeatureRaffle)(c.AccountHandler.SetRaffle))
 	api.POST("/accounts/:id/avatar", c.AccountHandler.UploadAvatar)
 	// R119: 账号能力探测(8 项矩阵, 管理端配置探测目标, 全部套餐可用)
@@ -302,7 +302,7 @@ func newEchoServer(cfg *config.Config, c *app.Container) *echo.Echo {
 	// 入群验证: AI 配置(加密存储) + 总开关 + 验证记录
 	api.GET("/ai-config", c.PlanChecker.RequirePlanFeature(middleware.FeatureVerifier)(c.AIConfigHandler.Get))
 	api.PUT("/ai-config", c.PlanChecker.RequirePlanFeature(middleware.FeatureVerifier)(c.AIConfigHandler.Save))
-	api.POST("/ai-config/test", c.AIConfigHandler.Test)
+	api.POST("/ai-config/test", c.AIConfigHandler.Test, c.PlanChecker.RequirePlanFeature(middleware.FeatureVerifier))
 	api.POST("/verifier/toggle", c.PlanChecker.RequirePlanFeature(middleware.FeatureVerifier)(c.AIConfigHandler.Toggle))
 	// 抽奖助手: 群内抽奖公告自动参与
 	api.GET("/raffle/status", c.PlanChecker.RequirePlanFeature(middleware.FeatureRaffle)(c.AIConfigHandler.RaffleStatus))
