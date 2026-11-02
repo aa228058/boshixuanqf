@@ -116,12 +116,17 @@
           </div>
         </div>
         <TargetSelector v-model="showTargetSelector" :groups="groups" :accountId="currentAccount?.account_id" @select="selectedTargets = $event" @refresh="onSelectorRefresh" />
-        <!-- 当前页面使用全部账号群发模式；后续扩展为可选择的分配模式 -->
-        <div class="mt-4 mb-3 rounded-lg border border-cyan/20 bg-cyan/5 p-3">
-          <div class="text-sm font-semibold text-cyan">群发方式：全部账号群发</div>
-          <p class="text-xs text-text-secondary mt-1 leading-relaxed">
-            每个已选账号都会向全部已选群组发送消息；同一个群组会由每个账号分别发送一次。
-          </p>
+        <div class="mt-4 mb-3">
+          <label class="block text-sm font-medium mb-2">群发方式</label>
+          <div class="grid grid-cols-1 sm:grid-cols-3 gap-2">
+            <button v-for="option in broadcastModeOptions" :key="option.value" type="button"
+                    @click="broadcastMode = option.value"
+                    class="rounded-lg border p-2.5 text-left transition-colors"
+                    :class="broadcastMode === option.value ? 'border-cyan/50 bg-cyan/10' : 'border-border hover:border-cyan/30'">
+              <span class="block text-xs font-semibold" :class="broadcastMode === option.value ? 'text-cyan' : 'text-text-primary'">{{ option.label }}</span>
+              <span class="block text-[10px] text-text-muted mt-1 leading-relaxed">{{ option.hint }}</span>
+            </button>
+          </div>
         </div>
         <label class="block text-sm font-medium mb-2">执行账号（可多选）</label>
         <div class="flex flex-wrap gap-1.5">
@@ -132,11 +137,46 @@
           </button>
         </div>
         <p v-if="selectedTargets.length && execAccounts.length" class="text-[10.5px] text-text-muted mt-1.5">
-          预计发送 {{ selectedTargets.length * execAccounts.length }} 条 = {{ selectedTargets.length }} 目标 × {{ execAccounts.length }} 账号
-          · 约需 {{ estMinutes }} 分钟（按账号并行粗略估算，实际受并发配置影响）
+          预计发送 {{ plannedMessageCount }} 条
+          <template v-if="broadcastMode === 'cartesian'">（{{ selectedTargets.length }} 个群组 × {{ execAccounts.length }} 个账号）</template>
+          <template v-else>（每个群组只发送一次）</template>
+          · 约需 {{ estMinutes }} 分钟（粗略估算）
         </p>
+
+        <div v-if="broadcastMode === 'mapping' && execAccounts.length && selectedTargets.length" class="mt-3 rounded-lg border border-border p-3 space-y-3">
+          <div class="text-xs font-semibold">给账号分配群组</div>
+          <p class="text-[10px] text-text-muted">每个群组只能分配给一个账号。请把所有群组分配完成后再创建任务。</p>
+          <div v-for="accId in execAccounts" :key="accId" class="rounded-lg bg-bg-secondary/50 p-2.5">
+            <div class="flex items-center justify-between gap-2 mb-2">
+              <span class="text-xs font-medium">{{ accountLabel(accId) }}</span>
+              <span class="text-[10px] text-text-muted">已分配 {{ manualAssignments[accId]?.length || 0 }} 个</span>
+              <button type="button" class="text-[10px] text-cyan" @click="assignAllToAccount(accId)">分配全部</button>
+            </div>
+            <div class="flex flex-wrap gap-1.5 max-h-32 overflow-y-auto">
+              <button v-for="target in selectedTargets" :key="target" type="button"
+                      @click="toggleManualTarget(accId, target)"
+                      class="px-2 py-1 rounded border text-[10px]"
+                      :class="manualAssignments[accId]?.includes(target) ? 'border-cyan/50 bg-cyan/10 text-cyan' : 'border-border text-text-muted'">
+                {{ targetTitle(target) }}
+              </button>
+            </div>
+          </div>
+          <div class="text-[10px]" :class="unassignedTargets.length ? 'text-amber' : 'text-emerald'">
+            {{ unassignedTargets.length ? `还有 ${unassignedTargets.length} 个群组未分配` : '全部群组已分配' }}
+          </div>
+        </div>
+
+        <div v-if="broadcastMode === 'balanced' && selectedTargets.length && execAccounts.length" class="mt-3 rounded-lg border border-border p-3">
+          <div class="text-xs font-semibold mb-2">自动分配预览</div>
+          <div v-for="item in balancedPreview" :key="item.accountId" class="flex items-center justify-between gap-2 text-[11px] py-1">
+            <span>{{ accountLabel(item.accountId) }}</span>
+            <span class="text-text-muted">{{ item.targets.length }} 个群组</span>
+          </div>
+          <p class="text-[10px] text-text-muted mt-1">按顺序轮流分配，各账号数量最多相差 1 个。</p>
+        </div>
+
         <!-- R101 P1-第二刀: 覆盖预览 -->
-        <div v-if="selectedTargets.length && execAccounts.length && coverage.ok + coverage.fail > 0"
+        <div v-if="broadcastMode === 'cartesian' && selectedTargets.length && execAccounts.length && coverage.ok + coverage.fail > 0"
              class="mt-3 rounded-lg border p-3 text-xs"
              :class="(coverage.fail > 0 || coverage.unreachable.length) ? 'border-amber/30 bg-amber/5' : 'border-emerald/30 bg-emerald/5'">
           <div>
@@ -330,6 +370,13 @@ const loopFeature = computed(() => {
 })
 
 const selectedTargets = ref<string[]>([])
+const broadcastMode = ref<'cartesian' | 'mapping' | 'balanced'>('cartesian')
+const broadcastModeOptions = [
+  { value: 'cartesian', label: '全部账号都发', hint: '每个账号都发送全部群组' },
+  { value: 'mapping', label: '指定账号发送', hint: '自己给每个账号分配群组' },
+  { value: 'balanced', label: '自动均分群组', hint: '系统平均分配，每个群组只发一次' },
+] as const
+const manualAssignments = ref<Record<string, string[]>>({})
 // R118: 群名显示 —— 目标 ID → 群标题映射; 缓存缺失时回退 ID 尾号
 const showTargetNames = ref(false)
 const targetTitle = (id: string) => {
@@ -357,9 +404,53 @@ watch(currentAccount, (acc: any) => {
 }, { immediate: true })
 function toggleExec(id: string) {
   const i = execAccounts.value.indexOf(id)
-  if (i >= 0) execAccounts.value.splice(i, 1)
-  else execAccounts.value.push(id)
+  if (i >= 0) {
+    execAccounts.value.splice(i, 1)
+    delete manualAssignments.value[id]
+  } else {
+    execAccounts.value.push(id)
+    if (!manualAssignments.value[id]) manualAssignments.value[id] = []
+  }
 }
+function accountLabel(id: string) {
+  const account = (accountStore.accounts || []).find((a: any) => a.account_id === id)
+  return account ? (account.first_name || account.phone || id.slice(0, 8)) : id.slice(0, 8)
+}
+function toggleManualTarget(accountId: string, target: string) {
+  const current = manualAssignments.value[accountId] || []
+  if (current.includes(target)) {
+    manualAssignments.value[accountId] = current.filter(x => x !== target)
+    return
+  }
+  // A target belongs to exactly one account in manual assignment mode.
+  for (const id of execAccounts.value) {
+    manualAssignments.value[id] = (manualAssignments.value[id] || []).filter(x => x !== target)
+  }
+  manualAssignments.value[accountId] = [...(manualAssignments.value[accountId] || []), target]
+}
+function assignAllToAccount(accountId: string) {
+  for (const id of execAccounts.value) manualAssignments.value[id] = []
+  manualAssignments.value[accountId] = [...selectedTargets.value]
+}
+watch(selectedTargets, (targets) => {
+  const allowed = new Set(targets)
+  for (const id of execAccounts.value) {
+    manualAssignments.value[id] = (manualAssignments.value[id] || []).filter(target => allowed.has(target))
+  }
+})
+const unassignedTargets = computed(() => selectedTargets.value.filter(target =>
+  !execAccounts.value.some(id => (manualAssignments.value[id] || []).includes(target))
+))
+const balancedPreview = computed(() => {
+  const result = execAccounts.value.map(accountId => ({ accountId, targets: [] as string[] }))
+  selectedTargets.value.forEach((target, index) => {
+    if (result.length) result[index % result.length].targets.push(target)
+  })
+  return result
+})
+const plannedMessageCount = computed(() => broadcastMode.value === 'cartesian'
+  ? selectedTargets.value.length * execAccounts.value.length
+  : selectedTargets.value.length)
 const onlineAccounts = computed(() => (accountStore.accounts || []).filter((a: any) => a.status === 'online'))
 
 // R101 P1-第二刀: 覆盖预览 —— 拉全租户群(带 account_id), 计算"每个目标有哪些账号已加入",
@@ -401,10 +492,14 @@ const coverage = computed(() => {
 })
 // 全部账号并行发送：每个账号处理同一批目标，耗时按单账号目标数粗略估算。
 const estMinutes = computed(() => {
-  const targetCount = selectedTargets.value.length
-  if (!targetCount || !execAccounts.value.length) return 0
+  if (!selectedTargets.value.length || !execAccounts.value.length) return 0
   const avgSec = (intervalMin.value + intervalMax.value) / 2
-  return Math.max(1, Math.ceil((targetCount * avgSec) / 60))
+  const maxPerAccount = broadcastMode.value === 'cartesian'
+    ? selectedTargets.value.length
+    : broadcastMode.value === 'balanced'
+      ? Math.ceil(selectedTargets.value.length / execAccounts.value.length)
+      : Math.max(0, ...execAccounts.value.map(id => (manualAssignments.value[id] || []).length))
+  return Math.max(1, Math.ceil((maxPerAccount * avgSec) / 60))
 })
 const showImport = ref(false)
 const importText = ref('')
@@ -492,6 +587,8 @@ const priority = ref(5)
 // P1-35: 创建成功后重置整个表单(消息/目标/媒体/定时/循环全部归默认),
 // 防止下次创建误带上次内容
 function resetCreateForm() {
+  broadcastMode.value = 'cartesian'
+  manualAssignments.value = {}
   message.value = ''
   intervalMin.value = 5
   intervalMax.value = 12
@@ -643,8 +740,9 @@ function clearMedia() { mediaType.value = ''; mediaUrl.value = ''; mediaPath.val
 
 // R110: 协议号协同死分支已删(view 为死常量, 该判断恒 false)。统一多号池校验。
 const canSubmit = computed(() => {
-  if (!message.value.trim().length) return false
-  return selectedTargets.value.length > 0 && execAccounts.value.length > 0
+  if (!message.value.trim().length || !selectedTargets.value.length || !execAccounts.value.length) return false
+  if (broadcastMode.value === 'mapping') return unassignedTargets.value.length === 0
+  return true
 })
 
 const previewMessage = computed(() => {
@@ -688,12 +786,19 @@ async function submit() {
     }
     const payload: any = {
       type: 'broadcast',
+      broadcast_mode: broadcastMode.value,
       account_ids: [...execAccounts.value],
       target_ids: selectedTargets.value,
       message: message.value,
       interval_min: intervalMin.value,
       interval_max: intervalMax.value,
       auto_vary: autoVary.value, // 每条消息自动变化(同义词+标点抖动)
+    }
+    if (broadcastMode.value === 'mapping') {
+      payload.mappings = execAccounts.value.map(accountId => ({
+        account_id: accountId,
+        targets: manualAssignments.value[accountId] || [],
+      }))
     }
     // 富媒体 + 链接按钮(带校验, 防止"选了类型没传文件"被静默丢弃)
     const mediaSource = (mediaPath.value || mediaUrl.value.trim())
