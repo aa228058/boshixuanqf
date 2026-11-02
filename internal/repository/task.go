@@ -213,6 +213,18 @@ func (r *TaskRepository) ClaimTimeoutTasks(ctx context.Context, workerID string,
 	return r.scanTasks(rows)
 }
 
+// RefreshTaskLock renews a running task lease only while this worker still owns it.
+func (r *TaskRepository) RefreshTaskLock(ctx context.Context, tenantID, taskID uuid.UUID, workerID string) (bool, error) {
+	cmd, err := r.db.Exec(ctx, `
+		UPDATE tasks SET locked_at = NOW()
+		WHERE tenant_id = $1 AND task_id = $2 AND status = 'running' AND worker_id = $3`,
+		tenantID, taskID, workerID)
+	if err != nil {
+		return false, fmt.Errorf("refresh task lock: %w", err)
+	}
+	return cmd.RowsAffected() == 1, nil
+}
+
 // CountRunningGlobal 全局 running 任务总数(内存自适应的全局并发上限检查用)
 func (r *TaskRepository) CountRunningGlobal(ctx context.Context) (int, error) {
 	var n int
