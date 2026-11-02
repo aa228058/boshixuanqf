@@ -462,7 +462,7 @@ accountLoop:
 						errCode = "resolve_peer_failed"
 						accFailed++
 						e.recordRiskEvent(ctx, task.TenantID, accID, "broadcast_fail", "medium", errCode)
-						taskLog.Printf("[broadcast] target %s resolve failed for account %s: %s (target may be invalid or account restricted)\\n",
+						taskLog.Printf("[broadcast] target %s resolve failed for account %s: %s (target may be invalid or account restricted)\n",
 							targetID, accID, resolveErr.Error())
 					} else {
 						switch p := peer.(type) {
