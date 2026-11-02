@@ -855,7 +855,15 @@ func (s *TaskService) Pause(ctx context.Context, tenantID, taskID uuid.UUID) err
 	if !validTransitions[task.Status][domain.TaskStatusPaused] {
 		return fmt.Errorf("cannot pause task with status %s", task.Status)
 	}
-	return s.repo.UpdateStatus(ctx, tenantID, taskID, domain.TaskStatusPaused)
+	// 先把 paused 持久化，再取消执行 context。这样 worker 的最终写入会因
+	// status!=running 被条件更新挡住，不会把用户的暂停覆盖成 completed。
+	if err := s.repo.UpdateStatus(ctx, tenantID, taskID, domain.TaskStatusPaused); err != nil {
+		return err
+	}
+	if task.Status == domain.TaskStatusRunning && s.engine != nil {
+		s.engine.CancelTask(taskID)
+	}
+	return nil
 }
 
 // Resume resumes a paused task.
@@ -879,10 +887,15 @@ func (s *TaskService) Cancel(ctx context.Context, tenantID, taskID uuid.UUID) er
 	if !validTransitions[task.Status][domain.TaskStatusCancelled] {
 		return fmt.Errorf("cannot cancel task with status %s", task.Status)
 	}
+	// 状态只由 service 持久化一次；Engine.CancelTask 只负责停止内存中的执行 context。
+	// 先落 cancelled 再发取消信号，避免 worker 抢先完成并覆盖用户的取消操作。
+	if err := s.repo.UpdateStatus(ctx, tenantID, taskID, domain.TaskStatusCancelled); err != nil {
+		return err
+	}
 	if s.engine != nil {
 		s.engine.CancelTask(taskID)
 	}
-	return s.repo.UpdateStatus(ctx, tenantID, taskID, domain.TaskStatusCancelled)
+	return nil
 }
 
 // Retry retries a failed task.
