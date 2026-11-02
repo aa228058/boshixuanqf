@@ -17,14 +17,16 @@ func TestValidateMonitorRule(t *testing.T) {
 		wantErr bool
 	}{
 		{caseName: "valid reply", ruleName: "reply rule", ruleType: "reply", sources: []string{"-1001"}, keywords: []string{"hello"}, matchType: "contains"},
-		{caseName: "valid forward", ruleName: "forward rule", ruleType: "forward", targets: []string{"-1002"}, keywords: []string{"hello"}, matchType: "exact"},
-		{caseName: "empty name", ruleType: "reply", keywords: []string{"hello"}, matchType: "contains", wantErr: true},
-		{caseName: "invalid rule type", ruleName: "r", ruleType: "invalid", keywords: []string{"hello"}, matchType: "contains", wantErr: true},
-		{caseName: "invalid match type", ruleName: "r", ruleType: "reply", keywords: []string{"hello"}, matchType: "invalid", wantErr: true},
-		{caseName: "empty keywords", ruleName: "r", ruleType: "reply", matchType: "contains", wantErr: true},
-		{caseName: "empty keyword entry", ruleName: "r", ruleType: "reply", keywords: []string{" "}, matchType: "contains", wantErr: true},
-		{caseName: "invalid regex", ruleName: "r", ruleType: "reply", keywords: []string{"("}, matchType: "regex", wantErr: true},
-		{caseName: "forward without target", ruleName: "r", ruleType: "forward", keywords: []string{"hello"}, matchType: "contains", wantErr: true},
+		{caseName: "valid forward", ruleName: "forward rule", ruleType: "forward", sources: []string{"-1001"}, targets: []string{"-1002"}, keywords: []string{"hello"}, matchType: "exact"},
+		{caseName: "valid from user without keywords", ruleName: "from user", ruleType: "reply", sources: []string{"-1001"}, keywords: nil, matchType: "from_user"},
+		{caseName: "empty name", ruleType: "reply", sources: []string{"-1001"}, keywords: []string{"hello"}, matchType: "contains", wantErr: true},
+		{caseName: "missing source chats", ruleName: "r", ruleType: "reply", keywords: []string{"hello"}, matchType: "contains", wantErr: true},
+		{caseName: "invalid rule type", ruleName: "r", ruleType: "invalid", sources: []string{"-1001"}, keywords: []string{"hello"}, matchType: "contains", wantErr: true},
+		{caseName: "invalid match type", ruleName: "r", ruleType: "reply", sources: []string{"-1001"}, keywords: []string{"hello"}, matchType: "invalid", wantErr: true},
+		{caseName: "empty keywords", ruleName: "r", ruleType: "reply", sources: []string{"-1001"}, matchType: "contains", wantErr: true},
+		{caseName: "empty keyword entry", ruleName: "r", ruleType: "reply", sources: []string{"-1001"}, keywords: []string{" "}, matchType: "contains", wantErr: true},
+		{caseName: "invalid regex", ruleName: "r", ruleType: "reply", sources: []string{"-1001"}, keywords: []string{"("}, matchType: "regex", wantErr: true},
+		{caseName: "forward without target", ruleName: "r", ruleType: "forward", sources: []string{"-1001"}, keywords: []string{"hello"}, matchType: "contains", wantErr: true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.caseName, func(t *testing.T) {

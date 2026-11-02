@@ -963,14 +963,14 @@ func (e *Engine) executeMonitorScrape(ctx context.Context, task *domain.Task) {
 	groupID, err := uuid.Parse(groupIDStr)
 	if err != nil {
 		taskLog.Printf("[monitor_scrape] 无效 group_id %q: %v", groupIDStr, err)
-		if uerr := e.repo.UpdateStatus(ctx, task.TenantID, task.TaskID, domain.TaskStatusFailed); uerr != nil {
+		if uerr := e.updateTaskStatusIfOwned(ctx, task, domain.TaskStatusFailed); uerr != nil {
 			taskLog.Printf("[task] failed to update status to failed: %v", uerr)
 		}
 		return
 	}
 
 	if matchContent == "" {
-		if err := e.repo.UpdateStatus(ctx, task.TenantID, task.TaskID, domain.TaskStatusFailed); err != nil {
+		if err := e.updateTaskStatusIfOwned(ctx, task, domain.TaskStatusFailed); err != nil {
 			taskLog.Printf("[task] failed to update status to failed: %v", err)
 		}
 		return
@@ -983,7 +983,7 @@ func (e *Engine) executeMonitorScrape(ctx context.Context, task *domain.Task) {
 		re, err := regexp.Compile(matchContent)
 		if err != nil {
 			taskLog.Printf("[monitor_scrape] invalid regex: %v", err)
-			if err := e.repo.UpdateStatus(ctx, task.TenantID, task.TaskID, domain.TaskStatusFailed); err != nil {
+			if err := e.updateTaskStatusIfOwned(ctx, task, domain.TaskStatusFailed); err != nil {
 				taskLog.Printf("[task] failed to update status to failed: %v", err)
 			}
 			return
@@ -1023,7 +1023,7 @@ func (e *Engine) executeMonitorScrape(ctx context.Context, task *domain.Task) {
 
 	if len(task.AccountIDs) == 0 {
 		taskLog.Printf("[monitor_scrape] 任务缺少账号，无法执行")
-		if uerr := e.repo.UpdateStatus(ctx, task.TenantID, task.TaskID, domain.TaskStatusFailed); uerr != nil {
+		if uerr := e.updateTaskStatusIfOwned(ctx, task, domain.TaskStatusFailed); uerr != nil {
 			taskLog.Printf("[task] failed to update status to failed: %v", uerr)
 		}
 		return
@@ -1032,7 +1032,7 @@ func (e *Engine) executeMonitorScrape(ctx context.Context, task *domain.Task) {
 	client, err := e.accEngine.GetClient(ctx, task.TenantID, accountID)
 	if err != nil {
 		taskLog.Printf("[monitor_scrape] get client failed: %v", err)
-		if err := e.repo.UpdateStatus(ctx, task.TenantID, task.TaskID, domain.TaskStatusFailed); err != nil {
+		if err := e.updateTaskStatusIfOwned(ctx, task, domain.TaskStatusFailed); err != nil {
 			taskLog.Printf("[task] failed to update status to failed: %v", err)
 		}
 		return
@@ -1042,7 +1042,7 @@ func (e *Engine) executeMonitorScrape(ctx context.Context, task *domain.Task) {
 	group, err := e.groupRepo.GetByID(ctx, task.TenantID, groupID)
 	if err != nil {
 		taskLog.Printf("[monitor_scrape] get group failed: %v", err)
-		if err := e.repo.UpdateStatus(ctx, task.TenantID, task.TaskID, domain.TaskStatusFailed); err != nil {
+		if err := e.updateTaskStatusIfOwned(ctx, task, domain.TaskStatusFailed); err != nil {
 			taskLog.Printf("[task] failed to update status to failed: %v", err)
 		}
 		return

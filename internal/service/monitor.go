@@ -39,6 +39,9 @@ func validateMonitorRule(name, ruleType string, sourceChatIDs, targetChatIDs, ke
 			}
 		}
 	}
+	if len(sourceChatIDs) == 0 {
+		return fmt.Errorf("至少指定一个来源群组")
+	}
 	for _, id := range sourceChatIDs {
 		if strings.TrimSpace(id) == "" {
 			return fmt.Errorf("来源群 ID 不能包含空字符串")

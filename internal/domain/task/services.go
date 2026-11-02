@@ -1,9 +1,13 @@
 package task
 
 import (
+	"context"
+	"fmt"
 	"regexp"
 	"strconv"
 	"strings"
+
+	"tg-sender/internal/domain"
 )
 
 func isGlobalFlood(err error) bool {
@@ -98,3 +102,17 @@ func extractInviteHash(link string) string {
 }
 
 // StartApprovalChecker starts a background goroutine to check pending join approvals.
+
+
+// updateTaskStatusIfOwned prevents a stale worker from changing a task after
+// another worker has acquired its lease.
+func (e *Engine) updateTaskStatusIfOwned(ctx context.Context, task *domain.Task, status domain.TaskStatus) error {
+	updated, err := e.repo.UpdateStatusIfOwned(ctx, task.TenantID, task.TaskID, e.workerID, status)
+	if err != nil {
+		return err
+	}
+	if !updated {
+		return fmt.Errorf("task lease lost; status %q was not applied", status)
+	}
+	return nil
+}

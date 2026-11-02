@@ -27,7 +27,7 @@ func (e *Engine) executeScrapeMembers(ctx context.Context, task *domain.Task) {
 	defer func() {
 		if r := recover(); r != nil {
 			taskLog.Printf("executeScrapeMembers panic: %v\n%s\n", r, debug.Stack())
-			if err := e.repo.UpdateStatus(ctx, task.TenantID, task.TaskID, domain.TaskStatusFailed); err != nil {
+			if err := e.updateTaskStatusIfOwned(ctx, task, domain.TaskStatusFailed); err != nil {
 				taskLog.Printf("[task] UpdateStatus failed: %v", err)
 			}
 		}
@@ -37,7 +37,7 @@ func (e *Engine) executeScrapeMembers(ctx context.Context, task *domain.Task) {
 		groupIDStr = task.TargetIDs[0]
 	}
 	if groupIDStr == "" || len(task.AccountIDs) == 0 {
-		if err := e.repo.UpdateStatus(ctx, task.TenantID, task.TaskID, domain.TaskStatusFailed); err != nil {
+		if err := e.updateTaskStatusIfOwned(ctx, task, domain.TaskStatusFailed); err != nil {
 			taskLog.Printf("[task] UpdateStatus failed: %v", err)
 		}
 		return
@@ -55,14 +55,14 @@ func (e *Engine) executeScrapeMembers(ctx context.Context, task *domain.Task) {
 		var parseErr error
 		groupID, parseErr = uuid.Parse(payloadGroupID)
 		if parseErr != nil {
-			if err := e.repo.UpdateStatus(ctx, task.TenantID, task.TaskID, domain.TaskStatusFailed); err != nil {
+			if err := e.updateTaskStatusIfOwned(ctx, task, domain.TaskStatusFailed); err != nil {
 				taskLog.Printf("[task] UpdateStatus failed: %v", err)
 			}
 			return
 		}
 	}
 	if groupID == uuid.Nil {
-		if err := e.repo.UpdateStatus(ctx, task.TenantID, task.TaskID, domain.TaskStatusFailed); err != nil {
+		if err := e.updateTaskStatusIfOwned(ctx, task, domain.TaskStatusFailed); err != nil {
 			taskLog.Printf("[task] UpdateStatus failed: %v", err)
 		}
 		return
@@ -78,14 +78,14 @@ func (e *Engine) executeScrapeMembers(ctx context.Context, task *domain.Task) {
 			status = string(acc.Status)
 		}
 		taskLog.Printf("[scrape] skip account %s: status=%s (not active)", accID, status)
-		if err := e.repo.UpdateStatus(ctx, task.TenantID, task.TaskID, domain.TaskStatusFailed); err != nil {
+		if err := e.updateTaskStatusIfOwned(ctx, task, domain.TaskStatusFailed); err != nil {
 			taskLog.Printf("[task] UpdateStatus failed: %v", err)
 		}
 		return
 	}
 	if acc.BlockedUntil != nil && acc.BlockedUntil.After(time.Now().UTC()) {
 		taskLog.Printf("[scrape] skip account %s: blocked_until=%s", accID, acc.BlockedUntil.Format(time.RFC3339))
-		if err := e.repo.UpdateStatus(ctx, task.TenantID, task.TaskID, domain.TaskStatusFailed); err != nil {
+		if err := e.updateTaskStatusIfOwned(ctx, task, domain.TaskStatusFailed); err != nil {
 			taskLog.Printf("[task] UpdateStatus failed: %v", err)
 		}
 		return
@@ -95,7 +95,7 @@ func (e *Engine) executeScrapeMembers(ctx context.Context, task *domain.Task) {
 	if err != nil {
 		// 必须记录具体错误, 否则任务静默失败无法排查
 		taskLog.Printf("[scrape] 获取客户端失败 account=%s: %v", accID, err)
-		if err := e.repo.UpdateStatus(ctx, task.TenantID, task.TaskID, domain.TaskStatusFailed); err != nil {
+		if err := e.updateTaskStatusIfOwned(ctx, task, domain.TaskStatusFailed); err != nil {
 			taskLog.Printf("[task] UpdateStatus failed: %v", err)
 		}
 		return
@@ -138,7 +138,7 @@ func (e *Engine) executeScrapeMembers(ctx context.Context, task *domain.Task) {
 	if err != nil {
 		taskLog.Printf("[scrape] 解析群 peer 失败 group=%s: %v", groupIDStr, err)
 		e.recordRiskEvent(ctx, task.TenantID, accID, "broadcast_fail", "medium", "resolve: "+err.Error())
-		if err := e.repo.UpdateStatus(ctx, task.TenantID, task.TaskID, domain.TaskStatusFailed); err != nil {
+		if err := e.updateTaskStatusIfOwned(ctx, task, domain.TaskStatusFailed); err != nil {
 			taskLog.Printf("[task] UpdateStatus failed: %v", err)
 		}
 		return
@@ -274,7 +274,7 @@ func (e *Engine) executeScrapeMembers(ctx context.Context, task *domain.Task) {
 				if len(allMembers) > 0 {
 					flushMembers(allMembers)
 				}
-				if err := e.repo.UpdateStatus(ctx, task.TenantID, task.TaskID, domain.TaskStatusPaused); err != nil {
+				if err := e.updateTaskStatusIfOwned(ctx, task, domain.TaskStatusPaused); err != nil {
 					taskLog.Printf("[task] UpdateStatus failed: %v", err)
 				}
 				return
@@ -460,13 +460,13 @@ func (e *Engine) executeScrapeLinks(ctx context.Context, task *domain.Task) {
 	defer func() {
 		if r := recover(); r != nil {
 			taskLog.Printf("executeScrapeLinks panic: %v\n%s\n", r, debug.Stack())
-			if err := e.repo.UpdateStatus(ctx, task.TenantID, task.TaskID, domain.TaskStatusFailed); err != nil {
+			if err := e.updateTaskStatusIfOwned(ctx, task, domain.TaskStatusFailed); err != nil {
 				taskLog.Printf("[task] UpdateStatus failed: %v", err)
 			}
 		}
 	}()
 	if len(task.AccountIDs) == 0 {
-		if err := e.repo.UpdateStatus(ctx, task.TenantID, task.TaskID, domain.TaskStatusFailed); err != nil {
+		if err := e.updateTaskStatusIfOwned(ctx, task, domain.TaskStatusFailed); err != nil {
 			taskLog.Printf("[task] UpdateStatus failed: %v", err)
 		}
 		return
@@ -482,14 +482,14 @@ func (e *Engine) executeScrapeLinks(ctx context.Context, task *domain.Task) {
 			status = string(acc.Status)
 		}
 		taskLog.Printf("[scrape] skip account %s: status=%s (not active)", accID, status)
-		if err := e.repo.UpdateStatus(ctx, task.TenantID, task.TaskID, domain.TaskStatusFailed); err != nil {
+		if err := e.updateTaskStatusIfOwned(ctx, task, domain.TaskStatusFailed); err != nil {
 			taskLog.Printf("[task] UpdateStatus failed: %v", err)
 		}
 		return
 	}
 	if acc.BlockedUntil != nil && acc.BlockedUntil.After(time.Now().UTC()) {
 		taskLog.Printf("[scrape] skip account %s: blocked_until=%s", accID, acc.BlockedUntil.Format(time.RFC3339))
-		if err := e.repo.UpdateStatus(ctx, task.TenantID, task.TaskID, domain.TaskStatusFailed); err != nil {
+		if err := e.updateTaskStatusIfOwned(ctx, task, domain.TaskStatusFailed); err != nil {
 			taskLog.Printf("[task] UpdateStatus failed: %v", err)
 		}
 		return
@@ -499,7 +499,7 @@ func (e *Engine) executeScrapeLinks(ctx context.Context, task *domain.Task) {
 	if err != nil {
 		// 必须记录具体错误, 否则任务静默失败无法排查
 		taskLog.Printf("[scrape] 获取客户端失败 account=%s: %v", accID, err)
-		if err := e.repo.UpdateStatus(ctx, task.TenantID, task.TaskID, domain.TaskStatusFailed); err != nil {
+		if err := e.updateTaskStatusIfOwned(ctx, task, domain.TaskStatusFailed); err != nil {
 			taskLog.Printf("[task] UpdateStatus failed: %v", err)
 		}
 		return
@@ -725,17 +725,20 @@ storeResults:
 		Total: totalFound,
 		Done:  totalFound,
 	}
-	if err := e.repo.UpdateProgressExact(ctx, task.TenantID, task.TaskID, finalProgress); err != nil {
+	if updated, err := e.repo.UpdateProgressExactIfOwned(ctx, task.TenantID, task.TaskID, e.workerID, finalProgress); err != nil {
 		taskLog.Printf("[task] UpdateProgressExact failed: %v", err)
+	} else if !updated {
+		taskLog.Printf("[scrape] final progress skipped; worker no longer owns task %s", task.TaskID)
+		return
 	}
 	e.publishProgress(task.TenantID, task.TaskID, finalProgress)
 
 	if totalFound == 0 {
-		if err := e.repo.UpdateStatus(ctx, task.TenantID, task.TaskID, domain.TaskStatusFailed); err != nil {
+		if err := e.updateTaskStatusIfOwned(ctx, task, domain.TaskStatusFailed); err != nil {
 			taskLog.Printf("[task] UpdateStatus failed: %v", err)
 		}
 	} else {
-		if err := e.repo.UpdateStatus(ctx, task.TenantID, task.TaskID, domain.TaskStatusCompleted); err != nil {
+		if err := e.updateTaskStatusIfOwned(ctx, task, domain.TaskStatusCompleted); err != nil {
 			taskLog.Printf("[task] UpdateStatus failed: %v", err)
 		}
 	}
@@ -751,7 +754,7 @@ func (e *Engine) executeScrapeLinksReport(ctx context.Context, task *domain.Task
 	}()
 
 	if len(task.AccountIDs) == 0 {
-		e.repo.UpdateStatus(ctx, task.TenantID, task.TaskID, domain.TaskStatusFailed)
+		e.updateTaskStatusIfOwned(ctx, task, domain.TaskStatusFailed)
 		return
 	}
 
@@ -798,7 +801,13 @@ func (e *Engine) executeScrapeLinksReport(ctx context.Context, task *domain.Task
 				}
 			}
 			progress := domain.TaskProgress{Total: total, Done: total}
-			e.repo.UpdateProgressExact(ctx, task.TenantID, task.TaskID, progress)
+			updated, err := e.repo.UpdateProgressExactIfOwned(ctx, task.TenantID, task.TaskID, e.workerID, progress)
+			if err != nil {
+				taskLog.Printf("[scrape-links] progress update failed: %v", err)
+			} else if !updated {
+				taskLog.Printf("[scrape-links] progress update skipped; worker no longer owns task %s", task.TaskID)
+				return
+			}
 			e.publishProgress(task.TenantID, task.TaskID, progress)
 		}
 	}
@@ -903,12 +912,12 @@ func (e *Engine) executeScrapeActiveUsers(ctx context.Context, task *domain.Task
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Minute)
 	defer cancel()
 	if len(task.AccountIDs) == 0 {
-		e.repo.UpdateStatus(ctx, task.TenantID, task.TaskID, domain.TaskStatusFailed)
+		e.updateTaskStatusIfOwned(ctx, task, domain.TaskStatusFailed)
 		return
 	}
 	groupID, err := uuid.Parse(fmt.Sprint(task.Payload["group_id"]))
 	if err != nil {
-		e.repo.UpdateStatus(ctx, task.TenantID, task.TaskID, domain.TaskStatusFailed)
+		e.updateTaskStatusIfOwned(ctx, task, domain.TaskStatusFailed)
 		return
 	}
 	accID := task.AccountIDs[0]
@@ -920,19 +929,19 @@ func (e *Engine) executeScrapeActiveUsers(ctx context.Context, task *domain.Task
 	acc, err := e.accEngine.GetByID(ctx, task.TenantID, accID)
 	// 待机号也执行：GetClient 现场建连。只排除真正不可用的状态。
 	if err != nil || acc == nil || acc.Status == domain.AccountStatusBanned || acc.Status == domain.AccountStatusRestricted || acc.Status == domain.AccountStatusPendingAuth {
-		e.repo.UpdateStatus(ctx, task.TenantID, task.TaskID, domain.TaskStatusFailed)
+		e.updateTaskStatusIfOwned(ctx, task, domain.TaskStatusFailed)
 		return
 	}
 	client, err := e.accEngine.GetClient(ctx, task.TenantID, accID)
 	if err != nil || client == nil {
-		e.repo.UpdateStatus(ctx, task.TenantID, task.TaskID, domain.TaskStatusFailed)
+		e.updateTaskStatusIfOwned(ctx, task, domain.TaskStatusFailed)
 		return
 	}
 	defer e.accEngine.ReleaseClient(task.TenantID, accID, client)
 
 	g, _ := e.groupRepo.GetByID(ctx, task.TenantID, groupID)
 	if g == nil {
-		e.repo.UpdateStatus(ctx, task.TenantID, task.TaskID, domain.TaskStatusFailed)
+		e.updateTaskStatusIfOwned(ctx, task, domain.TaskStatusFailed)
 		return
 	}
 	var peer tg.InputPeerClass
@@ -1015,5 +1024,5 @@ func (e *Engine) executeScrapeActiveUsers(ctx context.Context, task *domain.Task
 		}
 	}
 	taskLog.Printf("[scrape] 历史消息采集完成: 扫描 %d 条消息, %d 个用户", scanned, len(collected))
-	e.repo.UpdateStatus(ctx, task.TenantID, task.TaskID, domain.TaskStatusCompleted)
+	e.updateTaskStatusIfOwned(ctx, task, domain.TaskStatusCompleted)
 }
