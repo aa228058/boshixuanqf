@@ -389,26 +389,24 @@ func (e *Engine) isBotSender(ctx context.Context, cl *telegram.Client, chatID in
 	// resolveGroupPeer 单返回值(mtgo 真实签名)
 	peer := e.resolveGroupPeer(ctx, cl, chatID)
 	if peer == nil {
-		// R142 修复: 反解失败≠不是 bot。静默 return false 会让整个抽奖助手失灵(r140 实测全跳过),
-		// 回退放行(= R119 之前行为) + 告警日志, 仅"明确验证为非 bot"才跳过。
-		log.Printf("[raffle] 发送者判定: 反解 peer 失败, 回退放行 chat=%d user=%d", chatID, userID)
-		return true
+		// 无法解析群 peer 时无法确认发送者身份，按保守策略跳过，避免真人伪造公告触发自动参与。
+		log.Printf("[raffle] 发送者判定: 反解 peer 失败，身份未知，跳过 chat=%d user=%d", chatID, userID)
+		return false
 	}
 	// UsersGetUsers 参数是 *tg.UsersGetUsersRequest(与 pingRaffleBot 一致),
 	// 返回 TLObject 用 extractBotViaReflection 提取(含 Bot 字段)
 	res, err := cl.Raw().UsersGetUsers(ctx, &tg.UsersGetUsersRequest{ID: []tg.InputUserClass{&tg.InputUserFromMessage{Peer: peer, MsgID: msgID, UserID: userID}}})
 	if err != nil {
-		// R142 修复: API 失败(网络抖动/被限流)同样回退放行, 不因瞬时故障错过抽奖
-		log.Printf("[raffle] 发送者判定: 反解用户失败, 回退放行 chat=%d user=%d err=%v", chatID, userID, err)
-		return true
+		// API 错误时身份未知，失败关闭；避免网络故障期间把真人消息当成机器人公告。
+		log.Printf("[raffle] 发送者判定: 反解用户失败，身份未知，跳过 chat=%d user=%d err=%v", chatID, userID, err)
+		return false
 	}
 	_, _, _, isBot, ok := extractBotViaReflection(res)
 	if !ok {
-		// R142 修复: mtgo 各版本返回壳结构不一(2026-10-21 调试: fields=[] 未命中), 解析失败≠非 bot。
-		// 回退放行 + 附带结构信息便于后续精准适配; 仅明确验证为非 bot 才跳过。
-		log.Printf("[raffle] 发送者判定: 提取用户资料失败, 回退放行 chat=%d user=%d (res=%T fields=%v)",
+		// 返回结构无法解析时身份未知，失败关闭；日志保留结构信息便于排查兼容性。
+		log.Printf("[raffle] 发送者判定: 提取用户资料失败，身份未知，跳过 chat=%d user=%d (res=%T fields=%v)",
 			chatID, userID, res, structFieldNames(res))
-		return true
+		return false
 	}
 	botSenderCache.Store(userID, isBot)
 	return isBot
