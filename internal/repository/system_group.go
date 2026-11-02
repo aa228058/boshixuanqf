@@ -40,8 +40,10 @@ func (r *SystemGroupRepository) Upsert(ctx context.Context, sg *domain.SystemGro
 		INSERT INTO system_groups (dedup_key, source, title, username, tme_link, gtype, member_count, status, ref_count, last_seen_at)
 		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,1,$9)
 		ON CONFLICT (dedup_key) DO UPDATE SET
-			-- 每条独立来源记录贡献一次引用热度；游标负责避免运行期间重复扫描。
-			ref_count   = system_groups.ref_count + 1,
+			-- 仅在来源时间推进时增加热度，避免进程重启后内存游标归零、
+			-- 历史来源被重扫时 ref_count 无限制重复累加。
+			ref_count   = system_groups.ref_count + CASE
+				WHEN EXCLUDED.last_seen_at > system_groups.last_seen_at THEN 1 ELSE 0 END,
 			member_count= GREATEST(system_groups.member_count, EXCLUDED.member_count),
 			last_seen_at= GREATEST(system_groups.last_seen_at, EXCLUDED.last_seen_at),
 			status      = CASE WHEN system_groups.status = 'joined' THEN 'joined' ELSE EXCLUDED.status END,
