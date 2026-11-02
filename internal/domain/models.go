@@ -142,7 +142,7 @@ type Tenant struct {
 	NotifyEmail    string          `json:"notify_email" db:"notify_email"`
 	NotifySettings json.RawMessage `json:"notify_settings" db:"notify_settings"`
 	// R120: 租户级 SMTP 发件配置(服务商/主机/端口/账号/授权码/发件人)
-	NotifySMTP json.RawMessage `json:"notify_smtp" db:"notify_smtp"`
+	NotifySMTP json.RawMessage `json:"-" db:"notify_smtp"` // SMTP 授权码敏感字段，仅通过脱敏的通知配置接口返回
 }
 
 // NotifySMTPConfig 租户 SMTP 配置结构
