@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -31,20 +32,26 @@ type SystemGroupFilter struct {
 
 // Upsert 归并写入: dedup_key 冲突时热度+1、取更优标题/更大成员数、刷新最后收录时间。
 func (r *SystemGroupRepository) Upsert(ctx context.Context, sg *domain.SystemGroup) error {
+	seenAt := sg.LastSeenAt
+	if seenAt.IsZero() {
+		seenAt = time.Now()
+	}
 	_, err := r.db.Exec(ctx, `
 		INSERT INTO system_groups (dedup_key, source, title, username, tme_link, gtype, member_count, status, ref_count, last_seen_at)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,1,NOW())
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,1,$9)
 		ON CONFLICT (dedup_key) DO UPDATE SET
-			ref_count   = system_groups.ref_count + 1,
+			-- 聚合器会回看最近 1 秒并在进程重启后重放历史行；
+			-- 只有来源记录时间确实前进时才增加热度，重复扫描不能反复加 ref_count。
+			ref_count   = system_groups.ref_count + CASE WHEN EXCLUDED.last_seen_at > system_groups.last_seen_at THEN 1 ELSE 0 END,
 			member_count= GREATEST(system_groups.member_count, EXCLUDED.member_count),
-			last_seen_at= NOW(),
+			last_seen_at= GREATEST(system_groups.last_seen_at, EXCLUDED.last_seen_at),
 			status      = CASE WHEN system_groups.status = 'joined' THEN 'joined' ELSE EXCLUDED.status END,
 			title       = CASE WHEN system_groups.title IS NULL OR system_groups.title = '' OR system_groups.title = system_groups.tme_link
 			                   THEN EXCLUDED.title ELSE system_groups.title END,
 			username    = CASE WHEN system_groups.username = '' OR system_groups.username IS NULL
 			                   THEN EXCLUDED.username ELSE system_groups.username END,
 			gtype       = CASE WHEN system_groups.gtype = 'unknown' THEN EXCLUDED.gtype ELSE system_groups.gtype END
-	`, sg.DedupKey(), sg.Source, sg.Title, sg.Username, sg.TmeLink, sg.GType, sg.MemberCount, sg.Status)
+	`, sg.DedupKey(), sg.Source, sg.Title, sg.Username, sg.TmeLink, sg.GType, sg.MemberCount, sg.Status, seenAt)
 	return err
 }
 
