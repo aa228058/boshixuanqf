@@ -1772,7 +1772,7 @@ async function loadTaskSummary() {
     const res = await taskApi.list({ status: 'running', page: 1, page_size: 100 })
     const map: Record<string, string[]> = {}
     for (const t of res.list || []) {
-      const name = t.name || `${typeLabel(t.type)}任务`
+      const name = String(t.payload?.name || `${typeLabel(t.type)}任务`)
       const ids: string[] = Array.isArray(t.account_ids) ? t.account_ids.map(String) : []
       const pids: string[] = Array.isArray(t.payload?.account_ids) ? t.payload.account_ids.map(String) : []
       for (const id of [...new Set([...ids, ...pids])]) {
