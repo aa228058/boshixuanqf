@@ -288,15 +288,15 @@ func newEchoServer(cfg *config.Config, c *app.Container) *echo.Echo {
 	api.GET("/accounts/:id/avatar", c.AccountHandler.GetAvatar) // 拉取账号TG头像(前端走 axios blob)
 	// Echo v4: 中间件以"调用"方式包裹 handler —— mw(handler), 不是逗号并列
 	// 能力体检/SpamBot申诉 后端已随前端一并移除(2026-10-21)
-	api.PUT("/accounts/:id/proxy", c.AccountHandler.SetProxy)   // 设置账号代理
+	api.PUT("/accounts/:id/proxy", c.AccountHandler.SetProxy, c.PlanChecker.RequirePlanFeature(middleware.FeatureProxy)) // 设置账号代理(套餐功能门禁)
 	api.PUT("/accounts/:id/profile", c.AccountHandler.UpdateProfile) // 修改 TG 资料(名字/签名/用户名)
 	api.POST("/accounts/clone-profile", c.AccountHandler.CloneProfile) // 批量克隆他人资料
-	api.POST("/accounts/:id/proxy/test", c.AccountHandler.TestProxy) // 代理连通性检测
+	api.POST("/accounts/:id/proxy/test", c.AccountHandler.TestProxy, c.PlanChecker.RequirePlanFeature(middleware.FeatureProxy)) // 代理连通性检测(套餐功能门禁)
 	// 找群: 平台级群组库(所有租户采集汇总, 平台共享)
 	// 群库浏览平台共享(引流): 登录即可看; 批量加入(discover)与搜群(search)才需套餐权限
 	api.GET("/group-library", c.GroupLibraryHandler.List)
 	api.POST("/group-library/join", c.PlanChecker.RequirePlanFeature(middleware.FeatureDiscover)(c.GroupLibraryHandler.JoinSelected))
-	api.POST("/group-library/search", c.GroupLibraryHandler.Search) // 关键词搜群(借在线账号TG搜索, 入库)
+	api.POST("/group-library/search", c.GroupLibraryHandler.Search, c.PlanChecker.RequirePlanFeature(middleware.FeatureSearch)) // 关键词搜群(借在线账号TG搜索, 入库; 套餐功能门禁)
 	// R116: /text-dicts 词典管理 API 七端点已删(前端词典管理 UI 消亡后零调用;
 	// 词典数据本身仍服务群发变量 {{词典名}} —— engine 直读 TextDictRepo, 不经过 HTTP 层)
 	// 入群验证: AI 配置(加密存储) + 总开关 + 验证记录
