@@ -48,7 +48,7 @@ func (r *GroupRepository) List(ctx context.Context, tenantID uuid.UUID, limit, o
 func (r *GroupRepository) ListByAccount(ctx context.Context, tenantID, accountID uuid.UUID, limit, offset int) ([]*domain.Group, error) {
 	log.Printf("[repo] ListByAccount 租户=%s 账号=%s 限制=%d 偏移=%d", tenantID, accountID, limit, offset)
 	rows, err := r.db.Query(ctx, `
-		SELECT g.group_id, g.tenant_id, g.tg_chat_id, g.title, g.username, g.type, g.member_count, g.is_joined, g.joined_at, g.last_scraped_at, g.access_hash, g.metadata
+		SELECT g.group_id, g.tenant_id, g.tg_chat_id, g.title, g.username, g.type, g.member_count, ag.is_joined, g.joined_at, g.last_scraped_at, g.access_hash, g.metadata
 		FROM groups g
 		JOIN account_groups ag ON g.group_id = ag.group_id
 		WHERE g.tenant_id = $1 AND ag.account_id = $2 AND ag.account_id IS NOT NULL
@@ -171,6 +171,20 @@ func (r *GroupRepository) UpdateJoinStatus(ctx context.Context, tenantID, groupI
 	_, err := r.db.Exec(ctx, `
 		UPDATE groups SET is_joined = $3, joined_at = CASE WHEN $3 THEN NOW() ELSE joined_at END
 		WHERE tenant_id = $1 AND group_id = $2`, tenantID, groupID, isJoined)
+	return err
+}
+
+// RefreshJoinStatus keeps the tenant-level groups.is_joined summary equal to
+// whether any account in the tenant is currently joined. Per-account state lives
+// in account_groups and must never be overwritten by one account's sync.
+func (r *GroupRepository) RefreshJoinStatus(ctx context.Context, tenantID, groupID uuid.UUID) error {
+	_, err := r.db.Exec(ctx, `
+		UPDATE groups g
+		SET is_joined = EXISTS (
+			SELECT 1 FROM account_groups ag
+			WHERE ag.group_id = g.group_id AND ag.is_joined = TRUE
+		)
+		WHERE g.tenant_id = $1 AND g.group_id = $2`, tenantID, groupID)
 	return err
 }
 
