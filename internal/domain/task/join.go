@@ -441,8 +441,12 @@ func (e *Engine) executeJoinGroups(ctx context.Context, task *domain.Task) {
 
 		// 实时进度: 每个目标处理完立即上报(前端进度面板实时可见)
 		liveProgress := domain.TaskProgress{Total: total, Done: done, Failed: failed, CurrentTarget: link}
-		if err := e.repo.UpdateProgressExact(ctx, task.TenantID, task.TaskID, liveProgress); err != nil {
+		updated, err := e.repo.UpdateProgressExactIfOwned(ctx, task.TenantID, task.TaskID, e.workerID, liveProgress)
+		if err != nil {
 			log.Printf("[join] 更新进度失败: %v", err)
+		} else if !updated {
+			taskLog.Printf("[join] 进度刷新时已失去任务租约，停止执行 task=%s", task.TaskID)
+			return
 		}
 		e.publishProgress(task.TenantID, task.TaskID, liveProgress)
 
