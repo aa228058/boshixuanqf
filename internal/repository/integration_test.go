@@ -130,37 +130,22 @@ func TestUpdateStatusGuardMatrix(t *testing.T) {
 	_, err := pool.Exec(ctx, `
 		INSERT INTO tenants (tenant_id, username, password_hash, name, api_key_hash, plan_id)
 		VALUES ('11111111-1111-1111-1111-111111111111', 'guardtest', 'x', 'G', 'guard-test-key-hash', 'free');
-		INSERT INTO tasks (tenant_id, task_id, task_type, name, status, target_type)
-		VALUES ('11111111-1111-1111-1111-111111111111', '44444444-4444-4444-4444-444444444444', 'broadcast', 't', 'running', 'group');
+		INSERT INTO tasks (tenant_id, task_id, type, status)
+		VALUES ('11111111-1111-1111-1111-111111111111', '44444444-4444-4444-4444-444444444444', 'broadcast', 'running');
 	`)
 	if err != nil {
 		t.Fatalf("seed: %v", err)
 	}
-	// 非法迁移 running->scheduled 应命中 0 行
-	res, err := pool.Exec(ctx, `
-		UPDATE tasks SET status='scheduled'
-		WHERE tenant_id=$1 AND task_id=$2 AND (
-			'scheduled' IN ('failed','cancelled','queued')
-			OR (status='queued' AND 'scheduled' IN ('running','cancelled'))
-			OR (status='running' AND 'scheduled' IN ('paused','completed','failed','cancelled')))`,
-		"11111111-1111-1111-1111-111111111111", "44444444-4444-4444-4444-444444444444")
-	if err != nil {
-		t.Fatalf("guard query: %v", err)
+
+	repo := NewTaskRepository(pool)
+	tenantID := uuid.MustParse("11111111-1111-1111-1111-111111111111")
+	taskID := uuid.MustParse("44444444-4444-4444-4444-444444444444")
+
+	// 必须调用真实 repository 状态迁移守卫，而不是在测试里复制一份 SQL。
+	if err := repo.UpdateStatus(ctx, tenantID, taskID, domain.TaskStatusScheduled); err == nil {
+		t.Fatal("illegal transition running->scheduled should be rejected")
 	}
-	if res.RowsAffected() != 0 {
-		t.Fatal("illegal transition running->scheduled should affect 0 rows")
-	}
-	// 合法迁移 running->paused 应命中 1 行
-	res, err = pool.Exec(ctx, `
-		UPDATE tasks SET status='paused'
-		WHERE tenant_id=$1 AND task_id=$2 AND (
-			'paused' IN ('failed','cancelled','queued')
-			OR (status='running' AND 'paused' IN ('paused','completed','failed','cancelled')))`,
-		"11111111-1111-1111-1111-111111111111", "44444444-4444-4444-4444-444444444444")
-	if err != nil {
-		t.Fatalf("legal query: %v", err)
-	}
-	if res.RowsAffected() != 1 {
-		t.Fatal("legal transition running->paused should affect 1 row")
+	if err := repo.UpdateStatus(ctx, tenantID, taskID, domain.TaskStatusPaused); err != nil {
+		t.Fatalf("legal transition running->paused should succeed: %v", err)
 	}
 }
