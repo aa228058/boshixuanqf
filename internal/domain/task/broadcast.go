@@ -283,7 +283,26 @@ func (e *Engine) executeBroadcast(ctx context.Context, task *domain.Task) {
 	}
 	successSet := map[string]bool{}
 	if ss, err := e.logRepo.HasSuccessForTargets(ctx, task.TenantID, task.TaskID, allTargets); err != nil {
-		log.Printf("[broadcast] 批量查询已发目标失败 task=%s: %v(防重降级为不检查)", task.TaskID, err)
+		// Resume deduplication is a correctness boundary: sending without knowing
+		// prior successes can duplicate messages. Stop rather than fail open.
+		taskLog.Printf("[broadcast] 查询历史成功记录失败，停止发送以避免重复 task=%s: %v", task.TaskID, err)
+		failCtx, failCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		if logErr := e.logRepo.Create(failCtx, &domain.TaskLog{
+			LogID: uuid.New(), TaskID: task.TaskID, TenantID: task.TenantID,
+			Action: "broadcast", Status: "failed", ErrorCode: "resume_dedup_check_failed",
+			Message: "无法读取历史发送记录，为避免重复发送已停止任务",
+			ExecutedAt: time.Now(),
+		}); logErr != nil {
+			taskLog.Printf("[broadcast] 写入续传检查失败日志失败 task=%s: %v", task.TaskID, logErr)
+		}
+		if statusErr := e.repo.UpdateStatusIfCurrent(failCtx, task.TenantID, task.TaskID, domain.TaskStatusRunning, domain.TaskStatusFailed); statusErr != nil {
+			taskLog.Printf("[broadcast] 续传检查失败后的条件状态回写未执行 task=%s: %v", task.TaskID, statusErr)
+		}
+		failCancel()
+		close(flushDone)
+		<-flushExited
+		close(sseDone)
+		return
 	} else {
 		successSet = ss
 	}
