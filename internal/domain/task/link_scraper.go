@@ -367,7 +367,9 @@ func (ls *LinkScraper) processLink(ctx context.Context, raw *rawLink) {
 		client, err := ls.accEngine.GetClient(ctx, raw.TenantID, raw.AccountID)
 		if err == nil {
 			defer ls.accEngine.ReleaseClient(raw.TenantID, raw.AccountID, client)
-			peer, resolveErr := client.ResolvePeer(ctx, raw.LinkHash)
+			resolveCtx, resolveCancel := context.WithTimeout(ctx, 20*time.Second)
+			peer, resolveErr := client.ResolvePeer(resolveCtx, raw.LinkHash)
+			resolveCancel()
 			if resolveErr == nil {
 				switch p := peer.(type) {
 				case *tg.InputPeerChat:
@@ -380,7 +382,9 @@ func (ls *LinkScraper) processLink(ctx context.Context, raw *rawLink) {
 					// Try to get dialog info for title/member count
 					// 原来 limit=1 只取最近1个会话, 目标群几乎永远不在其中,
 					// 导致标题/成员数永远拿不到。放宽到 50 个基本覆盖已加入的群。
-					dialogs, dlgErr := client.GetDialogs(ctx, 50, 0)
+					dialogCtx, dialogCancel := context.WithTimeout(ctx, 10*time.Second)
+					dialogs, dlgErr := client.GetDialogs(dialogCtx, 50, 0)
+					dialogCancel()
 					if dlgErr == nil {
 						for _, chat := range dialogs {
 							if chat != nil && chat.ID == link.ResolvedChatID {
