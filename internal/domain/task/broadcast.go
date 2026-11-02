@@ -447,7 +447,8 @@ accountLoop:
 
 			client, err := e.accEngine.GetClient(ctx, task.TenantID, accID)
 			if err != nil {
-				recordAccountFailure("client_unavailable", "账号客户端连接失败："+err.Error())
+				taskLog.Printf("[broadcast] account client unavailable account=%s: %v", accID, err)
+				recordAccountFailure("client_unavailable", "账号客户端连接失败")
 				return
 			}
 			defer e.accEngine.ReleaseClient(task.TenantID, accID, client)
