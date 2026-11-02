@@ -694,12 +694,12 @@ func (e *Engine) runTask(ctx context.Context, task *domain.Task) {
 		// ClaimTasks 已将任务置为 running；尽力将其标记失败，避免长期占用 running。
 		failCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		if updateErr := e.repo.UpdateStatus(failCtx, task.TenantID, task.TaskID, domain.TaskStatusFailed); updateErr != nil {
-			taskLog.Printf("[task] 状态读取失败后的失败状态回写也失败 task=%s: %v", task.TaskID, updateErr)
+		if updateErr := e.repo.UpdateStatusIfCurrent(failCtx, task.TenantID, task.TaskID, domain.TaskStatusRunning, domain.TaskStatusFailed); updateErr != nil {
+			taskLog.Printf("[task] 状态读取失败后的条件失败回写未执行 task=%s: %v", task.TaskID, updateErr)
 		}
 		return
 	}
-	if dbTask.Status == domain.TaskStatusCompleted || dbTask.Status == domain.TaskStatusCancelled {
+	if dbTask.Status != domain.TaskStatusRunning {
 		e.runningTasks.Delete(taskKey)
 		return
 	}
@@ -763,8 +763,8 @@ func (e *Engine) runTask(ctx context.Context, task *domain.Task) {
 		defer func() {
 			if r := recover(); r != nil {
 				taskLog.Printf("task panic: %v\n%s\n", r, debug.Stack())
-				if err := e.repo.UpdateStatus(ctx, task.TenantID, task.TaskID, domain.TaskStatusFailed); err != nil {
-					taskLog.Printf("[task] UpdateStatus failed: %v", err)
+				if err := e.repo.UpdateStatusIfCurrent(ctx, task.TenantID, task.TaskID, domain.TaskStatusRunning, domain.TaskStatusFailed); err != nil {
+					taskLog.Printf("[task] 条件失败状态回写未执行: %v", err)
 				}
 			}
 		}()
@@ -783,12 +783,12 @@ func (e *Engine) runTask(ctx context.Context, task *domain.Task) {
 			taskLog.Printf("[task] 启动前再次读取任务状态失败，停止执行 task=%s err=%v", task.TaskID, err)
 			failCtx, failCancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer failCancel()
-			if updateErr := e.repo.UpdateStatus(failCtx, task.TenantID, task.TaskID, domain.TaskStatusFailed); updateErr != nil {
-				taskLog.Printf("[task] 状态复核失败后的失败状态回写失败 task=%s: %v", task.TaskID, updateErr)
+			if updateErr := e.repo.UpdateStatusIfCurrent(failCtx, task.TenantID, task.TaskID, domain.TaskStatusRunning, domain.TaskStatusFailed); updateErr != nil {
+				taskLog.Printf("[task] 状态复核失败后的条件失败回写未执行 task=%s: %v", task.TaskID, updateErr)
 			}
 			return
 		}
-		if freshTask.Status == domain.TaskStatusCancelled || freshTask.Status == domain.TaskStatusPaused {
+		if freshTask.Status != domain.TaskStatusRunning {
 			return
 		}
 
@@ -796,16 +796,16 @@ func (e *Engine) runTask(ctx context.Context, task *domain.Task) {
 	})
 }
 
-// CancelTask cancels a running task by its ID.
-
-func (e *Engine) CancelTask(taskID uuid.UUID) {
-	// M-05: 取消立即落库(原只触发内存cancel, DB状态要等worker退出才更新,
-	// 取消后列表长时间显示running造成"取消没生效"的错觉; worker认领时的状态双查会跳过已取消任务)
-	if t, err := e.repo.GetByTaskIDAnyTenant(context.Background(), taskID); err == nil && t != nil {
-		if uerr := e.repo.UpdateStatus(context.Background(), t.TenantID, taskID, domain.TaskStatusCancelled); uerr != nil {
-			taskLog.Printf("[task] cancel落库失败: %v", uerr)
-		}
+// PauseTask stops an active worker after the current in-flight operation.
+// The caller must persist the paused state through the tenant-scoped repository first.
+func (e *Engine) PauseTask(taskID uuid.UUID) {
+	if cancel, ok := e.taskCtxs.Load(taskID.String()); ok {
+		cancel.(context.CancelFunc)()
 	}
+}
+
+// CancelTask stops an active worker. The tenant-scoped service owns the DB transition.
+func (e *Engine) CancelTask(taskID uuid.UUID) {
 	if cancel, ok := e.taskCtxs.Load(taskID.String()); ok {
 		cancel.(context.CancelFunc)()
 	}

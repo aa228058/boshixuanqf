@@ -344,6 +344,27 @@ func (r *TaskRepository) UpdateStatus(ctx context.Context, tenantID, taskID uuid
 	return nil
 }
 
+// UpdateStatusIfCurrent changes a task status only if it is still in the expected state.
+// It prevents late workers or concurrent pause/cancel requests from overwriting newer state.
+func (r *TaskRepository) UpdateStatusIfCurrent(ctx context.Context, tenantID, taskID uuid.UUID, expected, status domain.TaskStatus) error {
+	var completedAt interface{}
+	if status == domain.TaskStatusCompleted || status == domain.TaskStatusFailed || status == domain.TaskStatusCancelled {
+		completedAt = time.Now()
+	}
+	res, err := r.db.Exec(ctx, `
+		UPDATE tasks
+		SET status = $4, completed_at = $5, locked_at = NULL, worker_id = NULL
+		WHERE tenant_id = $1 AND task_id = $2 AND status = $3`,
+		tenantID, taskID, expected, status, completedAt)
+	if err != nil {
+		return err
+	}
+	if res.RowsAffected() == 0 {
+		return fmt.Errorf("task status is no longer %q; refusing transition to %q", expected, status)
+	}
+	return nil
+}
+
 // ResetToQueued resets a failed task to queued for retry.
 func (r *TaskRepository) ResetToQueued(ctx context.Context, tenantID, taskID uuid.UUID) error {
 	_, err := r.db.Exec(ctx, `

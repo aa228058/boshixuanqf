@@ -808,7 +808,15 @@ func (s *TaskService) Pause(ctx context.Context, tenantID, taskID uuid.UUID) err
 	if !validTransitions[task.Status][domain.TaskStatusPaused] {
 		return fmt.Errorf("cannot pause task with status %s", task.Status)
 	}
-	return s.repo.UpdateStatus(ctx, tenantID, taskID, domain.TaskStatusPaused)
+	if err := s.repo.UpdateStatusIfCurrent(ctx, tenantID, taskID, task.Status, domain.TaskStatusPaused); err != nil {
+		return err
+	}
+	// The DB state is authoritative; cancelling the task context makes an active
+	// worker stop after its current in-flight operation.
+	if task.Status == domain.TaskStatusRunning && s.engine != nil {
+		s.engine.PauseTask(taskID)
+	}
+	return nil
 }
 
 // Resume resumes a paused task.
@@ -832,10 +840,13 @@ func (s *TaskService) Cancel(ctx context.Context, tenantID, taskID uuid.UUID) er
 	if !validTransitions[task.Status][domain.TaskStatusCancelled] {
 		return fmt.Errorf("cannot cancel task with status %s", task.Status)
 	}
+	if err := s.repo.UpdateStatusIfCurrent(ctx, tenantID, taskID, task.Status, domain.TaskStatusCancelled); err != nil {
+		return err
+	}
 	if s.engine != nil {
 		s.engine.CancelTask(taskID)
 	}
-	return s.repo.UpdateStatus(ctx, tenantID, taskID, domain.TaskStatusCancelled)
+	return nil
 }
 
 // Retry retries a failed task.

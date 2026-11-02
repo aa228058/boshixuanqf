@@ -46,7 +46,7 @@ func (e *Engine) executeBroadcast(ctx context.Context, task *domain.Task) {
 		message = fmt.Sprint(v)
 	}
 	if message == "" {
-		if err := e.repo.UpdateStatus(ctx, task.TenantID, task.TaskID, domain.TaskStatusFailed); err != nil {
+		if err := e.repo.UpdateStatusIfCurrent(ctx, task.TenantID, task.TaskID, domain.TaskStatusRunning, domain.TaskStatusFailed); err != nil {
 			taskLog.Printf("[task] UpdateStatus failed: %v", err)
 		}
 		return
@@ -98,10 +98,23 @@ func (e *Engine) executeBroadcast(ctx context.Context, task *domain.Task) {
 		mode = domain.BroadcastModeCartesian // default to legacy mode
 	}
 
+	// Normalize selected accounts: preserve order but never start the same account worker twice.
+	accountIDs := make([]uuid.UUID, 0, len(task.AccountIDs))
+	seenAccounts := make(map[uuid.UUID]bool, len(task.AccountIDs))
+	for _, id := range accountIDs {
+		if seenAccounts[id] {
+			continue
+		}
+		seenAccounts[id] = true
+		accountIDs = append(accountIDs, id)
+	}
+
 	// Build account -> targets mapping
 	accountTargets := make(map[uuid.UUID][]string)
-	selectedAccounts := make(map[uuid.UUID]bool, len(task.AccountIDs))
-	for _, id := range task.AccountIDs { selectedAccounts[id] = true }
+	selectedAccounts := make(map[uuid.UUID]bool, len(accountIDs))
+	for _, id := range accountIDs {
+		selectedAccounts[id] = true
+	}
 	var total int
 
 	if mode == domain.BroadcastModeMapping {
@@ -140,7 +153,7 @@ func (e *Engine) executeBroadcast(ctx context.Context, task *domain.Task) {
 	}
 
 	if mode == domain.BroadcastModeCartesian {
-		for _, accID := range task.AccountIDs {
+		for _, accID := range accountIDs {
 			accountTargets[accID] = task.TargetIDs
 		}
 	}
@@ -148,7 +161,7 @@ func (e *Engine) executeBroadcast(ctx context.Context, task *domain.Task) {
 	// 只在账号内部去重，保留不同账号向同一目标发送的笛卡尔语义。
 	// total 必须基于最终实际分配的账号-目标对计算，不能用原始 mapping 条数累加。
 	total = 0
-	for _, accID := range task.AccountIDs {
+	for _, accID := range accountIDs {
 		targets := accountTargets[accID]
 		seen := make(map[string]bool, len(targets))
 		unique := make([]string, 0, len(targets))
@@ -272,7 +285,7 @@ func (e *Engine) executeBroadcast(ctx context.Context, task *domain.Task) {
 	}
 
 accountLoop:
-	for _, accID := range task.AccountIDs {
+	for _, accID := range accountIDs {
 		targets := accountTargets[accID]
 		if len(targets) == 0 {
 			continue
@@ -365,9 +378,9 @@ accountLoop:
 			// (万级群发 = 万次 DB 查询, Q族同款)。等级在账号维度不变, 循环外查一次。
 			accLevel := e.accEngine.GetAccountLevel(ctx, task.TenantID, accID)
 
-			if len(task.AccountIDs) == 0 || len(targets) == 0 {
+			if len(accountIDs) == 0 || len(targets) == 0 {
 				taskLog.Printf("[task] broadcast task %s has empty account_ids or target_ids, marking failed", task.TaskID)
-				if err := e.repo.UpdateStatus(ctx, task.TenantID, task.TaskID, domain.TaskStatusFailed); err != nil {
+				if err := e.repo.UpdateStatusIfCurrent(ctx, task.TenantID, task.TaskID, domain.TaskStatusRunning, domain.TaskStatusFailed); err != nil {
 					taskLog.Printf("[task] UpdateStatus failed: %v", err)
 				}
 				if err := e.logRepo.Create(ctx, &domain.TaskLog{
@@ -401,7 +414,7 @@ accountLoop:
 						}
 						e.publishProgress(task.TenantID, task.TaskID, progressAccum)
 					}
-					if err := e.repo.UpdateStatus(ctx, task.TenantID, task.TaskID, domain.TaskStatusPaused); err != nil {
+					if err := e.repo.UpdateStatusIfCurrent(ctx, task.TenantID, task.TaskID, domain.TaskStatusRunning, domain.TaskStatusPaused); err != nil {
 						taskLog.Printf("[task] UpdateStatus failed: %v", err)
 					}
 					return
@@ -819,8 +832,8 @@ accountLoop:
 	}
 	statusCtx, statusCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer statusCancel()
-	if err := e.repo.UpdateStatus(statusCtx, task.TenantID, task.TaskID, finalStatus); err != nil {
-		taskLog.Printf("[task] UpdateStatus failed: %v", err)
+	if err := e.repo.UpdateStatusIfCurrent(statusCtx, task.TenantID, task.TaskID, domain.TaskStatusRunning, finalStatus); err != nil {
+		taskLog.Printf("[task] 条件状态收尾未执行: %v", err)
 	}
 }
 
