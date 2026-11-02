@@ -101,7 +101,7 @@ func (e *Engine) executeBroadcast(ctx context.Context, task *domain.Task) {
 	// Normalize selected accounts: preserve order but never start the same account worker twice.
 	accountIDs := make([]uuid.UUID, 0, len(task.AccountIDs))
 	seenAccounts := make(map[uuid.UUID]bool, len(task.AccountIDs))
-	for _, id := range accountIDs {
+	for _, id := range task.AccountIDs {
 		if seenAccounts[id] {
 			continue
 		}
@@ -762,6 +762,11 @@ accountLoop:
 	close(flushDone)
 	close(sseDone)
 
+	// Workers may have exited because pause/cancel cancelled ctx. Use a bounded
+	// independent context for final persistence so buffered results are not lost.
+	flushCtx, flushCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer flushCancel()
+
 	// Final SSE flush: push any remaining pending data
 	mu.Lock()
 	logs := pendingLogs
@@ -782,7 +787,7 @@ accountLoop:
 		logs := batchLogs
 		batchLogs = nil
 		mu.Unlock()
-		if err := e.logRepo.CreateBatch(ctx, logs); err != nil {
+		if err := e.logRepo.CreateBatch(flushCtx, logs); err != nil {
 			taskLog.Printf("[task] final flush logs failed: %v", err)
 		}
 	} else {
@@ -802,7 +807,7 @@ accountLoop:
 		Failed:          failed,
 		AccountProgress: accProgList,
 	}
-	if err := e.repo.UpdateProgressExact(ctx, task.TenantID, task.TaskID, finalProgress); err != nil {
+	if err := e.repo.UpdateProgressExact(flushCtx, task.TenantID, task.TaskID, finalProgress); err != nil {
 		log.Printf("[broadcast] 更新进度失败: %v", err)
 	}
 	e.publishProgress(task.TenantID, task.TaskID, finalProgress)
