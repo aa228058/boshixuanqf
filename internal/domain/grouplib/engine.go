@@ -268,7 +268,7 @@ func (e *Engine) upsertBioLinks(ctx context.Context, bio string, seenAt time.Tim
 			continue
 		}
 		seen[key] = true
-		sg := &domain.SystemGroup{Source: "bio"}
+		sg := &domain.SystemGroup{Source: "bio", LastSeenAt: seenAt}
 		if isJoin {
 			sg.TmeLink = "https://t.me/joinchat/" + key
 			sg.GType = "private"
