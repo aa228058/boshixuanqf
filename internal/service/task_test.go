@@ -3,7 +3,9 @@ package service
 import (
 	"testing"
 
+	"github.com/google/uuid"
 	"tg-sender/internal/domain"
+	"tg-sender/internal/repository"
 )
 
 // TestValidTransitions_DAG 钉死任务状态机的合法迁移集合。
@@ -40,5 +42,25 @@ func TestValidTransitions_RejectsIllegal(t *testing.T) {
 		if validTransitions[tr.from][tr.to] {
 			t.Errorf("transition %s -> %s must be denied", tr.from, tr.to)
 		}
+	}
+}
+
+func TestFailedTargetsToMappingsPreservesAccountAssignments(t *testing.T) {
+	accountA := uuid.MustParse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
+	accountB := uuid.MustParse("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb")
+	got := failedTargetsToMappings([]repository.FailedTarget{
+		{AccountID: accountA, TargetID: "group-1"},
+		{AccountID: accountB, TargetID: "group-1"},
+		{AccountID: accountA, TargetID: "group-2"},
+		{AccountID: accountA, TargetID: "group-1"},
+	})
+	if len(got) != 2 {
+		t.Fatalf("expected 2 account mappings, got %d", len(got))
+	}
+	if got[0].AccountID != accountA || len(got[0].Targets) != 2 || got[0].Targets[0] != "group-1" || got[0].Targets[1] != "group-2" {
+		t.Fatalf("unexpected account A mapping: %#v", got[0])
+	}
+	if got[1].AccountID != accountB || len(got[1].Targets) != 1 || got[1].Targets[0] != "group-1" {
+		t.Fatalf("unexpected account B mapping: %#v", got[1])
 	}
 }

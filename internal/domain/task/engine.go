@@ -664,14 +664,20 @@ func (e *Engine) claimAndExecute(ctx context.Context) {
 
 func (e *Engine) runTask(ctx context.Context, task *domain.Task) {
 	// P1-01: 全局并发原子锁(count+claim非原子会突破上限; 信号量保证任何时刻running<=上限)
+	globalSemOwned := false
 	select {
 	case e.globalSem <- struct{}{}:
-		defer func() { <-e.globalSem }()
+		globalSemOwned = true
 	case <-ctx.Done():
 		return
 	case <-e.stopCh:
 		return
 	}
+	defer func() {
+		if globalSemOwned {
+			<-e.globalSem
+		}
+	}()
 	// Idempotency: skip if already running (memory + DB)
 	taskKey := task.TaskID.String()
 	if _, loaded := e.runningTasks.LoadOrStore(taskKey, true); loaded {
@@ -703,8 +709,10 @@ func (e *Engine) runTask(ctx context.Context, task *domain.Task) {
 		return
 	}
 
+	globalSemOwned = false // ownership transfers to the execution goroutine
 	e.wg.Add(1)
 	safego.Go(func() {
+		defer func() { <-e.globalSem }()
 		defer e.wg.Done()
 		// 任务结束(完成/失败/取消)时广播状态事件, 前端列表实时刷新
 		defer func() {
@@ -747,7 +755,7 @@ func (e *Engine) runTask(ctx context.Context, task *domain.Task) {
 		defer e.runningTasks.Delete(taskKey)
 		// P1修复(精读发现): progressCache 只 Store 从不 Delete(注释承诺的删除并不存在),
 		// 每个任务永久泄漏一个 TaskProgress, sync.Map 随任务数无限增长。
-		defer e.progressCache.Delete(taskKey)
+		defer e.progressCache.Delete(task.TaskID)
 		defer func() {
 			if r := recover(); r != nil {
 				taskLog.Printf("task panic: %v\n%s\n", r, debug.Stack())

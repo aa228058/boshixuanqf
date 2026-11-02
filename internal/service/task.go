@@ -390,6 +390,21 @@ func (s *TaskService) CreateBroadcastWithMapping(ctx context.Context, tenantID u
 	return s.createBroadcastWithMappingTask(ctx, tenantID, mappings, accountIDs, targetIDs, message, scheduledAt, intervalMin, intervalMax, extraPayload, domain.TaskTypeBroadcast, false, 0)
 }
 
+// CreateLoopBroadcastWithMapping creates a broadcast/loop task while preserving
+// the same cartesian or account-target mapping semantics as a normal broadcast.
+func (s *TaskService) CreateLoopBroadcastWithMapping(ctx context.Context, tenantID uuid.UUID, mappings []domain.AccountTargetMapping, accountIDs []uuid.UUID, targetIDs []string, message string, scheduledAt *time.Time, intervalMin, intervalMax, loopIntervalMinutes int, extraPayload map[string]any) (*domain.Task, error) {
+	if err := s.checkPlanFeature(ctx, tenantID, "scheduled_tasks"); err != nil {
+		return nil, err
+	}
+	if err := s.checkPlanFeature(ctx, tenantID, "loop_broadcast"); err != nil {
+		return nil, err
+	}
+	if loopIntervalMinutes <= 0 {
+		loopIntervalMinutes = 60
+	}
+	return s.createBroadcastWithMappingTask(ctx, tenantID, mappings, accountIDs, targetIDs, message, scheduledAt, intervalMin, intervalMax, extraPayload, domain.TaskTypeScheduledBroadcast, true, loopIntervalMinutes)
+}
+
 func (s *TaskService) createBroadcastWithMappingTask(ctx context.Context, tenantID uuid.UUID, mappings []domain.AccountTargetMapping, accountIDs []uuid.UUID, targetIDs []string, message string, scheduledAt *time.Time, intervalMin, intervalMax int, extraPayload map[string]any, taskType domain.TaskType, isLoop bool, loopIntervalMinutes int) (*domain.Task, error) {
 	mode := domain.BroadcastModeCartesian
 	var totalMsgs int
@@ -909,6 +924,30 @@ func (s *TaskService) Cancel(ctx context.Context, tenantID, taskID uuid.UUID) er
 	return nil
 }
 
+// failedTargetsToMappings groups failed log rows without losing account ownership.
+func failedTargetsToMappings(failed []repository.FailedTarget) []domain.AccountTargetMapping {
+	index := make(map[uuid.UUID]int, len(failed))
+	seen := make(map[uuid.UUID]map[string]bool, len(failed))
+	mappings := make([]domain.AccountTargetMapping, 0, len(failed))
+	for _, item := range failed {
+		if item.AccountID == uuid.Nil || item.TargetID == "" {
+			continue
+		}
+		i, ok := index[item.AccountID]
+		if !ok {
+			i = len(mappings)
+			index[item.AccountID] = i
+			seen[item.AccountID] = make(map[string]bool)
+			mappings = append(mappings, domain.AccountTargetMapping{AccountID: item.AccountID})
+		}
+		if !seen[item.AccountID][item.TargetID] {
+			seen[item.AccountID][item.TargetID] = true
+			mappings[i].Targets = append(mappings[i].Targets, item.TargetID)
+		}
+	}
+	return mappings
+}
+
 // Retry retries a failed task.
 // Retry 重试任务。scope 为空: 原任务重置回队列(全部目标重跑);
 // scope="failed": 断点续发——仅对日志中失败的目标克隆一个新任务, 已成功的目标不会收到重复消息。
@@ -923,71 +962,40 @@ func (s *TaskService) Retry(ctx context.Context, tenantID, taskID uuid.UUID, sco
 			return fmt.Errorf("获取失败目标失败: %w", err)
 		}
 		if len(failed) == 0 {
-			return fmt.Errorf("该任务没有失败目标, 无需续发")
+			return fmt.Errorf("该任务没有可续发的失败目标")
 		}
-		// P1-15 审计修复: mapping 模式的续发任务必须保留原定向映射。
-		// 原来直接走 Create → CreateBroadcast(mapping=nil) → cartesian,
-		// 把"账号A只发群1"退化成"所有账号×所有失败目标", 既发错群又浪费额度。
-		// 现在从原 payload 取出 mappings, 按失败目标过滤后走 CreateBroadcastWithMapping。
-		if raw, ok := task.Payload["mappings"].([]any); ok && len(raw) > 0 {
-			failedSet := make(map[string]bool, len(failed))
-			for _, t := range failed {
-				failedSet[t] = true
+
+		if task.Type == domain.TaskTypeBroadcast || task.Type == domain.TaskTypeScheduledBroadcast {
+			mappings := failedTargetsToMappings(failed)
+			if len(mappings) == 0 {
+				return fmt.Errorf("失败日志缺少账号归属，无法安全续发")
 			}
 			message, _ := task.Payload["message"].(string)
 			intervalMin, _ := task.Payload["interval_min"].(float64)
 			intervalMax, _ := task.Payload["interval_max"].(float64)
 			extra := map[string]any{}
-			if p, ok := task.Payload["priority"].(float64); ok && p >= 1 && p <= 10 {
-				extra["priority"] = p
-			}
-			var filtered []domain.AccountTargetMapping
-			for _, item := range raw {
-				m, ok := item.(map[string]any)
-				if !ok {
-					continue
-				}
-				accStr, _ := m["account_id"].(string)
-				accID, err := uuid.Parse(accStr)
-				if err != nil {
-					continue
-				}
-				tlist, _ := m["targets"].([]any)
-				var kept []string
-				for _, t := range tlist {
-					ts, _ := t.(string)
-					if failedSet[ts] {
-						kept = append(kept, ts)
-					}
-				}
-				if len(kept) > 0 {
-					filtered = append(filtered, domain.AccountTargetMapping{AccountID: accID, Targets: kept})
+			for _, key := range []string{"priority", "auto_vary", "obfuscate", "media", "buttons"} {
+				if value, ok := task.Payload[key]; ok {
+					extra[key] = value
 				}
 			}
-			if len(filtered) == 0 {
-				return fmt.Errorf("失败目标不在原定向映射内，无法按定向续发")
-			}
-			if _, err := s.CreateBroadcastWithMapping(ctx, tenantID, filtered, nil, failed, message, nil, int(intervalMin), int(intervalMax), extra); err != nil {
+			// Retry is a one-shot task even when the source task was scheduled/looping.
+			if _, err := s.CreateBroadcastWithMapping(ctx, tenantID, mappings, nil, nil, message, nil, int(intervalMin), int(intervalMax), extra); err != nil {
 				return fmt.Errorf("创建续发任务失败: %w", err)
 			}
 			return nil
 		}
-		// 定时广播的失败目标续发应创建一次性普通广播，不应重新建立循环计划。
-		if task.Type == domain.TaskTypeScheduledBroadcast {
-			message, _ := task.Payload["message"].(string)
-			intervalMin, _ := task.Payload["interval_min"].(float64)
-			intervalMax, _ := task.Payload["interval_max"].(float64)
-			extra := map[string]any{}
-			if p, ok := task.Payload["priority"].(float64); ok && p >= 1 && p <= 10 {
-				extra["priority"] = p
+
+		// Non-broadcast task types keep their existing retry path.
+		targets := make([]string, 0, len(failed))
+		seen := make(map[string]bool, len(failed))
+		for _, item := range failed {
+			if !seen[item.TargetID] {
+				seen[item.TargetID] = true
+				targets = append(targets, item.TargetID)
 			}
-			if _, err := s.CreateBroadcast(ctx, tenantID, task.AccountIDs, failed, message, nil, int(intervalMin), int(intervalMax), extra); err != nil {
-				return fmt.Errorf("创建定时广播失败目标续发任务失败: %w", err)
-			}
-			return nil
 		}
-		// 优先级透传已在 Create 的 broadcast 分支内从 payload 读取，这里直接重建即可
-		if _, err := s.Create(ctx, tenantID, task.Type, task.AccountIDs, failed, task.Payload, nil); err != nil {
+		if _, err := s.Create(ctx, tenantID, task.Type, task.AccountIDs, targets, task.Payload, nil); err != nil {
 			return fmt.Errorf("创建续发任务失败: %w", err)
 		}
 		return nil

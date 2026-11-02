@@ -176,12 +176,19 @@ type CreateBroadcastRequest struct {
 	Buttons []map[string]any `json:"buttons,omitempty"` // [{"text":"...","url":"..."}]
 	// Priority 任务优先级 1-10(默认 5; 8=优先插队, ClaimTasks 按 priority DESC 排序)
 	Priority int `json:"priority,omitempty"`
+	AutoVary bool `json:"auto_vary"`
+	Obfuscate bool `json:"obfuscate"`
+	IsLoop bool `json:"is_loop"`
+	LoopIntervalMinutes int `json:"loop_interval_minutes,omitempty"`
 }
 
 // broadcastExtras 提取请求中的富媒体/URL按钮等扩展字段, 注入任务 payload
 func broadcastExtras(req *CreateBroadcastRequest) map[string]any {
 	log.Printf("[broadcast] 创建请求 media=%v buttons=%d", req.Media, len(req.Buttons))
-	extra := map[string]any{}
+	extra := map[string]any{
+		"auto_vary": req.AutoVary,
+		"obfuscate": req.Obfuscate,
+	}
 	if len(req.Media) > 0 {
 		extra["media"] = req.Media
 	}
@@ -437,7 +444,12 @@ func (h *TaskHandler) CreateBroadcast(c echo.Context) error {
 				Targets:   m.Targets,
 			}
 		}
-		task, err := h.svc.CreateBroadcastWithMapping(c.Request().Context(), tenantID, mappings, nil, nil, req.Message, scheduledAt, req.IntervalMin, req.IntervalMax, broadcastExtras(&req))
+		var task *domain.Task
+		if req.IsLoop {
+			task, err = h.svc.CreateLoopBroadcastWithMapping(c.Request().Context(), tenantID, mappings, nil, nil, req.Message, scheduledAt, req.IntervalMin, req.IntervalMax, req.LoopIntervalMinutes, broadcastExtras(&req))
+		} else {
+			task, err = h.svc.CreateBroadcastWithMapping(c.Request().Context(), tenantID, mappings, nil, nil, req.Message, scheduledAt, req.IntervalMin, req.IntervalMax, broadcastExtras(&req))
+		}
 		if err != nil {
 			log.Printf("[handler] 创建精准映射群发任务失败: %v", err)
 			return echo.NewHTTPError(http.StatusBadRequest, "创建群发任务失败")
@@ -455,7 +467,12 @@ func (h *TaskHandler) CreateBroadcast(c echo.Context) error {
 		accountIDs = append(accountIDs, uid)
 	}
 
-	task, err := h.svc.CreateBroadcast(c.Request().Context(), tenantID, accountIDs, req.TargetIDs, req.Message, scheduledAt, req.IntervalMin, req.IntervalMax, broadcastExtras(&req))
+	var task *domain.Task
+	if req.IsLoop {
+		task, err = h.svc.CreateLoopBroadcastWithMapping(c.Request().Context(), tenantID, nil, accountIDs, req.TargetIDs, req.Message, scheduledAt, req.IntervalMin, req.IntervalMax, req.LoopIntervalMinutes, broadcastExtras(&req))
+	} else {
+		task, err = h.svc.CreateBroadcast(c.Request().Context(), tenantID, accountIDs, req.TargetIDs, req.Message, scheduledAt, req.IntervalMin, req.IntervalMax, broadcastExtras(&req))
+	}
 	if err != nil {
 		log.Printf("[handler] 创建群发任务失败: %v", err)
 		return echo.NewHTTPError(http.StatusBadRequest, "创建群发任务失败")

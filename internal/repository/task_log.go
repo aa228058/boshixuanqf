@@ -292,23 +292,31 @@ func (r *TaskLogRepository) HasSuccessForTargets(ctx context.Context, tenantID, 
 	return result, rows.Err()
 }
 
-// ListFailedTargets 返回任务日志中标记为失败的去重目标列表, 用于断点续发(只重试失败目标)
-func (r *TaskLogRepository) ListFailedTargets(ctx context.Context, tenantID, taskID uuid.UUID) ([]string, error) {
+// FailedTarget identifies the exact account-target pair that failed.
+type FailedTarget struct {
+	AccountID uuid.UUID
+	TargetID  string
+}
+
+// ListFailedTargets returns distinct failed account-target pairs for safe retry.
+func (r *TaskLogRepository) ListFailedTargets(ctx context.Context, tenantID, taskID uuid.UUID) ([]FailedTarget, error) {
 	rows, err := r.db.Query(ctx, `
-		SELECT DISTINCT target_id
-		FROM task_logs WHERE tenant_id = $1 AND task_id = $2 AND status = 'failed' AND target_id <> ''
-		ORDER BY target_id`, tenantID, taskID)
+		SELECT DISTINCT account_id, target_id
+		FROM task_logs
+		WHERE tenant_id = $1 AND task_id = $2 AND status = 'failed'
+		  AND account_id IS NOT NULL AND target_id <> ''
+		ORDER BY account_id, target_id`, tenantID, taskID)
 	if err != nil {
 		return nil, fmt.Errorf("list failed targets: %w", err)
 	}
 	defer rows.Close()
-	var targets []string
+	var failed []FailedTarget
 	for rows.Next() {
-		var t string
-		if err := rows.Scan(&t); err != nil {
+		var item FailedTarget
+		if err := rows.Scan(&item.AccountID, &item.TargetID); err != nil {
 			return nil, err
 		}
-		targets = append(targets, t)
+		failed = append(failed, item)
 	}
-	return targets, rows.Err()
+	return failed, rows.Err()
 }

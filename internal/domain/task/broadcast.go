@@ -27,10 +27,6 @@ import (
 )
 
 func (e *Engine) executeBroadcast(ctx context.Context, task *domain.Task) {
-	// Overall timeout: max 30 minutes for a broadcast task to prevent indefinite hanging
-	ctx, cancel := context.WithTimeout(ctx, 30*time.Minute)
-	defer cancel()
-
 	// Status writes must survive task-context cancellation and remain lease-guarded.
 	updateOwnedStatus := func(status domain.TaskStatus) {
 		persistCtx, persistCancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -53,6 +49,22 @@ func (e *Engine) executeBroadcast(ctx context.Context, task *domain.Task) {
 			taskMaxInterval = int(v)
 		}
 	}
+
+	// Keep a safety timeout, but scale it with the task's target count and the
+	// per-message request deadline so large valid broadcasts are not cut off at 30m.
+	maxInterval := taskMaxInterval
+	if maxInterval <= 0 {
+		maxInterval = 30
+	}
+	timeout := 30 * time.Minute
+	if task.Progress.Total > 0 {
+		estimated := time.Duration(task.Progress.Total)*(time.Duration(maxInterval)*time.Second+65*time.Second) + 5*time.Minute
+		if estimated > timeout {
+			timeout = estimated
+		}
+	}
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
 
 	var message string
 	if v, ok := task.Payload["message"]; ok {
