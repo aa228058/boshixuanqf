@@ -629,12 +629,13 @@ accountLoop:
 						rawMsg = dictBag.fill(message)
 					}
 					personalizedMsg := replaceMessageVars(spintaxSpin(rawMsg), peer, targetID)
-					if obfEnabled {
-						// 混淆每条重新随机 — TG按内容查重时每条都是"不同消息"
-						if autoVary {
+					// 自动变化与消息混淆是两个独立选项：勾选自动变化就应生效，
+					// 不要求同时开启混淆。
+					if autoVary {
 						personalizedMsg = autoVaryMessage(personalizedMsg)
 					}
-					personalizedMsg = obfuscateMessage(personalizedMsg)
+					if obfEnabled {
+						personalizedMsg = obfuscateMessage(personalizedMsg)
 					}
 					// R104+R118: 拟人化 —— 发送前模拟"正在输入..." 1~3 秒再发(风控规避,
 					// 真实用户行为: 先打字后发送, 机器人则消息凭空出现)
