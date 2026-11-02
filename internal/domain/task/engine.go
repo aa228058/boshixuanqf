@@ -757,15 +757,26 @@ func (e *Engine) runTask(ctx context.Context, task *domain.Task) {
 			e.taskCtxs.Delete(taskKey)
 		}()
 
-		// Check if task was cancelled before starting.
+		// Re-check status and ownership after waiting for a local worker slot.
+		// The DB lease may have expired while this task was waiting on globalSem.
 		freshTask, err := e.repo.GetByID(ctx, task.TenantID, task.TaskID)
-		if err == nil && freshTask.Status == domain.TaskStatusCancelled {
+		if err != nil {
+			taskLog.Printf("[task] cannot verify claimed task %s; skip execution: %v", task.TaskID, err)
+			return
+		}
+		if freshTask.Status != domain.TaskStatusRunning || freshTask.WorkerID == nil || *freshTask.WorkerID != e.workerID {
+			taskLog.Printf("[task] task %s is no longer owned by worker %s; skip stale claim", task.TaskID, e.workerID)
 			return
 		}
 
-		// Renew the DB lease while executing. Without this heartbeat, a healthy
-		// long-running broadcast can be reclaimed by another process after the
-		// fixed lock timeout and send the same targets concurrently.
+		// Renew the lease immediately before starting execution, then keep it
+		// alive. This also closes the window where a claimed task waited on the
+		// local semaphore long enough for another worker to reclaim it.
+		owned, err := e.repo.RefreshTaskLock(ctx, task.TenantID, task.TaskID, e.workerID)
+		if err != nil || !owned {
+			taskLog.Printf("[task] cannot renew initial lease task=%s owned=%v err=%v; skip execution", task.TaskID, owned, err)
+			return
+		}
 		leaseDone := make(chan struct{})
 		go e.renewTaskLease(taskCtx, task, cancel, leaseDone)
 		defer func() {
