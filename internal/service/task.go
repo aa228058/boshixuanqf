@@ -350,7 +350,18 @@ func (s *TaskService) CreateScheduledBroadcast(ctx context.Context, tenantID uui
 // CreateBroadcastWithMapping creates a broadcast task with account-target mapping.
 // If mappings is nil, falls back to cartesian mode (all accounts × all targets).
 func (s *TaskService) CreateBroadcastWithMapping(ctx context.Context, tenantID uuid.UUID, mappings []domain.AccountTargetMapping, accountIDs []uuid.UUID, targetIDs []string, message string, scheduledAt *time.Time, intervalMin, intervalMax int, extraPayload map[string]any) (*domain.Task, error) {
-	mode := domain.BroadcastModeCartesian
+	requestedMode := domain.BroadcastModeCartesian
+	if len(mappings) > 0 {
+		requestedMode = domain.BroadcastModeMapping
+	}
+	return s.CreateBroadcastWithMode(ctx, tenantID, requestedMode, mappings, accountIDs, targetIDs, message, scheduledAt, intervalMin, intervalMax, extraPayload)
+}
+
+func (s *TaskService) CreateBroadcastWithMode(ctx context.Context, tenantID uuid.UUID, requestedMode domain.BroadcastMode, mappings []domain.AccountTargetMapping, accountIDs []uuid.UUID, targetIDs []string, message string, scheduledAt *time.Time, intervalMin, intervalMax int, extraPayload map[string]any) (*domain.Task, error) {
+	if requestedMode != domain.BroadcastModeCartesian && requestedMode != domain.BroadcastModeMapping && requestedMode != domain.BroadcastModeBalanced {
+		return nil, fmt.Errorf("不支持的群发方式")
+	}
+	mode := requestedMode
 	var totalMsgs int
 
 	// Canonicalize cartesian inputs before calculating totals or persisting the task.
@@ -377,6 +388,27 @@ func (s *TaskService) CreateBroadcastWithMapping(ctx context.Context, tenantID u
 			uniqueTargets = append(uniqueTargets, target)
 		}
 		targetIDs = uniqueTargets
+	}
+
+	// 自动均分：按目标原始顺序轮流分配，数量差最多为 1；每个目标只分配给一个账号。
+	if mode == domain.BroadcastModeBalanced {
+		if len(accountIDs) == 0 {
+			return nil, fmt.Errorf("未选择发送账号")
+		}
+		if len(mappings) > 0 {
+			return nil, fmt.Errorf("自动均分模式不接受手动分配数据")
+		}
+		mappings = make([]domain.AccountTargetMapping, len(accountIDs))
+		for i, id := range accountIDs {
+			mappings[i] = domain.AccountTargetMapping{AccountID: id}
+		}
+		for i, target := range targetIDs {
+			if target == "" {
+				continue
+			}
+			index := i % len(mappings)
+			mappings[index].Targets = append(mappings[index].Targets, target)
+		}
 	}
 
 	// P1-44 审计修复: 空账号/空目标不报错——任务创建后空转一圈标 completed, 浪费额度且误导。
@@ -416,8 +448,7 @@ func (s *TaskService) CreateBroadcastWithMapping(ctx context.Context, tenantID u
 			}
 		}
 		mappings = merged
-		// Mapping mode: validate and count
-		mode = domain.BroadcastModeMapping
+		// Manual assignment and auto-balance both execute from an explicit account-target plan.
 		allAccIDs := make([]uuid.UUID, 0, len(mappings))
 		allTargetIDs := make([]string, 0)
 		for _, m := range mappings {
@@ -452,7 +483,7 @@ func (s *TaskService) CreateBroadcastWithMapping(ctx context.Context, tenantID u
 	for k, v := range extraPayload {
 		payload[k] = v
 	}
-	if mode == domain.BroadcastModeMapping {
+	if mode == domain.BroadcastModeMapping || mode == domain.BroadcastModeBalanced {
 		// Store mappings as JSON-compatible structure
 		mappingsData := make([]map[string]any, len(mappings))
 		for i, m := range mappings {
@@ -475,7 +506,7 @@ func (s *TaskService) CreateBroadcastWithMapping(ctx context.Context, tenantID u
 
 	// Auto-split: if total messages exceed threshold, split into multiple sub-tasks
 	maxMsgsPerTask := s.cfg.MaxMsgsPerTask
-	if mode == domain.BroadcastModeMapping && totalMsgs > maxMsgsPerTask {
+	if (mode == domain.BroadcastModeMapping || mode == domain.BroadcastModeBalanced) && totalMsgs > maxMsgsPerTask {
 		return s.createSplitBroadcast(ctx, tenantID, mappings, message, scheduledAt, totalMsgs, maxMsgsPerTask, intervalMin, intervalMax, extraPayload)
 	}
 

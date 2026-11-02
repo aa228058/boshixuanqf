@@ -164,6 +164,7 @@ type CreateBroadcastRequest struct {
 	ScheduledAt string   `json:"scheduled_at,omitempty"`
 	IntervalMin int      `json:"interval_min,omitempty"` // 最小发送间隔(秒)
 	IntervalMax int      `json:"interval_max,omitempty"` // 最大发送间隔(秒)
+	BroadcastMode string `json:"broadcast_mode,omitempty"` // cartesian | mapping | balanced
 	// Mappings enables precise account-target mapping mode.
 	// If provided, each account sends only to its assigned targets (no cartesian product).
 	// Format: [{"account_id": "uuid", "targets": ["@group1", "-100..."]}, ...]
@@ -414,28 +415,7 @@ func (h *TaskHandler) CreateBroadcast(c echo.Context) error {
 		scheduledAt = &t
 	}
 
-	// Mapping mode: precise account-target control
-	if len(req.Mappings) > 0 {
-		mappings := make([]domain.AccountTargetMapping, len(req.Mappings))
-		for i, m := range req.Mappings {
-			accID, err := uuid.Parse(m.AccountID)
-			if err != nil {
-				return echo.NewHTTPError(http.StatusBadRequest, "映射账号ID格式错误: "+m.AccountID)
-			}
-			mappings[i] = domain.AccountTargetMapping{
-				AccountID: accID,
-				Targets:   m.Targets,
-			}
-		}
-		task, err := h.svc.CreateBroadcastWithMapping(c.Request().Context(), tenantID, mappings, nil, nil, req.Message, scheduledAt, req.IntervalMin, req.IntervalMax, broadcastExtras(&req))
-		if err != nil {
-			log.Printf("[handler] 创建精准映射群发任务失败: %v", err)
-			return echo.NewHTTPError(http.StatusBadRequest, "创建群发任务失败")
-		}
-		return Created(c, task)
-	}
-
-	// Cartesian mode (legacy): all accounts × all targets
+	// Parse selected accounts once for all three distribution modes.
 	var accountIDs []uuid.UUID
 	for _, id := range req.AccountIDs {
 		uid, err := uuid.Parse(id)
@@ -444,10 +424,27 @@ func (h *TaskHandler) CreateBroadcast(c echo.Context) error {
 		}
 		accountIDs = append(accountIDs, uid)
 	}
-
-	task, err := h.svc.CreateBroadcast(c.Request().Context(), tenantID, accountIDs, req.TargetIDs, req.Message, scheduledAt, req.IntervalMin, req.IntervalMax, broadcastExtras(&req))
+	mode := domain.BroadcastMode(req.BroadcastMode)
+	if mode == "" {
+		mode = domain.BroadcastModeCartesian
+		if len(req.Mappings) > 0 {
+			mode = domain.BroadcastModeMapping
+		}
+	}
+	var mappings []domain.AccountTargetMapping
+	if len(req.Mappings) > 0 {
+		mappings = make([]domain.AccountTargetMapping, len(req.Mappings))
+		for i, m := range req.Mappings {
+			accID, err := uuid.Parse(m.AccountID)
+			if err != nil {
+				return echo.NewHTTPError(http.StatusBadRequest, "映射账号ID格式错误: "+m.AccountID)
+			}
+			mappings[i] = domain.AccountTargetMapping{AccountID: accID, Targets: m.Targets}
+		}
+	}
+	task, err := h.svc.CreateBroadcastWithMode(c.Request().Context(), tenantID, mode, mappings, accountIDs, req.TargetIDs, req.Message, scheduledAt, req.IntervalMin, req.IntervalMax, broadcastExtras(&req))
 	if err != nil {
-		log.Printf("[handler] 创建群发任务失败: %v", err)
+		log.Printf("[handler] 创建群发任务失败 mode=%s: %v", mode, err)
 		return echo.NewHTTPError(http.StatusBadRequest, "创建群发任务失败")
 	}
 	return Created(c, task)

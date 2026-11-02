@@ -329,7 +329,8 @@ type BroadcastMode string
 
 const (
 	BroadcastModeCartesian BroadcastMode = "cartesian" // all accounts × all targets (legacy)
-	BroadcastModeMapping   BroadcastMode = "mapping"   // account-target mapping (precise)
+	BroadcastModeMapping   BroadcastMode = "mapping"   // tenant assigns targets to accounts
+	BroadcastModeBalanced  BroadcastMode = "balanced"  // targets distributed evenly across accounts
 )
 
 // TaskLog represents a single execution log entry.

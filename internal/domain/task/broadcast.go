@@ -111,7 +111,7 @@ func (e *Engine) executeBroadcast(ctx context.Context, task *domain.Task) {
 			taskLog.Printf("[broadcast] 预检失败后的条件状态回写未执行 task=%s: %v", task.TaskID, err)
 		}
 	}
-	if mode != domain.BroadcastModeCartesian && mode != domain.BroadcastModeMapping {
+	if mode != domain.BroadcastModeCartesian && mode != domain.BroadcastModeMapping && mode != domain.BroadcastModeBalanced {
 		failPreflight("unsupported_broadcast_mode", "不支持的群发分配模式，任务未发送")
 		return
 	}
@@ -135,7 +135,7 @@ func (e *Engine) executeBroadcast(ctx context.Context, task *domain.Task) {
 	}
 	var total int
 
-	if mode == domain.BroadcastModeMapping {
+	if mode == domain.BroadcastModeMapping || mode == domain.BroadcastModeBalanced {
 		// Parse mappings from payload
 		var mappingsData []any
 		if v, ok := task.Payload["mappings"]; ok {
