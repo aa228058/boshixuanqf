@@ -177,6 +177,9 @@ type CreateBroadcastRequest struct {
 	Buttons []map[string]any `json:"buttons,omitempty"` // [{"text":"...","url":"..."}]
 	// Priority 任务优先级 1-10(默认 5; 8=优先插队, ClaimTasks 按 priority DESC 排序)
 	Priority int `json:"priority,omitempty"`
+	AutoVary bool `json:"auto_vary,omitempty"`
+	IsLoop bool `json:"is_loop,omitempty"`
+	LoopIntervalMinutes int `json:"loop_interval_minutes,omitempty"`
 }
 
 // broadcastExtras 提取请求中的富媒体/URL按钮等扩展字段, 注入任务 payload
@@ -191,6 +194,9 @@ func broadcastExtras(req *CreateBroadcastRequest) map[string]any {
 	}
 	if req.Priority >= 1 && req.Priority <= 10 {
 		extra["priority"] = req.Priority
+	}
+	if req.AutoVary {
+		extra["auto_vary"] = true
 	}
 	if len(extra) == 0 {
 		return nil
@@ -441,12 +447,22 @@ func (h *TaskHandler) CreateBroadcast(c echo.Context) error {
 			mappings[i] = domain.AccountTargetMapping{AccountID: accID, Targets: m.Targets}
 		}
 	}
-	task, err := h.svc.CreateBroadcastWithMode(c.Request().Context(), tenantID, mode, mappings, accountIDs, req.TargetIDs, req.Message, scheduledAt, req.IntervalMin, req.IntervalMax, broadcastExtras(&req))
+	var createdTask *domain.Task
+	extraPayload := broadcastExtras(&req)
+	if req.IsLoop {
+		loopInterval := req.LoopIntervalMinutes
+		if loopInterval <= 0 {
+			loopInterval = 60
+		}
+		createdTask, err = h.svc.CreateBroadcastWithModeAndLoop(c.Request().Context(), tenantID, mode, mappings, accountIDs, req.TargetIDs, req.Message, scheduledAt, req.IntervalMin, req.IntervalMax, extraPayload, loopInterval)
+	} else {
+		createdTask, err = h.svc.CreateBroadcastWithMode(c.Request().Context(), tenantID, mode, mappings, accountIDs, req.TargetIDs, req.Message, scheduledAt, req.IntervalMin, req.IntervalMax, extraPayload)
+	}
 	if err != nil {
 		log.Printf("[handler] 创建群发任务失败 mode=%s: %v", mode, err)
 		return echo.NewHTTPError(http.StatusBadRequest, "创建群发任务失败")
 	}
-	return Created(c, task)
+	return Created(c, createdTask)
 }
 
 // CreateScrapeMembersRequest represents scrape members request.

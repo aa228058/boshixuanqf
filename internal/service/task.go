@@ -334,17 +334,10 @@ func (s *TaskService) CreateBroadcast(ctx context.Context, tenantID uuid.UUID, a
 // loopIntervalMinutes until it is paused or cancelled.
 func (s *TaskService) CreateScheduledBroadcast(ctx context.Context, tenantID uuid.UUID, accountIDs []uuid.UUID, targetIDs []string, message string, loopIntervalMinutes, intervalMin, intervalMax int, isLoop bool) (*domain.Task, error) {
 	now := time.Now()
-	task, err := s.CreateBroadcast(ctx, tenantID, accountIDs, targetIDs, message, &now, intervalMin, intervalMax, nil)
-	if err != nil {
-		return nil, err
+	if !isLoop {
+		return s.CreateBroadcast(ctx, tenantID, accountIDs, targetIDs, message, &now, intervalMin, intervalMax, nil)
 	}
-	if err := s.repo.SetLoopConfig(ctx, tenantID, task.TaskID, isLoop, loopIntervalMinutes, intervalMin, intervalMax, domain.TaskTypeScheduledBroadcast); err != nil {
-		return nil, fmt.Errorf("set loop config: %w", err)
-	}
-	task.IsLoop = isLoop
-	task.LoopIntervalMinutes = loopIntervalMinutes
-	task.Type = domain.TaskTypeScheduledBroadcast
-	return task, nil
+	return s.CreateBroadcastWithModeAndLoop(ctx, tenantID, domain.BroadcastModeCartesian, nil, accountIDs, targetIDs, message, &now, intervalMin, intervalMax, nil, loopIntervalMinutes)
 }
 
 // CreateBroadcastWithMapping creates a broadcast task with account-target mapping.
@@ -358,6 +351,16 @@ func (s *TaskService) CreateBroadcastWithMapping(ctx context.Context, tenantID u
 }
 
 func (s *TaskService) CreateBroadcastWithMode(ctx context.Context, tenantID uuid.UUID, requestedMode domain.BroadcastMode, mappings []domain.AccountTargetMapping, accountIDs []uuid.UUID, targetIDs []string, message string, scheduledAt *time.Time, intervalMin, intervalMax int, extraPayload map[string]any) (*domain.Task, error) {
+	return s.createBroadcastWithMode(ctx, tenantID, requestedMode, mappings, accountIDs, targetIDs, message, scheduledAt, intervalMin, intervalMax, extraPayload, false, 0)
+}
+
+// CreateBroadcastWithModeAndLoop persists loop configuration with the initial task,
+// so a worker cannot claim it before it has become a loop task.
+func (s *TaskService) CreateBroadcastWithModeAndLoop(ctx context.Context, tenantID uuid.UUID, requestedMode domain.BroadcastMode, mappings []domain.AccountTargetMapping, accountIDs []uuid.UUID, targetIDs []string, message string, scheduledAt *time.Time, intervalMin, intervalMax int, extraPayload map[string]any, loopIntervalMinutes int) (*domain.Task, error) {
+	return s.createBroadcastWithMode(ctx, tenantID, requestedMode, mappings, accountIDs, targetIDs, message, scheduledAt, intervalMin, intervalMax, extraPayload, true, loopIntervalMinutes)
+}
+
+func (s *TaskService) createBroadcastWithMode(ctx context.Context, tenantID uuid.UUID, requestedMode domain.BroadcastMode, mappings []domain.AccountTargetMapping, accountIDs []uuid.UUID, targetIDs []string, message string, scheduledAt *time.Time, intervalMin, intervalMax int, extraPayload map[string]any, isLoop bool, loopIntervalMinutes int) (*domain.Task, error) {
 	if requestedMode != domain.BroadcastModeCartesian && requestedMode != domain.BroadcastModeMapping && requestedMode != domain.BroadcastModeBalanced {
 		return nil, fmt.Errorf("不支持的群发方式")
 	}
@@ -552,7 +555,7 @@ func (s *TaskService) CreateBroadcastWithMode(ctx context.Context, tenantID uuid
 	// Auto-split: if total messages exceed threshold, split into multiple sub-tasks
 	maxMsgsPerTask := s.cfg.MaxMsgsPerTask
 	if (mode == domain.BroadcastModeMapping || mode == domain.BroadcastModeBalanced) && totalMsgs > maxMsgsPerTask {
-		return s.createSplitBroadcast(ctx, tenantID, mode, mappings, message, scheduledAt, totalMsgs, maxMsgsPerTask, intervalMin, intervalMax, extraPayload)
+		return s.createSplitBroadcast(ctx, tenantID, mode, mappings, message, scheduledAt, totalMsgs, maxMsgsPerTask, intervalMin, intervalMax, extraPayload, isLoop, loopIntervalMinutes)
 	}
 
 	// 优先级: 默认 5, 前端可传 1-10(8=优先插队, ClaimTasks 按 priority DESC 排序)
@@ -560,18 +563,36 @@ func (s *TaskService) CreateBroadcastWithMode(ctx context.Context, tenantID uuid
 	if p, ok := extraPayload["priority"].(float64); ok && p >= 1 && p <= 10 {
 		priority = int(p)
 	}
+	taskType := domain.TaskTypeBroadcast
+	var nextRunAt *time.Time
+	if isLoop {
+		taskType = domain.TaskTypeScheduledBroadcast
+		if loopIntervalMinutes <= 0 {
+			loopIntervalMinutes = 60
+		}
+		next := time.Now()
+		if scheduledAt != nil {
+			next = *scheduledAt
+		}
+		nextRunAt = &next
+	}
 	task := &domain.Task{
-		TaskID:      uuid.New(),
-		TenantID:    tenantID,
-		Type:        domain.TaskTypeBroadcast,
-		Status:      domain.TaskStatusQueued,
-		Priority:    priority,
-		AccountIDs:  accountIDs,
-		TargetIDs:   targetIDs,
-		Payload:     payload,
-		Progress:    domain.TaskProgress{Total: totalMsgs},
-		ScheduledAt: scheduledAt,
-		CreatedAt:   time.Now(),
+		TaskID:              uuid.New(),
+		TenantID:            tenantID,
+		Type:                taskType,
+		Status:              domain.TaskStatusQueued,
+		Priority:            priority,
+		AccountIDs:          accountIDs,
+		TargetIDs:           targetIDs,
+		Payload:             payload,
+		Progress:            domain.TaskProgress{Total: totalMsgs},
+		ScheduledAt:         scheduledAt,
+		IsLoop:              isLoop,
+		LoopIntervalMinutes: loopIntervalMinutes,
+		MinIntervalSeconds:  intervalMin,
+		MaxIntervalSeconds:  intervalMax,
+		NextRunAt:           nextRunAt,
+		CreatedAt:           time.Now(),
 	}
 	if scheduledAt == nil || scheduledAt.Before(time.Now()) {
 		task.Status = domain.TaskStatusQueued
@@ -585,7 +606,7 @@ func (s *TaskService) CreateBroadcastWithMode(ctx context.Context, tenantID uuid
 }
 
 // createSplitBroadcast splits a large broadcast into multiple sub-tasks.
-func (s *TaskService) createSplitBroadcast(ctx context.Context, tenantID uuid.UUID, mode domain.BroadcastMode, mappings []domain.AccountTargetMapping, message string, scheduledAt *time.Time, totalMsgs, maxMsgsPerTask, intervalMin, intervalMax int, extraPayload map[string]any) (*domain.Task, error) {
+func (s *TaskService) createSplitBroadcast(ctx context.Context, tenantID uuid.UUID, mode domain.BroadcastMode, mappings []domain.AccountTargetMapping, message string, scheduledAt *time.Time, totalMsgs, maxMsgsPerTask, intervalMin, intervalMax int, extraPayload map[string]any, isLoop bool, loopIntervalMinutes int) (*domain.Task, error) {
 	// 2026-10-22 审计修复: maxMsgsPerTask<=0 时 splitMappings 会死循环/除零——入口护栏
 	if maxMsgsPerTask < 1 {
 		maxMsgsPerTask = 1
@@ -637,17 +658,35 @@ func (s *TaskService) createSplitBroadcast(ctx context.Context, tenantID uuid.UU
 			allTargets = append(allTargets, m.Targets...)
 		}
 
+		taskType := domain.TaskTypeBroadcast
+		var nextRunAt *time.Time
+		if isLoop {
+			taskType = domain.TaskTypeScheduledBroadcast
+			if loopIntervalMinutes <= 0 {
+				loopIntervalMinutes = 60
+			}
+			next := time.Now()
+			if scheduledAt != nil {
+				next = *scheduledAt
+			}
+			nextRunAt = &next
+		}
 		task := &domain.Task{
-			TaskID:      uuid.New(),
-			TenantID:    tenantID,
-			Type:        domain.TaskTypeBroadcast,
-			Status:      domain.TaskStatusQueued,
-			Priority:    5,
-			AccountIDs:  accIDs,
-			TargetIDs:   allTargets,
-			Payload:     payload,
-			Progress:    domain.TaskProgress{Total: chunkMsgs},
-			ScheduledAt: scheduledAt,
+			TaskID:              uuid.New(),
+			TenantID:            tenantID,
+			Type:                taskType,
+			Status:              domain.TaskStatusQueued,
+			Priority:            5,
+			AccountIDs:          accIDs,
+			TargetIDs:           allTargets,
+			Payload:             payload,
+			Progress:            domain.TaskProgress{Total: chunkMsgs},
+			ScheduledAt:         scheduledAt,
+			IsLoop:              isLoop,
+			LoopIntervalMinutes: loopIntervalMinutes,
+			MinIntervalSeconds:  intervalMin,
+			MaxIntervalSeconds:  intervalMax,
+			NextRunAt:           nextRunAt,
 		}
 		if scheduledAt == nil || scheduledAt.Before(time.Now()) {
 			task.Status = domain.TaskStatusQueued
