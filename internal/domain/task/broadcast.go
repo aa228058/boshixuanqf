@@ -743,6 +743,17 @@ accountLoop:
 	persistCtx, persistCancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer persistCancel()
 
+	// A stale worker must not flush logs/progress or finalize a task reclaimed by another instance.
+	current, currentErr := e.repo.GetByID(persistCtx, task.TenantID, task.TaskID)
+	if currentErr != nil {
+		taskLog.Printf("[broadcast] 无法确认任务租约，停止最终写入 task=%s: %v", task.TaskID, currentErr)
+		return
+	}
+	if current == nil || current.Status != domain.TaskStatusRunning || current.WorkerID == nil || *current.WorkerID != e.workerID {
+		taskLog.Printf("[broadcast] worker 已失去任务所有权，跳过最终写入 task=%s worker=%s", task.TaskID, e.workerID)
+		return
+	}
+
 	// Final flush of remaining logs
 	mu.Lock()
 	logsToFlush := batchLogs
@@ -760,46 +771,40 @@ accountLoop:
 		accProgList = append(accProgList, *ap)
 	}
 
-	// Set final exact progress and status
 	finalProgress := domain.TaskProgress{
 		Total:           total,
 		Done:            done,
 		Failed:          failed,
 		AccountProgress: accProgList,
 	}
-	if err := e.repo.UpdateProgressExact(persistCtx, task.TenantID, task.TaskID, finalProgress); err != nil {
-		log.Printf("[broadcast] 更新进度失败: %v", err)
+	updated, err := e.repo.UpdateProgressExactIfOwned(persistCtx, task.TenantID, task.TaskID, e.workerID, finalProgress)
+	if err != nil {
+		taskLog.Printf("[broadcast] 更新最终进度失败: %v", err)
+		return
+	}
+	if !updated {
+		taskLog.Printf("[broadcast] 最终进度写入时租约已丢失 task=%s", task.TaskID)
+		return
 	}
 	e.publishProgress(task.TenantID, task.TaskID, finalProgress)
 
-	current, currentErr := e.repo.GetByID(persistCtx, task.TenantID, task.TaskID)
-	if currentErr != nil {
-		taskLog.Printf("[broadcast] 无法确认最终任务状态，保留现有状态 task=%s: %v", task.TaskID, currentErr)
-		return
-	}
-	if current != nil && (current.Status == domain.TaskStatusPaused || current.Status == domain.TaskStatusCancelled) {
-		return
+	targetStatus := domain.TaskStatusCompleted
+	if failed == total && total > 0 {
+		targetStatus = domain.TaskStatusFailed
 	}
 	if ctx.Err() != nil {
 		// Explicit cancellation is normally persisted by CancelTask first. If the
 		// parent engine context stopped instead, pause rather than report success.
-		targetStatus := domain.TaskStatusPaused
+		targetStatus = domain.TaskStatusPaused
 		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
 			targetStatus = domain.TaskStatusFailed
 		}
-		if err := e.repo.UpdateStatus(persistCtx, task.TenantID, task.TaskID, targetStatus); err != nil {
-			taskLog.Printf("[task] interrupted status update failed: %v", err)
-		}
-		return
 	}
-	if failed == total && total > 0 {
-		if err := e.repo.UpdateStatus(persistCtx, task.TenantID, task.TaskID, domain.TaskStatusFailed); err != nil {
-			taskLog.Printf("[task] UpdateStatus failed: %v", err)
-		}
-	} else {
-		if err := e.repo.UpdateStatus(persistCtx, task.TenantID, task.TaskID, domain.TaskStatusCompleted); err != nil {
-			taskLog.Printf("[task] UpdateStatus failed: %v", err)
-		}
+	updated, err = e.repo.UpdateStatusIfOwned(persistCtx, task.TenantID, task.TaskID, e.workerID, targetStatus)
+	if err != nil {
+		taskLog.Printf("[task] final status update failed: %v", err)
+	} else if !updated {
+		taskLog.Printf("[task] final status skipped because worker lease was lost task=%s", task.TaskID)
 	}
 }
 
