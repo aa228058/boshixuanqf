@@ -97,6 +97,24 @@ func (e *Engine) executeBroadcast(ctx context.Context, task *domain.Task) {
 	if mode == "" {
 		mode = domain.BroadcastModeCartesian // default to legacy mode
 	}
+	failPreflight := func(code, message string) {
+		failCtx, failCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer failCancel()
+		if err := e.logRepo.Create(failCtx, &domain.TaskLog{
+			LogID: uuid.New(), TaskID: task.TaskID, TenantID: task.TenantID,
+			Action: "broadcast", Status: "failed", ErrorCode: code,
+			Message: message, ExecutedAt: time.Now(),
+		}); err != nil {
+			taskLog.Printf("[broadcast] 写入预检失败日志失败 task=%s: %v", task.TaskID, err)
+		}
+		if err := e.repo.UpdateStatusIfCurrent(failCtx, task.TenantID, task.TaskID, domain.TaskStatusRunning, domain.TaskStatusFailed); err != nil {
+			taskLog.Printf("[broadcast] 预检失败后的条件状态回写未执行 task=%s: %v", task.TaskID, err)
+		}
+	}
+	if mode != domain.BroadcastModeCartesian && mode != domain.BroadcastModeMapping {
+		failPreflight("unsupported_broadcast_mode", "不支持的群发分配模式，任务未发送")
+		return
+	}
 
 	// Normalize selected accounts: preserve order but never start the same account worker twice.
 	accountIDs := make([]uuid.UUID, 0, len(task.AccountIDs))
@@ -146,9 +164,10 @@ func (e *Engine) executeBroadcast(ctx context.Context, task *domain.Task) {
 			// 同一账号允许多条 mapping，先合并，避免后一条覆盖前一条。
 			accountTargets[accID] = append(accountTargets[accID], targets...)
 		}
-		// Fallback: if no valid mappings parsed, use cartesian
+		// Never silently broaden a malformed mapping into all-accounts delivery.
 		if len(accountTargets) == 0 {
-			mode = domain.BroadcastModeCartesian
+			failPreflight("invalid_account_target_mapping", "未找到有效的账号与群组分配，任务未发送")
+			return
 		}
 	}
 
@@ -174,6 +193,10 @@ func (e *Engine) executeBroadcast(ctx context.Context, task *domain.Task) {
 		}
 		accountTargets[accID] = unique
 		total += len(unique)
+	}
+	if total == 0 {
+		failPreflight("empty_broadcast_targets", "没有可发送的账号与群组组合，任务未发送")
+		return
 	}
 
 	done := 0
