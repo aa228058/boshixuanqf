@@ -24,22 +24,23 @@ import (
 func setupTestDB(t *testing.T) *pgxpool.Pool {
 	t.Helper()
 	ctx := context.Background()
-	// postgres.Run 自带就绪等待，无需显式 WaitStrategy
+	// postgres.Run 不会自动等待数据库 ready，必须使用官方 BasicWaitStrategies。
 	pg, err := postgres.Run(ctx, "postgres:16-alpine",
 		postgres.WithDatabase("testdb"),
 		postgres.WithUsername("test"),
 		postgres.WithPassword("test"),
+		postgres.BasicWaitStrategies(),
 	)
 	if err != nil {
 		t.Fatalf("start postgres container: %v", err)
 	}
 	t.Cleanup(func() { _ = pg.Terminate(ctx) })
 
-	dsn, err := pg.ConnectionString(ctx)
+	dsn, err := pg.ConnectionString(ctx, "sslmode=disable")
 	if err != nil {
 		t.Fatalf("connection string: %v", err)
 	}
-	pool, err := pgxpool.New(ctx, dsn+"&sslmode=disable")
+	pool, err := pgxpool.New(ctx, dsn)
 	if err != nil {
 		t.Fatalf("connect: %v", err)
 	}
