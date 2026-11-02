@@ -78,6 +78,7 @@ func NewAuthHandler(
 		planRepo:    planRepo,
 		refreshRepo: refreshRepo,
 		auditRepo:   auditRepo,
+		taskEngine:  taskEngine,
 	}
 }
 
