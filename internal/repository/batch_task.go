@@ -58,3 +58,10 @@ func (r *BatchTaskRepository) UpdateSubTask(ctx context.Context, tenantID, batch
 		tenantID, batchID, subTaskID)
 	return err
 }
+
+// Delete removes a batch and its tracking record.
+func (r *BatchTaskRepository) Delete(ctx context.Context, tenantID, batchID uuid.UUID) error {
+	_, err := r.db.Exec(ctx, `DELETE FROM batch_tasks WHERE tenant_id = $1 AND batch_id = $2`, tenantID, batchID)
+	return err
+}
+

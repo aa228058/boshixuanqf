@@ -423,6 +423,40 @@ func (r *TaskRepository) ResetToQueued(ctx context.Context, tenantID, taskID uui
 	return nil
 }
 
+// ActivateBatchSubTasks makes all pending children runnable together, or leaves
+// them untouched if the batch is incomplete.
+func (r *TaskRepository) ActivateBatchSubTasks(ctx context.Context, tenantID, batchID uuid.UUID, scheduledAt *time.Time, expected int) error {
+	tx, err := r.db.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("begin batch activation: %w", err)
+	}
+	defer func() { _ = tx.Rollback(context.Background()) }()
+
+	status := domain.TaskStatusQueued
+	if scheduledAt != nil && scheduledAt.After(time.Now()) {
+		status = domain.TaskStatusPending
+	}
+	var scheduledValue any
+	if scheduledAt != nil {
+		scheduledValue = *scheduledAt
+	}
+	tag, err := tx.Exec(ctx, `
+		UPDATE tasks
+		SET status = $3, scheduled_at = $4
+		WHERE tenant_id = $1 AND status = 'pending' AND payload->>'batch_id' = $2`,
+		tenantID, batchID.String(), status, scheduledValue)
+	if err != nil {
+		return fmt.Errorf("activate batch sub-tasks: %w", err)
+	}
+	if tag.RowsAffected() != int64(expected) {
+		return fmt.Errorf("activate batch sub-tasks: expected %d children, updated %d", expected, tag.RowsAffected())
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("commit batch activation: %w", err)
+	}
+	return nil
+}
+
 // Delete removes a task.
 func (r *TaskRepository) Delete(ctx context.Context, tenantID, taskID uuid.UUID) error {
 	_, err := r.db.Exec(ctx, `DELETE FROM tasks WHERE tenant_id = $1 AND task_id = $2`, tenantID, taskID)

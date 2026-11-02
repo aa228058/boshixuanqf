@@ -505,7 +505,7 @@ func (s *TaskService) createBroadcastWithMappingTask(ctx context.Context, tenant
 	// Auto-split: if total messages exceed threshold, split into multiple sub-tasks
 	maxMsgsPerTask := s.cfg.MaxMsgsPerTask
 	if mode == domain.BroadcastModeMapping && totalMsgs > maxMsgsPerTask {
-		return s.createSplitBroadcast(ctx, tenantID, mappings, message, scheduledAt, totalMsgs, maxMsgsPerTask, intervalMin, intervalMax, extraPayload)
+		return s.createSplitBroadcast(ctx, tenantID, mappings, message, scheduledAt, totalMsgs, maxMsgsPerTask, intervalMin, intervalMax, extraPayload, taskType, isLoop, loopIntervalMinutes)
 	}
 
 	// 优先级: 默认 5, 前端可传 1-10(8=优先插队, ClaimTasks 按 priority DESC 排序)
@@ -540,13 +540,17 @@ func (s *TaskService) createBroadcastWithMappingTask(ctx context.Context, tenant
 }
 
 // createSplitBroadcast splits a large broadcast into multiple sub-tasks.
-func (s *TaskService) createSplitBroadcast(ctx context.Context, tenantID uuid.UUID, mappings []domain.AccountTargetMapping, message string, scheduledAt *time.Time, totalMsgs, maxMsgsPerTask, intervalMin, intervalMax int, extraPayload map[string]any) (*domain.Task, error) {
-	// 2026-10-22 审计修复: maxMsgsPerTask<=0 时 splitMappings 会死循环/除零——入口护栏
+func (s *TaskService) createSplitBroadcast(ctx context.Context, tenantID uuid.UUID, mappings []domain.AccountTargetMapping, message string, scheduledAt *time.Time, totalMsgs, maxMsgsPerTask, intervalMin, intervalMax int, extraPayload map[string]any, taskType domain.TaskType, isLoop bool, loopIntervalMinutes int) (*domain.Task, error) {
 	if maxMsgsPerTask < 1 {
 		maxMsgsPerTask = 1
 	}
-	// Split mappings into chunks where each chunk has ≤ maxMsgsPerTask messages
+	if s.batchRepo == nil {
+		return nil, fmt.Errorf("batch repository is not configured")
+	}
 	chunks := splitMappings(mappings, maxMsgsPerTask)
+	if len(chunks) == 0 {
+		return nil, fmt.Errorf("no valid sub-tasks created (all chunks empty)")
+	}
 
 	batch := &domain.BatchTask{
 		BatchID:   uuid.New(),
@@ -556,21 +560,39 @@ func (s *TaskService) createSplitBroadcast(ctx context.Context, tenantID uuid.UU
 		SubTasks:  make([]uuid.UUID, 0, len(chunks)),
 		CreatedAt: time.Now(),
 	}
-
-	// Create batch record
-	if s.batchRepo != nil {
-		if err := s.batchRepo.Create(ctx, batch); err != nil {
-			log.Printf("[batch] failed to create batch record: %v", err)
-		}
+	if err := s.batchRepo.Create(ctx, batch); err != nil {
+		return nil, fmt.Errorf("create batch record: %w", err)
 	}
 
-	// Create sub-tasks
+	rollback := func(cause error) error {
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cleanupCancel()
+		for _, subTaskID := range batch.SubTasks {
+			if err := s.repo.Delete(cleanupCtx, tenantID, subTaskID); err != nil {
+				log.Printf("[batch] rollback sub-task %s failed: %v", subTaskID, err)
+			}
+		}
+		if deleter, ok := s.batchRepo.(interface {
+			Delete(context.Context, uuid.UUID, uuid.UUID) error
+		}); ok {
+			if err := deleter.Delete(cleanupCtx, tenantID, batch.BatchID); err != nil {
+				log.Printf("[batch] rollback batch %s failed: %v", batch.BatchID, err)
+			}
+		} else {
+			log.Printf("[batch] batch repository does not support rollback for %s", batch.BatchID)
+		}
+		return cause
+	}
+
+	priority := 5
+	if p, ok := extraPayload["priority"].(float64); ok && p >= 1 && p <= 10 {
+		priority = int(p)
+	}
 	for i, chunk := range chunks {
 		chunkMsgs := 0
 		for _, m := range chunk {
 			chunkMsgs += len(m.Targets)
 		}
-
 		payload := map[string]any{
 			"message":      message,
 			"mode":         string(domain.BroadcastModeMapping),
@@ -591,36 +613,34 @@ func (s *TaskService) createSplitBroadcast(ctx context.Context, tenantID uuid.UU
 			accIDs = append(accIDs, m.AccountID)
 			allTargets = append(allTargets, m.Targets...)
 		}
-
-		task := &domain.Task{
-			TaskID:      uuid.New(),
-			TenantID:    tenantID,
-			Type:        domain.TaskTypeBroadcast,
-			Status:      domain.TaskStatusQueued,
-			Priority:    5,
-			AccountIDs:  accIDs,
-			TargetIDs:   allTargets,
-			Payload:     payload,
-			Progress:    domain.TaskProgress{Total: chunkMsgs},
-			ScheduledAt: scheduledAt,
+		subTask := &domain.Task{
+			TaskID:              uuid.New(),
+			TenantID:            tenantID,
+			Type:                taskType,
+			Status:              domain.TaskStatusPending,
+			Priority:            priority,
+			AccountIDs:          accIDs,
+			TargetIDs:           allTargets,
+			Payload:             payload,
+			Progress:            domain.TaskProgress{Total: chunkMsgs},
+			IsLoop:              isLoop,
+			LoopIntervalMinutes: loopIntervalMinutes,
 		}
-		if scheduledAt == nil || scheduledAt.Before(time.Now()) {
-			task.Status = domain.TaskStatusQueued
-		} else {
-			task.Status = domain.TaskStatusPending
+		if err := s.repo.Create(ctx, subTask); err != nil {
+			return nil, rollback(fmt.Errorf("create sub-task %d/%d: %w", i+1, len(chunks), err))
 		}
-		if err := s.repo.Create(ctx, task); err != nil {
-			return nil, fmt.Errorf("create sub-task %d/%d: %w", i+1, len(chunks), err)
-		}
-		batch.SubTasks = append(batch.SubTasks, task.TaskID)
-		if s.batchRepo != nil {
-			if err := s.batchRepo.UpdateSubTask(ctx, tenantID, batch.BatchID, task.TaskID); err != nil {
-				log.Printf("[task] 更新子任务失败: %v", err)
-			}
+		batch.SubTasks = append(batch.SubTasks, subTask.TaskID)
+		if err := s.batchRepo.UpdateSubTask(ctx, tenantID, batch.BatchID, subTask.TaskID); err != nil {
+			return nil, rollback(fmt.Errorf("register sub-task %d/%d: %w", i+1, len(chunks), err))
 		}
 	}
 
-	// Notify tenant via SSE（走租户隔离广播， previously 全局 Broadcast 发到无人订阅的 topic）
+	// Activate all children in one transaction only after the complete batch
+	// and every child-to-batch relation have been persisted.
+	if err := s.repo.ActivateBatchSubTasks(ctx, tenantID, batch.BatchID, scheduledAt, len(chunks)); err != nil {
+		return nil, rollback(fmt.Errorf("activate batch sub-tasks: %w", err))
+	}
+
 	if s.sseBroker != nil {
 		s.sseBroker.BroadcastToTenant(tenantID, "task_split", map[string]any{
 			"batch_id":     batch.BatchID,
@@ -631,33 +651,41 @@ func (s *TaskService) createSplitBroadcast(ctx context.Context, tenantID uuid.UU
 			"time":         time.Now().UTC(),
 		})
 	}
-
 	log.Printf("[batch] created batch %s with %d sub-tasks (%d total msgs)", batch.BatchID, len(chunks), totalMsgs)
-
-	if len(batch.SubTasks) == 0 {
-		return nil, fmt.Errorf("no valid sub-tasks created (all chunks empty)")
-	}
-
-	// Return the first sub-task as the "main" task (frontend can poll all via batch_id)
 	return s.repo.GetByID(ctx, tenantID, batch.SubTasks[0])
 }
 
 // splitMappings splits account-target mappings into chunks where each chunk has ≤ maxMsgs messages.
 func splitMappings(mappings []domain.AccountTargetMapping, maxMsgs int) [][]domain.AccountTargetMapping {
+	if maxMsgs < 1 {
+		maxMsgs = 1
+	}
 	var chunks [][]domain.AccountTargetMapping
 	var current []domain.AccountTargetMapping
 	currentMsgs := 0
-
-	for _, m := range mappings {
-		// If adding this mapping would exceed limit, start a new chunk
-		// (but always include at least one mapping per chunk)
-		if currentMsgs > 0 && currentMsgs+len(m.Targets) > maxMsgs {
-			chunks = append(chunks, current)
-			current = nil
-			currentMsgs = 0
+	for _, mapping := range mappings {
+		for offset := 0; offset < len(mapping.Targets); {
+			available := maxMsgs - currentMsgs
+			if available <= 0 {
+				chunks = append(chunks, current)
+				current = nil
+				currentMsgs = 0
+				available = maxMsgs
+			}
+			take := len(mapping.Targets) - offset
+			if take > available {
+				take = available
+			}
+			targets := append([]string(nil), mapping.Targets[offset:offset+take]...)
+			current = append(current, domain.AccountTargetMapping{AccountID: mapping.AccountID, Targets: targets})
+			currentMsgs += take
+			offset += take
+			if currentMsgs == maxMsgs {
+				chunks = append(chunks, current)
+				current = nil
+				currentMsgs = 0
+			}
 		}
-		current = append(current, m)
-		currentMsgs += len(m.Targets)
 	}
 	if len(current) > 0 {
 		chunks = append(chunks, current)
