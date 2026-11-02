@@ -857,7 +857,23 @@ func (e *Engine) executeTask(ctx context.Context, task *domain.Task) {
 	case domain.TaskTypeMonitorScrape:
 		e.executeMonitorScrape(ctx, task)
 	case domain.TaskTypeInviteMembers:
-		e.executeInviteMembers(ctx, task)
+		inviteErr := e.executeInviteMembers(ctx, task)
+		finalStatus := domain.TaskStatusCompleted
+		if inviteErr != nil {
+			taskLog.Printf("[invite] task %s failed: %v", task.TaskID, inviteErr)
+			if ctx.Err() != nil {
+				finalStatus = domain.TaskStatusPaused
+			} else {
+				finalStatus = domain.TaskStatusFailed
+			}
+		}
+		persistCtx, persistCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		if updated, err := e.repo.UpdateStatusIfOwned(persistCtx, task.TenantID, task.TaskID, e.workerID, finalStatus); err != nil {
+			taskLog.Printf("[invite] final status update failed: %v", err)
+		} else if !updated {
+			taskLog.Printf("[invite] final status skipped; worker no longer owns task %s", task.TaskID)
+		}
+		persistCancel()
 	case domain.TaskTypeScheduledBroadcast:
 		e.executeBroadcast(ctx, task)
 		e.rescheduleLoopTask(ctx, task)
