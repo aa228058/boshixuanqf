@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -16,6 +17,7 @@ import (
 // Implements SessionStore + PeerStore + Close (storage.Adapter interface).
 type PgxPoolAdapter struct {
 	pool          *pgxpool.Pool
+	mu            sync.RWMutex
 	sessionName   string
 	serverAddress string // 协议号原始 DC 地址(host:port), 恢复会话时优先使用
 }
@@ -36,31 +38,51 @@ func (a *PgxPoolAdapter) opCtx() (context.Context, context.CancelFunc) {
 // ServerAddress 返回该会话存储的原始 DC 地址(协议号导入时从 Telethon session 记录)。
 // 空串表示未记录(老数据/手机验证码号), 调用方应退回内置地址表。
 func (a *PgxPoolAdapter) ServerAddress() string {
-	if a.serverAddress != "" {
-		return a.serverAddress
+	a.mu.RLock()
+	serverAddress := a.serverAddress
+	sessionName := a.sessionName
+	a.mu.RUnlock()
+	if serverAddress != "" || sessionName == "" {
+		return serverAddress
 	}
 	// LoadSession 前可能还没读库,主动查一次
 	ctx, cancel := a.opCtx()
 	defer cancel()
+	var loadedAddress string
 	_ = a.pool.QueryRow(ctx,
-		`SELECT server_address FROM sessions WHERE session_id = $1`, a.sessionName).Scan(&a.serverAddress)
-	return a.serverAddress
+		`SELECT server_address FROM sessions WHERE session_id = $1`, sessionName).Scan(&loadedAddress)
+	if loadedAddress == "" {
+		return ""
+	}
+	a.mu.Lock()
+	if a.serverAddress == "" {
+		a.serverAddress = loadedAddress
+	}
+	serverAddress = a.serverAddress
+	a.mu.Unlock()
+	return serverAddress
 }
 
 func (a *PgxPoolAdapter) SetSessionName(name string) {
+	a.mu.Lock()
 	a.sessionName = name
+	a.mu.Unlock()
 }
 
 // ==================== SessionStore (2 methods) ====================
 
 func (a *PgxPoolAdapter) LoadSession() (*storage.Session, error) {
 	// sessionName must be set to prevent cross-session contamination in multi-tenant environments
-	if a.sessionName == "" {
+	a.mu.RLock()
+	sessionName := a.sessionName
+	a.mu.RUnlock()
+	if sessionName == "" {
 		return nil, fmt.Errorf("load session: sessionName not set")
 	}
 
 	var sess storage.Session
 	var authKeyEnc, stateEnc []byte
+	var serverAddress string
 
 	query := `
 		SELECT session_id, dc, api_id, api_hash, test_mode, auth_key, state,
@@ -74,7 +96,7 @@ func (a *PgxPoolAdapter) LoadSession() (*storage.Session, error) {
 		&sess.SessionID, &sess.DC, &sess.APIID, &sess.APIHash,
 		&sess.TestMode, &authKeyEnc, &stateEnc,
 		&sess.UserID, &sess.IsBot, &sess.FirstName,
-		&sess.LastName, &sess.Username, &sess.Date, &a.serverAddress,
+		&sess.LastName, &sess.Username, &sess.Date, &serverAddress,
 	)
 
 	if err != nil {
@@ -83,6 +105,10 @@ func (a *PgxPoolAdapter) LoadSession() (*storage.Session, error) {
 		}
 		return nil, fmt.Errorf("load session: %w", err)
 	}
+
+	a.mu.Lock()
+	a.serverAddress = serverAddress
+	a.mu.Unlock()
 
 	// Decrypt auth_key: try encrypted first, fallback to plaintext for backward compatibility
 	if len(authKeyEnc) > 0 {
@@ -129,6 +155,9 @@ func (a *PgxPoolAdapter) SaveSession(sess *storage.Session) error {
 		stateEnc = enc
 	}
 
+	a.mu.RLock()
+	serverAddress := a.serverAddress
+	a.mu.RUnlock()
 	ctx, cancel := a.opCtx()
 	defer cancel()
 	_, err := a.pool.Exec(ctx, `
@@ -156,7 +185,7 @@ func (a *PgxPoolAdapter) SaveSession(sess *storage.Session) error {
 	`,
 		sess.SessionID, sess.DC, sess.APIID, sess.APIHash, sess.TestMode,
 		authKeyEnc, stateEnc, sess.UserID, sess.IsBot,
-		sess.FirstName, sess.LastName, sess.Username, sess.Date, a.serverAddress,
+		sess.FirstName, sess.LastName, sess.Username, sess.Date, serverAddress,
 	)
 	if err != nil {
 		return fmt.Errorf("save session: %w", err)
