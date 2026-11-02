@@ -361,6 +361,9 @@ func (s *AccountService) Connect(ctx context.Context, tenantID, accountID uuid.U
 	if err != nil {
 		return err
 	}
+	if acc == nil {
+		return fmt.Errorf("账号不存在")
+	}
 	return s.engine.ConnectAccount(ctx, tenantID, accountID, acc.Phone, acc.SessionName, acc.Level)
 }
 
