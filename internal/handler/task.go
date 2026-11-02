@@ -296,6 +296,10 @@ func (h *TaskHandler) Create(c echo.Context) error {
 			if err := h.planChecker.CheckFeature(c, tenantID.String(), middleware.FeatureScheduledTasks); err != nil {
 				return err
 			}
+		case "monitor_scrape":
+			if err := h.planChecker.CheckFeature(c, tenantID.String(), middleware.FeatureMonitor); err != nil {
+				return err
+			}
 		}
 	}
 
