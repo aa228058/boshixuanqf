@@ -743,18 +743,9 @@ accountLoop:
 	persistCtx, persistCancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer persistCancel()
 
-	// A stale worker must not flush logs/progress or finalize a task reclaimed by another instance.
-	current, currentErr := e.repo.GetByID(persistCtx, task.TenantID, task.TaskID)
-	if currentErr != nil {
-		taskLog.Printf("[broadcast] 无法确认任务租约，停止最终写入 task=%s: %v", task.TaskID, currentErr)
-		return
-	}
-	if current == nil || current.Status != domain.TaskStatusRunning || current.WorkerID == nil || *current.WorkerID != e.workerID {
-		taskLog.Printf("[broadcast] worker 已失去任务所有权，跳过最终写入 task=%s worker=%s", task.TaskID, e.workerID)
-		return
-	}
-
-	// Final flush of remaining logs
+	// Final flush of remaining logs even if ownership was lost: these rows record
+	// Telegram sends that already happened and are needed by the next worker's
+	// resume de-duplication. Progress/status writes below remain lease-guarded.
 	mu.Lock()
 	logsToFlush := batchLogs
 	batchLogs = nil
@@ -763,6 +754,17 @@ accountLoop:
 		if err := e.logRepo.CreateBatch(persistCtx, logsToFlush); err != nil {
 			taskLog.Printf("[task] final flush logs failed: %v", err)
 		}
+	}
+
+	// A stale worker must not overwrite progress/status of a task reclaimed by another instance.
+	current, currentErr := e.repo.GetByID(persistCtx, task.TenantID, task.TaskID)
+	if currentErr != nil {
+		taskLog.Printf("[broadcast] 无法确认任务租约，停止最终写入 task=%s: %v", task.TaskID, currentErr)
+		return
+	}
+	if current == nil || current.Status != domain.TaskStatusRunning || current.WorkerID == nil || *current.WorkerID != e.workerID {
+		taskLog.Printf("[broadcast] worker 已失去任务所有权，跳过最终进度/状态写入 task=%s worker=%s", task.TaskID, e.workerID)
+		return
 	}
 
 	// Build account_progress slice
