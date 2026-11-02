@@ -148,9 +148,26 @@ func (s *TaskService) validateAccountOwnership(ctx context.Context, tenantID uui
 	if len(found) != len(accountIDs) {
 		return fmt.Errorf("some accounts not found or not owned by tenant")
 	}
-	for _, acc := range found {
+	return nil
+}
+
+// validateActiveAccountOwnership is used for Telegram write operations. Standby
+// accounts remain usable for read-only scraping/synchronization, but must not send,
+// join, or invite after being moved out of the active pool.
+func (s *TaskService) validateActiveAccountOwnership(ctx context.Context, tenantID uuid.UUID, accountIDs []uuid.UUID) error {
+	if err := s.validateAccountOwnership(ctx, tenantID, accountIDs); err != nil {
+		return err
+	}
+	if len(accountIDs) == 0 {
+		return nil
+	}
+	accounts, err := s.accountRepo.ListByIDs(ctx, tenantID, accountIDs)
+	if err != nil {
+		return fmt.Errorf("validate active accounts: %w", err)
+	}
+	for _, acc := range accounts {
 		if acc.PoolStatus == "standby" {
-			return fmt.Errorf("account %s is in standby pool and cannot execute tasks", acc.AccountID)
+			return fmt.Errorf("account %s is in standby pool; move it to active before sending/joining", acc.AccountID)
 		}
 	}
 	return nil
@@ -227,8 +244,8 @@ func (s *TaskService) Create(ctx context.Context, tenantID uuid.UUID, taskType d
 		return nil, fmt.Errorf("some accounts not found (expected %d, got %d)", len(accountIDs), len(accounts))
 	}
 	for _, acc := range accounts {
-		if acc.PoolStatus == "standby" {
-			return nil, fmt.Errorf("account %s is in standby pool and cannot execute tasks", acc.AccountID)
+		if (task.Type == domain.TaskTypeBroadcast || task.Type == domain.TaskTypeScheduledBroadcast || task.Type == domain.TaskTypeJoinGroups || task.Type == domain.TaskTypeInviteMembers) && acc.PoolStatus == "standby" {
+			return nil, fmt.Errorf("account %s is in standby pool; move it to active before sending/joining", acc.AccountID)
 		}
 		if acc.Status == domain.AccountStatusBanned {
 			return nil, fmt.Errorf("account %s is banned", acc.AccountID)
@@ -423,14 +440,14 @@ func (s *TaskService) createBroadcastWithMappingTask(ctx context.Context, tenant
 			allTargetIDs = append(allTargetIDs, m.Targets...)
 			totalMsgs += len(m.Targets)
 		}
-		if err := s.validateAccountOwnership(ctx, tenantID, allAccIDs); err != nil {
+		if err := s.validateActiveAccountOwnership(ctx, tenantID, allAccIDs); err != nil {
 			return nil, err
 		}
 		accountIDs = allAccIDs
 		targetIDs = allTargetIDs
 	} else {
 		// Cartesian mode
-		if err := s.validateAccountOwnership(ctx, tenantID, accountIDs); err != nil {
+		if err := s.validateActiveAccountOwnership(ctx, tenantID, accountIDs); err != nil {
 			return nil, err
 		}
 		totalMsgs = len(targetIDs) * len(accountIDs)
@@ -694,7 +711,7 @@ func (s *TaskService) CreateJoinGroups(ctx context.Context, tenantID uuid.UUID, 
 // 否则退回全局 JOIN_INTERVAL_MINUTES(默认2分钟) + 0~50% 抖动。
 // 合法性: 1 ≤ min ≤ 60, min ≤ max ≤ 120。
 func (s *TaskService) CreateJoinGroupsWithInterval(ctx context.Context, tenantID uuid.UUID, accountID uuid.UUID, links []string, intervalMin, intervalMax int) (*domain.Task, error) {
-	if err := s.validateAccountOwnership(ctx, tenantID, []uuid.UUID{accountID}); err != nil {
+	if err := s.validateActiveAccountOwnership(ctx, tenantID, []uuid.UUID{accountID}); err != nil {
 		return nil, err
 	}
 	// 2026-09-22 服务端兜底：空链接直接拒绝，杜绝零目标任务
@@ -745,7 +762,7 @@ func (s *TaskService) CreateInviteMembers(ctx context.Context, tenantID, account
 	if err := s.checkPlanFeature(ctx, tenantID, "invite"); err != nil {
 		return nil, err
 	}
-	if err := s.validateAccountOwnership(ctx, tenantID, []uuid.UUID{accountID}); err != nil {
+	if err := s.validateActiveAccountOwnership(ctx, tenantID, []uuid.UUID{accountID}); err != nil {
 		return nil, err
 	}
 	// 目标群必须是本账号已加入的群
