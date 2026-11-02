@@ -351,6 +351,11 @@ func (s *TaskService) CreateScheduledBroadcast(ctx context.Context, tenantID uui
 	if err := s.checkPlanFeature(ctx, tenantID, "scheduled_tasks"); err != nil {
 		return nil, err
 	}
+	if isLoop {
+		if err := s.checkPlanFeature(ctx, tenantID, "loop_broadcast"); err != nil {
+			return nil, err
+		}
+	}
 	now := time.Now()
 	return s.createBroadcastWithMappingTask(ctx, tenantID, nil, accountIDs, targetIDs, message, &now, intervalMin, intervalMax, nil, domain.TaskTypeScheduledBroadcast, isLoop, loopIntervalMinutes)
 }
