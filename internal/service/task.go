@@ -588,6 +588,7 @@ func (s *TaskService) createSplitBroadcast(ctx context.Context, tenantID uuid.UU
 	if p, ok := extraPayload["priority"].(float64); ok && p >= 1 && p <= 10 {
 		priority = int(p)
 	}
+	var firstTask *domain.Task
 	for i, chunk := range chunks {
 		chunkMsgs := 0
 		for _, m := range chunk {
@@ -629,6 +630,9 @@ func (s *TaskService) createSplitBroadcast(ctx context.Context, tenantID uuid.UU
 		if err := s.repo.Create(ctx, subTask); err != nil {
 			return nil, rollback(fmt.Errorf("create sub-task %d/%d: %w", i+1, len(chunks), err))
 		}
+		if i == 0 {
+			firstTask = subTask
+		}
 		batch.SubTasks = append(batch.SubTasks, subTask.TaskID)
 		if err := s.batchRepo.UpdateSubTask(ctx, tenantID, batch.BatchID, subTask.TaskID); err != nil {
 			return nil, rollback(fmt.Errorf("register sub-task %d/%d: %w", i+1, len(chunks), err))
@@ -652,7 +656,16 @@ func (s *TaskService) createSplitBroadcast(ctx context.Context, tenantID uuid.UU
 		})
 	}
 	log.Printf("[batch] created batch %s with %d sub-tasks (%d total msgs)", batch.BatchID, len(chunks), totalMsgs)
-	return s.repo.GetByID(ctx, tenantID, batch.SubTasks[0])
+	if firstTask == nil {
+		return nil, fmt.Errorf("batch %s created without a first sub-task", batch.BatchID)
+	}
+	firstTask.ScheduledAt = scheduledAt
+	if scheduledAt == nil || !scheduledAt.After(time.Now()) {
+		firstTask.Status = domain.TaskStatusQueued
+	} else {
+		firstTask.Status = domain.TaskStatusPending
+	}
+	return firstTask, nil
 }
 
 // splitMappings splits account-target mappings into chunks where each chunk has ≤ maxMsgs messages.
