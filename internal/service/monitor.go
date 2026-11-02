@@ -26,7 +26,7 @@ func validateMonitorRule(name, ruleType string, sourceChatIDs, targetChatIDs, ke
 	default:
 		return fmt.Errorf("不支持的匹配类型: %s", matchType)
 	}
-	if len(keywords) == 0 {
+	if len(keywords) == 0 && matchType != "from_user" {
 		return fmt.Errorf("匹配关键词不能为空")
 	}
 	for _, keyword := range keywords {

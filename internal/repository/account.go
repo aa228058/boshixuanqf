@@ -202,7 +202,9 @@ func (r *AccountRepository) GetByID(ctx context.Context, tenantID, accountID uui
 	).Scan(&a.AccountID, &a.TenantID, &a.Phone, &a.SessionName, &a.Status, &a.Source, &a.Level,
 		&a.HealthScore, &a.DeviceProfile, &lastOnline, &remark, &blockedUntil, &a.CreatedAt, &a.AvatarPath, &capsRaw, &a.ProxyURL, &a.RaffleEnabled, &a.PoolStatus, &a.DC)
 	if err == nil && len(capsRaw) > 0 {
-		_ = json.Unmarshal(capsRaw, &a.Capabilities)
+		if decodeErr := json.Unmarshal(capsRaw, &a.Capabilities); decodeErr != nil {
+			return nil, fmt.Errorf("decode account capabilities: %w", decodeErr)
+		}
 	}
 	if err != nil {
 		return nil, fmt.Errorf("get account: %w", err)
@@ -601,9 +603,10 @@ func (r *AccountRepository) GetSessionProfiles(ctx context.Context, sessionNames
 	for rows.Next() {
 		var id string
 		var p SessionProfile
-		if err := rows.Scan(&id, &p.FirstName, &p.LastName, &p.Username); err == nil {
-			out[id] = &p
+		if err := rows.Scan(&id, &p.FirstName, &p.LastName, &p.Username); err != nil {
+			return nil, fmt.Errorf("scan session profile: %w", err)
 		}
+		out[id] = &p
 	}
 	return out, rows.Err()
 }
