@@ -770,8 +770,12 @@ func (s *TaskService) CreateInviteMembers(ctx context.Context, tenantID, account
 	if err != nil || target == nil {
 		return nil, fmt.Errorf("目标群不存在")
 	}
-	if !target.IsJoined {
-		return nil, fmt.Errorf("目标群尚未加入, 请先把账号拉进该群")
+	joined, err := s.groupRepo.IsJoinedByAccount(ctx, tenantID, accountID, targetGroupID)
+	if err != nil {
+		return nil, fmt.Errorf("检查目标群账号归属失败: %w", err)
+	}
+	if !joined {
+		return nil, fmt.Errorf("当前执行账号尚未加入目标群, 请先把该账号拉进群")
 	}
 	// 来源群须存在(成员在执行器里再取)
 	if _, err := s.groupRepo.GetByID(ctx, tenantID, sourceGroupID); err != nil {
