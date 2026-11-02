@@ -7,6 +7,7 @@ package grouplib
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"regexp"
 	"strings"
@@ -127,7 +128,6 @@ func (e *Engine) aggregateScrapedLinks(ctx context.Context) error {
 		if err := rows.Scan(&linkID, &url, &linkType, &title, &mc, &status, &ct); err != nil {
 			return err
 		}
-		maxT, maxID = ct, linkID
 		username := extractTmeUsername(url)
 		gt := "public"
 		if linkType == "private" {
@@ -139,9 +139,10 @@ func (e *Engine) aggregateScrapedLinks(ctx context.Context) error {
 		}
 		sg := &domain.SystemGroup{Source: "scraped", Title: firstNonEmpty(title, url), Username: username, TmeLink: url, GType: gt, MemberCount: mc, Status: st, LastSeenAt: ct}
 		if err := e.repo.Upsert(ctx, sg); err != nil {
-			log.Printf("[grouplib] scraped upsert %s: %v", url, err)
-			continue
+			log.Printf("[grouplib] scraped upsert %s: %v; cursor will retry this row", url, err)
+			break
 		}
+		maxT, maxID = ct, linkID
 		n++
 	}
 	if err := rows.Err(); err != nil {
@@ -189,7 +190,6 @@ func (e *Engine) aggregateJoinedGroups(ctx context.Context) error {
 		if ut.After(ct) {
 			ct = ut
 		}
-		maxT, maxID = ct, groupID
 		gt := "public"
 		if gtype == "channel" {
 			gt = "channel"
@@ -199,9 +199,10 @@ func (e *Engine) aggregateJoinedGroups(ctx context.Context) error {
 			TmeLink: "https://t.me/" + username, GType: gt, MemberCount: mc, Status: "joined", LastSeenAt: ct,
 		}
 		if err := e.repo.Upsert(ctx, sg); err != nil {
-			log.Printf("[grouplib] joined upsert %s: %v", username, err)
-			continue
+			log.Printf("[grouplib] joined upsert %s: %v; cursor will retry this row", username, err)
+			break
 		}
+		maxT, maxID = ct, groupID
 		n++
 	}
 	if err := rows.Err(); err != nil {
@@ -242,8 +243,13 @@ func (e *Engine) aggregateMemberBios(ctx context.Context) error {
 		if err := rows.Scan(&memberID, &bio, &ct); err != nil {
 			return err
 		}
+		processed, upsertErr := e.upsertBioLinks(ctx, bio, ct)
+		if upsertErr != nil {
+			log.Printf("[grouplib] bio upsert member=%s failed; cursor will retry this row: %v", memberID, upsertErr)
+			break
+		}
+		n += processed
 		maxT, maxID = ct, memberID
-		n += e.upsertBioLinks(ctx, bio, ct)
 	}
 	if err := rows.Err(); err != nil {
 		return err
@@ -259,7 +265,7 @@ func (e *Engine) aggregateMemberBios(ctx context.Context) error {
 	return nil
 }
 
-func (e *Engine) upsertBioLinks(ctx context.Context, bio string, seenAt time.Time) int {
+func (e *Engine) upsertBioLinks(ctx context.Context, bio string, seenAt time.Time) (int, error) {
 	n := 0
 	seen := map[string]bool{}
 	for _, m := range tmeRe.FindAllStringSubmatch(bio, -1) {
@@ -281,8 +287,7 @@ func (e *Engine) upsertBioLinks(ctx context.Context, bio string, seenAt time.Tim
 			sg.Title = "@" + key
 		}
 		if err := e.repo.Upsert(ctx, sg); err != nil {
-			log.Printf("[grouplib] bio upsert %s: %v", key, err)
-			continue
+			return n, fmt.Errorf("upsert bio link %s: %w", key, err)
 		}
 		n++
 	}
@@ -314,11 +319,11 @@ func (e *Engine) upsertBioLinks(ctx context.Context, bio string, seenAt time.Tim
 		seen[key] = true
 		sg := &domain.SystemGroup{Source: "bio", Username: key, TmeLink: "https://t.me/" + key, GType: "public", Title: "@" + key, LastSeenAt: seenAt}
 		if err := e.repo.Upsert(ctx, sg); err != nil {
-			continue
+			return n, fmt.Errorf("upsert bio username %s: %w", key, err)
 		}
 		n++
 	}
-	return n
+	return n, nil
 }
 
 // extractTmeUsername 从任意 url/文本里提取 t.me 用户名(私密链接返回空, 走 l: 链接键归并)
