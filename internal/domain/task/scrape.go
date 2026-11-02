@@ -148,8 +148,16 @@ func (e *Engine) executeScrapeMembers(ctx context.Context, task *domain.Task) {
 	// 不能用 len(allMembers) 判断成败(否则整千数会被误判为失败)。
 	totalScraped := 0
 	const memberBatchSize = 1000
+	persistedMembers := 0
+	var persistErr error
 	flushMembers := func(batch []domain.Member) {
-		if len(batch) == 0 || e.memberRepo == nil {
+		if len(batch) == 0 {
+			return
+		}
+		if e.memberRepo == nil {
+			if persistErr == nil {
+				persistErr = fmt.Errorf("member repository is not configured")
+			}
 			return
 		}
 		membersPtr := make([]*domain.Member, len(batch))
@@ -157,8 +165,13 @@ func (e *Engine) executeScrapeMembers(ctx context.Context, task *domain.Task) {
 			membersPtr[i] = &batch[i]
 		}
 		if err := e.memberRepo.BatchCreate(ctx, membersPtr); err != nil {
+			if persistErr == nil {
+				persistErr = err
+			}
 			taskLog.Printf("[task] BatchCreate members failed: %v", err)
+			return
 		}
+		persistedMembers += len(batch)
 	}
 
 	switch p := peer.(type) {
@@ -339,6 +352,26 @@ func (e *Engine) executeScrapeMembers(ctx context.Context, task *domain.Task) {
 
 	memberCount := totalScraped
 	flushMembers(allMembers)
+
+	// 不能把数据库写入失败的采集任务标成 completed；进度区分已持久化与未保存成员。
+	if persistErr != nil {
+		failedMembers := memberCount - persistedMembers
+		if failedMembers < 0 {
+			failedMembers = 0
+		}
+		finalProgress := domain.TaskProgress{
+			Total: memberCount, Done: persistedMembers, Failed: failedMembers,
+			CurrentTarget: "成员数据保存失败: " + persistErr.Error(),
+		}
+		if err := e.repo.UpdateProgressExact(ctx, task.TenantID, task.TaskID, finalProgress); err != nil {
+			taskLog.Printf("[task] UpdateProgressExact after member persistence failure: %v", err)
+		}
+		e.publishProgress(task.TenantID, task.TaskID, finalProgress)
+		if err := e.repo.UpdateStatus(ctx, task.TenantID, task.TaskID, domain.TaskStatusFailed); err != nil {
+			taskLog.Printf("[task] UpdateStatus after member persistence failure: %v", err)
+		}
+		return
+	}
 
 	if memberCount == 0 {
 		// P2-43 审计修复: 空群(0 成员)是合法采集结果——原来标 failed, 空群永远显示失败。
