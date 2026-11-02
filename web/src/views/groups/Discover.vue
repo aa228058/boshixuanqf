@@ -81,7 +81,7 @@
                 </span>
               </div>
               <div class="text-[10.5px] text-text-muted truncate mt-0.5">{{ row.tme_link || row.username }}</div>
-              <div class="text-[10.5px] text-text-muted mt-0.5">{{ Number(row.member_count).toLocaleString() }} 成员 · 热度 {{ row.heat }}</div>
+              <div class="text-[10.5px] text-text-muted mt-0.5">{{ Number(row.member_count).toLocaleString() }} 成员 · 热度 {{ row.ref_count }}</div>
             </div>
             <span v-if="row.source" class="text-[10px] text-text-muted/70 shrink-0 whitespace-nowrap">{{ sourceLabel(row.source) }}</span>
           </div>
