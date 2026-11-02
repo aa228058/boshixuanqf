@@ -705,8 +705,9 @@ func (e *Engine) extractAndSaveGroupFromUpdates(ctx context.Context, task *domai
 			title = c.Title
 			gtype = "group"
 		case *tg.Channel:
-			// Convert internal channel ID to external format (-100{channel_id})
-			chatID = -(1000000000000 + c.ID)
+			// Store the raw TL channel ID, matching InputPeerChannel.ChannelID
+			// and the IDs returned by GetDialogs/ResolvePeer throughout the app.
+			chatID = c.ID
 			title = c.Title
 			accessHash = c.AccessHash
 			if c.Megagroup {
