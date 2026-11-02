@@ -132,11 +132,7 @@ type vbutton struct {
 
 // HandleVerification 消息入口: 判定是否为验证消息, 是则启动/推进验证状态机。
 func (e *Engine) HandleVerification(ctx context.Context, client *telegram.Client, tenantID, accountID uuid.UUID, msg *tg.Message, chatID int64, chatTitle string) {
-	if e.vstates == nil || e.aiKeyProvider == nil {
-		return
-	}
-	_, _, _, enabled := e.aiKeyProvider(tenantID)
-	if !enabled {
+	if e.vstates == nil {
 		return
 	}
 	cand := extractCandidate(msg)
@@ -318,8 +314,11 @@ func (e *Engine) executeRound(ctx context.Context, client *telegram.Client, st *
 
 	// 5. 图片/GIF: AI 识别(未配置 Key 则停止并说明)
 	if cand.hasImage && len(cand.imageData) > 0 {
-		provider, key, model, _ := e.aiKeyProvider(st.tenantID)
-		if key == "" {
+		if e.aiKeyProvider == nil {
+			return fmt.Errorf("图片验证需要 AI Key(设置页免费申请)")
+		}
+		provider, key, model, enabled := e.aiKeyProvider(st.tenantID)
+		if !enabled || key == "" {
 			return fmt.Errorf("图片验证需要 AI Key(设置页免费申请)")
 		}
 		ans, err := ai.AskImage(ctx, provider, key, model, cand.imageMime, cand.imageData,
