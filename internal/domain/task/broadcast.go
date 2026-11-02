@@ -31,6 +31,18 @@ func (e *Engine) executeBroadcast(ctx context.Context, task *domain.Task) {
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Minute)
 	defer cancel()
 
+	// Status writes must survive task-context cancellation and remain lease-guarded.
+	updateOwnedStatus := func(status domain.TaskStatus) {
+		persistCtx, persistCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer persistCancel()
+		updated, err := e.repo.UpdateStatusIfOwned(persistCtx, task.TenantID, task.TaskID, e.workerID, status)
+		if err != nil {
+			taskLog.Printf("[broadcast] 更新任务状态失败 task=%s status=%s: %v", task.TaskID, status, err)
+		} else if !updated {
+			taskLog.Printf("[broadcast] 更新任务状态跳过(租约已失效) task=%s status=%s", task.TaskID, status)
+		}
+	}
+
 	// 读取任务自定义发送间隔（秒），未设置则使用全局配置
 	var taskMinInterval, taskMaxInterval int
 	if task.Payload != nil {
@@ -47,9 +59,7 @@ func (e *Engine) executeBroadcast(ctx context.Context, task *domain.Task) {
 		message = fmt.Sprint(v)
 	}
 	if message == "" {
-		if err := e.repo.UpdateStatus(ctx, task.TenantID, task.TaskID, domain.TaskStatusFailed); err != nil {
-			taskLog.Printf("[task] UpdateStatus failed: %v", err)
-		}
+		updateOwnedStatus(domain.TaskStatusFailed)
 		return
 	}
 
@@ -257,9 +267,7 @@ func (e *Engine) executeBroadcast(ctx context.Context, task *domain.Task) {
 	if ss, err := e.logRepo.HasSuccessForTargets(ctx, task.TenantID, task.TaskID, allTargets); err != nil {
 		// Fail closed: sending without the idempotency set may duplicate messages.
 		taskLog.Printf("[broadcast] 查询续发防重记录失败，终止任务 task=%s: %v", task.TaskID, err)
-		persistCtx, persistCancel := context.WithTimeout(context.Background(), 10*time.Second)
-		_ = e.repo.UpdateStatus(persistCtx, task.TenantID, task.TaskID, domain.TaskStatusFailed)
-		persistCancel()
+		updateOwnedStatus(domain.TaskStatusFailed)
 		return
 	} else {
 		successSet = ss
@@ -356,9 +364,7 @@ accountLoop:
 
 			if len(task.AccountIDs) == 0 || len(targets) == 0 {
 				taskLog.Printf("[task] broadcast task %s has empty account_ids or target_ids, marking failed", task.TaskID)
-				if err := e.repo.UpdateStatus(ctx, task.TenantID, task.TaskID, domain.TaskStatusFailed); err != nil {
-					taskLog.Printf("[task] UpdateStatus failed: %v", err)
-				}
+				updateOwnedStatus(domain.TaskStatusFailed)
 				if err := e.logRepo.Create(ctx, &domain.TaskLog{
 					TaskID:     task.TaskID,
 					TenantID:   task.TenantID,
@@ -390,9 +396,7 @@ accountLoop:
 						}
 						e.publishProgress(task.TenantID, task.TaskID, progressAccum)
 					}
-					if err := e.repo.UpdateStatus(ctx, task.TenantID, task.TaskID, domain.TaskStatusPaused); err != nil {
-						taskLog.Printf("[task] UpdateStatus failed: %v", err)
-					}
+					updateOwnedStatus(domain.TaskStatusPaused)
 					return
 				case <-ctx.Done():
 					// Flush pending progress before cancel exit
