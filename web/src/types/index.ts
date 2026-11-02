@@ -69,6 +69,7 @@ export interface Group {
   last_scraped_at?: string
   access_hash?: number
   metadata?: Record<string, unknown>
+  _joinedAccounts?: string[]
 }
 
 export interface Member {
