@@ -434,6 +434,11 @@ function assignAllToAccount(accountId: string) {
   manualAssignments.value[accountId] = [...selectedTargets.value]
 }
 watch(selectedTargets, (targets) => {
+  const uniqueTargets = [...new Set(targets.filter(Boolean))]
+  if (uniqueTargets.length !== targets.length) {
+    selectedTargets.value = uniqueTargets
+    return
+  }
   const allowed = new Set(targets)
   for (const id of execAccounts.value) {
     manualAssignments.value[id] = (manualAssignments.value[id] || []).filter(target => allowed.has(target))
