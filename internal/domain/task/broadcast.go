@@ -100,6 +100,8 @@ func (e *Engine) executeBroadcast(ctx context.Context, task *domain.Task) {
 
 	// Build account -> targets mapping
 	accountTargets := make(map[uuid.UUID][]string)
+	selectedAccounts := make(map[uuid.UUID]bool, len(task.AccountIDs))
+	for _, id := range task.AccountIDs { selectedAccounts[id] = true }
 	var total int
 
 	if mode == domain.BroadcastModeMapping {
@@ -118,7 +120,7 @@ func (e *Engine) executeBroadcast(ctx context.Context, task *domain.Task) {
 			}
 			accIDStr, _ := mMap["account_id"].(string)
 			accID, err := uuid.Parse(accIDStr)
-			if err != nil {
+			if err != nil || !selectedAccounts[accID] {
 				continue
 			}
 			targetsRaw, _ := mMap["targets"].([]any)
@@ -146,7 +148,8 @@ func (e *Engine) executeBroadcast(ctx context.Context, task *domain.Task) {
 	// 只在账号内部去重，保留不同账号向同一目标发送的笛卡尔语义。
 	// total 必须基于最终实际分配的账号-目标对计算，不能用原始 mapping 条数累加。
 	total = 0
-	for accID, targets := range accountTargets {
+	for _, accID := range task.AccountIDs {
+		targets := accountTargets[accID]
 		seen := make(map[string]bool, len(targets))
 		unique := make([]string, 0, len(targets))
 		for _, target := range targets {
