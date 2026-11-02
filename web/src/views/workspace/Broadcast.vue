@@ -54,6 +54,7 @@
                 <span v-if="t.status === 'running'" class="w-1.5 h-1.5 rounded-full bg-current dot-pulse" />
                 {{ statusLabel(t.status) }}
               </span>
+              <span class="text-[10px] px-1.5 py-0.5 rounded bg-bg-secondary text-text-secondary">{{ broadcastModeLabel(t) }}</span>
               <span class="text-xs text-text-muted truncate">目标 {{ (t.target_ids || []).length || progOf(t).total || '-' }} 个</span>
             </div>
             <span class="text-xs text-text-muted shrink-0">{{ formatTime(t.created_at) }}</span>
@@ -659,6 +660,12 @@ const statusLabelMap: Record<string, string> = {
   completed: '已完成', failed: '失败', cancelled: '已取消',
 }
 function statusLabel(s: string) { return statusLabelMap[s] || s }
+function broadcastModeLabel(task: any) {
+  const mode = task?.payload?.mode
+  if (mode === 'mapping') return '指定账号发送'
+  if (mode === 'balanced') return '自动均分群组'
+  return '全部账号都发'
+}
 function statusClass(s: string): string {
   return ({
     pending: 'bg-amber/10 text-amber', queued: 'bg-amber/10 text-amber',
