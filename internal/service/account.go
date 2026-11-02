@@ -717,21 +717,19 @@ func (s *AccountService) SetPoolStatus(ctx context.Context, tenantID, accountID 
 	if err != nil {
 		return err
 	}
-	if target == "active" && acc.PoolStatus != "active" {
-		// 转正: 启用数+1, 校验是否超套餐上限
+	maxAccounts := 0
+	if target == "active" {
+		// 与新建账号保持一致：套餐额度未设置时使用系统默认上限。
 		t, err := s.tenantRepo.GetByID(ctx, tenantID)
 		if err != nil {
 			return err
 		}
-		n, err := s.repo.CountActive(ctx, tenantID)
-		if err != nil {
-			return err
-		}
-		if t.MaxAccounts > 0 && n >= t.MaxAccounts {
-			return fmt.Errorf("套餐账号额度已满(%d/%d), 无法转正备用号; 可在管理端升级套餐或先转备用其他号", n, t.MaxAccounts)
+		maxAccounts = t.MaxAccounts
+		if maxAccounts <= 0 {
+			maxAccounts = s.cfg.MaxAccounts
 		}
 	}
-	if err := s.repo.UpdatePoolStatus(ctx, tenantID, accountID, target); err != nil {
+	if err := s.repo.UpdatePoolStatusWithLimit(ctx, tenantID, accountID, target, maxAccounts); err != nil {
 		return fmt.Errorf("切换池状态失败: %w", err)
 	}
 	if target == "standby" {
