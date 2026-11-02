@@ -303,7 +303,7 @@ func newEchoServer(cfg *config.Config, c *app.Container) *echo.Echo {
 	// 群库浏览平台共享(引流): 登录即可看; 批量加入(discover)与搜群(search)才需套餐权限
 	api.GET("/group-library", c.GroupLibraryHandler.List)
 	api.POST("/group-library/join", c.PlanChecker.RequirePlanFeature(middleware.FeatureDiscover)(c.GroupLibraryHandler.JoinSelected))
-	api.POST("/group-library/search", c.GroupLibraryHandler.Search, c.PlanChecker.RequirePlanFeature(middleware.FeatureSearch)) // 关键词搜群(借在线账号TG搜索, 入库; 套餐功能门禁)
+	api.POST("/group-library/search", c.GroupLibraryHandler.Search, c.PlanChecker.RequirePlanFeature(middleware.FeatureDiscover)) // 关键词搜群(借在线账号TG搜索, 入库; 套餐功能门禁)
 	// R116: /text-dicts 词典管理 API 七端点已删(前端词典管理 UI 消亡后零调用;
 	// 词典数据本身仍服务群发变量 {{词典名}} —— engine 直读 TextDictRepo, 不经过 HTTP 层)
 	// 入群验证: AI 配置(加密存储) + 总开关 + 验证记录
