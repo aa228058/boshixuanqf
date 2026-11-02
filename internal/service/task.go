@@ -397,12 +397,9 @@ func (s *TaskService) CreateBroadcastWithMode(ctx context.Context, tenantID uuid
 	}
 
 	// 自动均分：按目标原始顺序轮流分配，数量差最多为 1；每个目标只分配给一个账号。
-	if mode == domain.BroadcastModeBalanced {
+	if mode == domain.BroadcastModeBalanced && len(mappings) == 0 {
 		if len(accountIDs) == 0 {
 			return nil, fmt.Errorf("未选择发送账号")
-		}
-		if len(mappings) > 0 {
-			return nil, fmt.Errorf("自动均分模式不接受手动分配数据")
 		}
 		mappings = make([]domain.AccountTargetMapping, len(accountIDs))
 		for i, id := range accountIDs {
@@ -1013,7 +1010,11 @@ func (s *TaskService) Retry(ctx context.Context, tenantID, taskID uuid.UUID, sco
 			if len(filtered) == 0 {
 				return fmt.Errorf("失败目标不在原定向映射内，无法按定向续发")
 			}
-			if _, err := s.CreateBroadcastWithMapping(ctx, tenantID, filtered, nil, failed, message, nil, int(intervalMin), int(intervalMax), extra); err != nil {
+			retryMode := domain.BroadcastModeMapping
+			if originalMode, _ := task.Payload["mode"].(string); originalMode == string(domain.BroadcastModeBalanced) {
+				retryMode = domain.BroadcastModeBalanced
+			}
+			if _, err := s.CreateBroadcastWithMode(ctx, tenantID, retryMode, filtered, nil, failed, message, nil, int(intervalMin), int(intervalMax), extra); err != nil {
 				return fmt.Errorf("创建续发任务失败: %w", err)
 			}
 			return nil

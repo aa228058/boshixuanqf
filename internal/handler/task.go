@@ -427,6 +427,9 @@ func (h *TaskHandler) CreateBroadcast(c echo.Context) error {
 			mode = domain.BroadcastModeMapping
 		}
 	}
+	if mode == domain.BroadcastModeBalanced && len(req.Mappings) > 0 {
+		return echo.NewHTTPError(http.StatusBadRequest, "自动均分群组模式由系统分配，不接受手动分配")
+	}
 	var mappings []domain.AccountTargetMapping
 	if len(req.Mappings) > 0 {
 		mappings = make([]domain.AccountTargetMapping, len(req.Mappings))
