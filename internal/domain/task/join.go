@@ -501,7 +501,9 @@ func (e *Engine) syncJoinedGroups(ctx context.Context, task *domain.Task, accID 
 					case <-time.After(time.Duration(attempt) * 2 * time.Second):
 					}
 				}
-				peer, resolveErr = client.ResolvePeer(ctx, "t.me/+"+hash)
+				resolveCtx, resolveCancel := context.WithTimeout(ctx, 30*time.Second)
+				peer, resolveErr = client.ResolvePeer(resolveCtx, "t.me/+"+hash)
+				resolveCancel()
 				if resolveErr == nil {
 					break
 				}
@@ -520,7 +522,9 @@ func (e *Engine) syncJoinedGroups(ctx context.Context, task *domain.Task, accID 
 			}
 		} else {
 			// Public link: resolve to get chat ID and extract username
-			peer, err := client.ResolvePeer(ctx, link)
+			resolveCtx, resolveCancel := context.WithTimeout(ctx, 30*time.Second)
+			peer, err := client.ResolvePeer(resolveCtx, link)
+			resolveCancel()
 			if err != nil {
 				continue
 			}
@@ -554,7 +558,10 @@ func (e *Engine) syncJoinedGroups(ctx context.Context, task *domain.Task, accID 
 			fullReq := &tg.ChannelsGetFullChannelRequest{
 				Channel: &tg.InputChannel{ChannelID: chatID, AccessHash: accessHash},
 			}
-			if fullResult, err := client.Invoke(ctx, fullReq); err == nil {
+			invokeCtx, invokeCancel := context.WithTimeout(ctx, 30*time.Second)
+			fullResult, invokeErr := client.Invoke(invokeCtx, fullReq)
+			invokeCancel()
+			if invokeErr == nil {
 				if full, ok := fullResult.(*tg.MessagesChatFull); ok {
 					if _, ok := full.FullChat.(*tg.ChannelFull); ok {
 						// Title is in the Channel object, not ChannelFull
@@ -569,7 +576,10 @@ func (e *Engine) syncJoinedGroups(ctx context.Context, task *domain.Task, accID 
 			}
 		} else if gtype == "group" {
 			fullReq := &tg.MessagesGetFullChatRequest{ChatID: chatID}
-			if fullResult, err := client.Invoke(ctx, fullReq); err == nil {
+			invokeCtx, invokeCancel := context.WithTimeout(ctx, 30*time.Second)
+			fullResult, invokeErr := client.Invoke(invokeCtx, fullReq)
+			invokeCancel()
+			if invokeErr == nil {
 				if full, ok := fullResult.(*tg.MessagesChatFull); ok {
 					if _, ok := full.FullChat.(*tg.ChatFull); ok {
 						for _, chat := range full.Chats {
