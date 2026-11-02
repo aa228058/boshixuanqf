@@ -209,34 +209,32 @@ func (e *Engine) SyncJoinedGroups(ctx context.Context, tenantID, accountID uuid.
 	// 反向 diff: 分页遍历本地该账号的全部已加入群, 不在 seenIDs 里的标 left。
 	pruned := 0
 	const prunePage = 500
+	// 先完整读取，再修改 account_groups。若边分页边把 is_joined 改为 false，
+	// OFFSET 会作用于不断缩小的结果集，超过 500 个群时会跳过后半部分。
+	var localJoinedGroups []*domain.Group
 	for off := 0; ; off += prunePage {
 		localGroups, err := e.groupRepo.ListByAccount(ctx, tenantID, accountID, prunePage, off)
 		if err != nil {
 			log.Printf("[sync] prune 阶段读取本地群组失败(offset=%d): %v", off, err)
 			break
 		}
-		if len(localGroups) == 0 {
+		localJoinedGroups = append(localJoinedGroups, localGroups...)
+		if len(localGroups) < prunePage {
 			break
 		}
-		for _, lg := range localGroups {
-			if lg == nil || !lg.IsJoined {
-				continue
-			}
-			if seenIDs[lg.TGChatID] {
-				continue // 本次同步见到了, 保持已加入
-			}
-			if err := e.groupRepo.UpsertAccountGroup(ctx, accountID, lg.GroupID, false); err != nil {
-				log.Printf("[sync] prune 更新关联表失败 group=%s: %v", lg.GroupID, err)
-				continue
-			}
-			if err := e.groupRepo.RefreshJoinStatus(ctx, tenantID, lg.GroupID); err != nil {
-				log.Printf("[sync] prune 刷新群组汇总状态失败: %v", err)
-			}
-			pruned++
+	}
+	for _, lg := range localJoinedGroups {
+		if lg == nil || !lg.IsJoined || seenIDs[lg.TGChatID] {
+			continue
 		}
-		if len(localGroups) < prunePage {
-			break // 最后一页
+		if err := e.groupRepo.UpsertAccountGroup(ctx, accountID, lg.GroupID, false); err != nil {
+			log.Printf("[sync] prune 更新关联表失败 group=%s: %v", lg.GroupID, err)
+			continue
 		}
+		if err := e.groupRepo.RefreshJoinStatus(ctx, tenantID, lg.GroupID); err != nil {
+			log.Printf("[sync] prune 刷新群组汇总状态失败: %v", err)
+		}
+		pruned++
 	}
 	if pruned > 0 {
 		log.Printf("[sync] prune 完成：标记 %d 个已退出群组", pruned)
