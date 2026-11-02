@@ -405,6 +405,29 @@ accountLoop:
 				}
 			}
 
+			// Account-level failures must still create per-target logs so the tenant
+			// can see every failed destination and "retry failed" can find them.
+			recordAccountFailure := func(code, message string) {
+				now := time.Now()
+				logs := make([]*domain.TaskLog, 0, len(targets))
+				for _, targetID := range targets {
+					logs = append(logs, &domain.TaskLog{
+						LogID: uuid.New(), TaskID: task.TaskID, TenantID: task.TenantID,
+						AccountID: accID, TargetID: targetID, Action: "send_message",
+						Status: "failed", ErrorCode: code, Message: message, ExecutedAt: now,
+					})
+				}
+				mu.Lock()
+				failed += len(targets)
+				accountProgress[accID] = &domain.AccountProgress{
+					AccountID: accID, Done: 0, Failed: len(targets), Total: len(targets),
+				}
+				batchLogs = append(batchLogs, logs...)
+				pendingLogs = append(pendingLogs, logs...)
+				pendingProgress = domain.TaskProgress{Total: total, Done: done, Failed: failed}
+				mu.Unlock()
+			}
+
 			// 检查账号状态，非 ACTIVE 或已被 block 的账号跳过
 			acc, err := e.accEngine.GetByID(ctx, task.TenantID, accID)
 			if err != nil || acc == nil || (acc.Status == domain.AccountStatusBanned || acc.Status == domain.AccountStatusRestricted || acc.Status == domain.AccountStatusPendingAuth) {
@@ -413,42 +436,18 @@ accountLoop:
 					status = string(acc.Status)
 				}
 				taskLog.Printf("[task] skip account %s: status=%s (not active)", accID, status)
-				mu.Lock()
-				failed += len(targets)
-				accountProgress[accID] = &domain.AccountProgress{
-					AccountID: accID,
-					Done:      0,
-					Failed:    len(targets),
-					Total:     len(targets),
-				}
-				mu.Unlock()
+				recordAccountFailure("account_unavailable", "账号当前不可用，未向该账号分配的目标发送消息（状态："+status+"）")
 				return
 			}
 			if acc.BlockedUntil != nil && acc.BlockedUntil.After(time.Now().UTC()) {
 				taskLog.Printf("[task] skip account %s: blocked_until=%s", accID, acc.BlockedUntil.Format(time.RFC3339))
-				mu.Lock()
-				failed += len(targets)
-				accountProgress[accID] = &domain.AccountProgress{
-					AccountID: accID,
-					Done:      0,
-					Failed:    len(targets),
-					Total:     len(targets),
-				}
-				mu.Unlock()
+				recordAccountFailure("account_blocked", "账号处于冷却期，未发送该账号分配的目标")
 				return
 			}
 
 			client, err := e.accEngine.GetClient(ctx, task.TenantID, accID)
 			if err != nil {
-				mu.Lock()
-				failed += len(targets)
-				accountProgress[accID] = &domain.AccountProgress{
-					AccountID: accID,
-					Done:      0,
-					Failed:    len(targets),
-					Total:     len(targets),
-				}
-				mu.Unlock()
+				recordAccountFailure("client_unavailable", "账号客户端连接失败："+err.Error())
 				return
 			}
 			defer e.accEngine.ReleaseClient(task.TenantID, accID, client)
