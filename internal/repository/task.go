@@ -563,7 +563,8 @@ func (r *TaskRepository) RescheduleLoopTask(ctx context.Context, tenantID, taskI
 		UPDATE tasks SET status = 'pending', next_run_at = $3, scheduled_at = $3,
 		                 completed_at = NULL, locked_at = NULL, worker_id = NULL,
 		                 progress = '{"total":0,"done":0,"failed":0}'
-		WHERE tenant_id = $1 AND task_id = $2`, tenantID, taskID, nextRunAt)
+		WHERE tenant_id = $1 AND task_id = $2
+		  AND is_loop = TRUE AND status = 'completed'`, tenantID, taskID, nextRunAt)
 	return err
 }
 
