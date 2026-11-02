@@ -188,7 +188,9 @@ func (e *Engine) executeBroadcast(ctx context.Context, task *domain.Task) {
 	flushTicker := time.NewTicker(5 * time.Second)
 	defer flushTicker.Stop()
 	flushDone := make(chan struct{})
+	flushExited := make(chan struct{})
 	safego.Go(func() {
+		defer close(flushExited)
 		for {
 			select {
 			case <-flushTicker.C:
@@ -197,9 +199,11 @@ func (e *Engine) executeBroadcast(ctx context.Context, task *domain.Task) {
 					logs := batchLogs
 					batchLogs = nil
 					mu.Unlock()
-					if err := e.logRepo.CreateBatch(ctx, logs); err != nil {
+					flushCtx, flushCancel := context.WithTimeout(context.Background(), 10*time.Second)
+					if err := e.logRepo.CreateBatch(flushCtx, logs); err != nil {
 						taskLog.Printf("[task] periodic flush logs failed: %v", err)
 					}
+					flushCancel()
 				} else {
 					mu.Unlock()
 				}
@@ -399,6 +403,17 @@ accountLoop:
 
 			accDone := 0
 			accFailed := 0
+			// Record partial account progress even when pause/cancel exits this worker early.
+			defer func() {
+				mu.Lock()
+				accountProgress[accID] = &domain.AccountProgress{
+					AccountID: accID,
+					Done:      accDone,
+					Failed:    accFailed,
+					Total:     len(targets),
+				}
+				mu.Unlock()
+			}()
 			progressAccum := domain.TaskProgress{}
 			progressFlushThreshold := 10 // flush progress every N messages to reduce DB writes
 
@@ -748,18 +763,12 @@ accountLoop:
 				}
 			}
 
-			mu.Lock()
-			accountProgress[accID] = &domain.AccountProgress{
-				AccountID: accID,
-				Done:      accDone,
-				Failed:    accFailed,
-				Total:     len(targets),
-			}
-			mu.Unlock()
 		})
 	}
 	wg.Wait()
 	close(flushDone)
+	// Wait for any in-flight periodic DB flush before taking the remaining buffer.
+	<-flushExited
 	close(sseDone)
 
 	// Workers may have exited because pause/cancel cancelled ctx. Use a bounded
