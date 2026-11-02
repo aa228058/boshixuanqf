@@ -211,7 +211,7 @@ func (e *Engine) watchRaffleMessage(tenantID, accountID uuid.UUID, chatID int64,
 		}
 		// V12 审计修复: 去重 key 原来只有 prize——不同活动同奖品金额(都中 1USDT)
 		// 被误判重复而漏报。加 groupTitle 区分活动。
-		nk := tenantID.String() + ":pm:" + itoa(chatID) + ":" + groupTitle + ":" + prize
+		nk := tenantID.String() + ":pm:" + accountID.String() + ":" + itoa(chatID) + ":" + groupTitle + ":" + prize
 		w.mu.Lock()
 		if _, dup := w.notified[nk]; dup {
 			w.mu.Unlock()
