@@ -192,7 +192,9 @@ func (e *Engine) executeBroadcast(ctx context.Context, task *domain.Task) {
 	sseTicker := time.NewTicker(100 * time.Millisecond)
 	defer sseTicker.Stop()
 	sseDone := make(chan struct{})
+	sseExited := make(chan struct{})
 	safego.Go(func() {
+		defer close(sseExited)
 		for {
 			select {
 			case <-sseTicker.C:
@@ -498,12 +500,13 @@ accountLoop:
 						rawMsg = dictBag.fill(message)
 					}
 					personalizedMsg := replaceMessageVars(spintaxSpin(rawMsg), peer, targetID)
-					if obfEnabled {
-						// 混淆每条重新随机 — TG按内容查重时每条都是"不同消息"
-						if autoVary {
+					// 自动变化与消息混淆是两个独立开关，不能让前者依赖后者。
+					if autoVary {
 						personalizedMsg = autoVaryMessage(personalizedMsg)
 					}
-					personalizedMsg = obfuscateMessage(personalizedMsg)
+					if obfEnabled {
+						// 混淆每条重新随机 — TG按内容查重时每条都是"不同消息"
+						personalizedMsg = obfuscateMessage(personalizedMsg)
 					}
 					// R104+R118: 拟人化 —— 发送前模拟"正在输入..." 1~3 秒再发(风控规避,
 					// 真实用户行为: 先打字后发送, 机器人则消息凭空出现)
@@ -513,7 +516,11 @@ accountLoop:
 					} else if chatID < 0 {
 						_, _ = client.Raw().MessagesSetTyping(ctx, &tg.MessagesSetTypingRequest{Peer: &tg.InputPeerChat{ChatID: chatID}, Action: &tg.SendMessageTypingAction{}})
 					}
-					time.Sleep(time.Duration(1000+rand.IntN(2000)) * time.Millisecond)
+					select {
+					case <-ctx.Done():
+						return
+					case <-time.After(time.Duration(1000+rand.IntN(2000)) * time.Millisecond):
+					}
 
 					// R119-fix: 发送前最后一步 —— Markdown 转义兜底(此时 spintax/变量/混淆已全部解析,
 					// 转义后的 \{ \} 不再参与语法匹配, 用户写的 {你好|Hi} 能正常随机取值)
@@ -727,6 +734,7 @@ accountLoop:
 	close(flushDone)
 	<-flushExited
 	close(sseDone)
+	<-sseExited
 
 	// Final SSE flush: push any remaining pending data
 	mu.Lock()
