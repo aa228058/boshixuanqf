@@ -50,6 +50,7 @@ func (e *Engine) executeJoinGroups(ctx context.Context, task *domain.Task) {
 	total := len(task.TargetIDs)
 	done := 0
 	failed := 0
+	joinedTargets := make([]string, 0, total)
 
 	if len(task.AccountIDs) == 0 {
 		if err := e.repo.UpdateStatus(ctx, task.TenantID, task.TaskID, domain.TaskStatusFailed); err != nil {
@@ -390,6 +391,7 @@ func (e *Engine) executeJoinGroups(ctx context.Context, task *domain.Task) {
 		// Accumulate progress locally, flush at end of loop
 		progressDelta := domain.TaskProgress{Done: 0, Failed: 0, CurrentTarget: link}
 		if status == "success" {
+			joinedTargets = append(joinedTargets, link)
 			progressDelta.Done = 1
 		} else if status == "pending_approval" {
 			// pending_approval: join request sent successfully, awaiting admin approval
@@ -447,9 +449,11 @@ func (e *Engine) executeJoinGroups(ctx context.Context, task *domain.Task) {
 		}
 	}
 
-	// Sync joined groups to groups table (always try, even if already_member or failed)
-	if e.groupRepo != nil && total > 0 {
-		e.syncJoinedGroups(ctx, task, accID, client)
+	// Only links whose join operation succeeded (including already-member) may
+	// be persisted as joined. Failed and pending-approval links must not create
+	// false account-group memberships.
+	if e.groupRepo != nil && len(joinedTargets) > 0 {
+		e.syncJoinedGroups(ctx, task, accID, client, joinedTargets)
 	}
 
 	// Final persistence must survive a cancelled execution context and must not
@@ -479,8 +483,8 @@ func (e *Engine) executeJoinGroups(ctx context.Context, task *domain.Task) {
 
 // syncJoinedGroups resolves joined group info and upserts to groups table.
 // Saves access_hash for channels/supergroups to enable manual peer construction later.
-func (e *Engine) syncJoinedGroups(ctx context.Context, task *domain.Task, accID uuid.UUID, client *telegram.Client) {
-	for _, link := range task.TargetIDs {
+func (e *Engine) syncJoinedGroups(ctx context.Context, task *domain.Task, accID uuid.UUID, client *telegram.Client, targetIDs []string) {
+	for _, link := range targetIDs {
 		var chatID int64
 		var title string
 		var username string
