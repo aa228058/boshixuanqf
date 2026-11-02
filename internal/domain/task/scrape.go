@@ -20,7 +20,8 @@ import (
 
 func (e *Engine) executeScrapeMembers(ctx context.Context, task *domain.Task) {
 	// 整体超时: 8分钟, 防止TG请求石沉大海导致任务永远卡运行中
-	ctx, cancel := context.WithTimeout(ctx, 8*time.Minute)
+	parentCtx := ctx
+	ctx, cancel := context.WithTimeout(parentCtx, 8*time.Minute)
 	defer cancel()
 	taskLog.Printf("[scrape] 成员采集开始: task=%s group=%v", task.TaskID, task.TargetIDs)
 	defer func() {
@@ -164,7 +165,16 @@ func (e *Engine) executeScrapeMembers(ctx context.Context, task *domain.Task) {
 		for i := range batch {
 			membersPtr[i] = &batch[i]
 		}
-		if err := e.memberRepo.BatchCreate(ctx, membersPtr); err != nil {
+		flushCtx := ctx
+		var flushCancel context.CancelFunc
+		if ctx.Err() != nil {
+			// The scrape deadline/cancellation must not cancel persistence of already collected members.
+			flushCtx, flushCancel = context.WithTimeout(context.Background(), 15*time.Second)
+		}
+		if flushCancel != nil {
+			defer flushCancel()
+		}
+		if err := e.memberRepo.BatchCreate(flushCtx, membersPtr); err != nil {
 			if persistErr == nil {
 				persistErr = err
 			}
@@ -269,9 +279,29 @@ func (e *Engine) executeScrapeMembers(ctx context.Context, task *domain.Task) {
 				}
 				return
 			case <-ctx.Done():
-				// P2-42 审计修复: 同 stopCh——取消前 flush 剩余成员, 不丢数据
+				// 先用独立短超时 context 保存已采集成员，不能复用已取消的 ctx。
 				if len(allMembers) > 0 {
 					flushMembers(allMembers)
+				}
+				// 如果只是本函数 8 分钟采集 deadline 到期，任务仍归当前 worker，
+				// 必须落 failed，不能留下 running 等超时回收后重复采集。
+				if parentCtx.Err() == nil {
+					persistCtx, persistCancel := context.WithTimeout(context.Background(), 15*time.Second)
+					defer persistCancel()
+					failedMembers := totalScraped - persistedMembers
+					if failedMembers < 0 {
+						failedMembers = 0
+					}
+					progress := domain.TaskProgress{
+						Total: totalScraped, Done: persistedMembers, Failed: failedMembers,
+						CurrentTarget: "成员采集超时，已保存部分结果",
+					}
+					if _, err := e.repo.UpdateProgressExactIfOwned(persistCtx, task.TenantID, task.TaskID, e.workerID, progress); err != nil {
+						taskLog.Printf("[scrape] timeout progress update failed: %v", err)
+					}
+					if _, err := e.repo.UpdateStatusIfOwned(persistCtx, task.TenantID, task.TaskID, e.workerID, domain.TaskStatusFailed); err != nil {
+						taskLog.Printf("[scrape] timeout status update failed: %v", err)
+					}
 				}
 				return
 			default:
