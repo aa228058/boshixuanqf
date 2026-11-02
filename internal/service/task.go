@@ -368,30 +368,28 @@ func (s *TaskService) CreateBroadcastWithMapping(ctx context.Context, tenantID u
 			return nil, fmt.Errorf("mappings exceeds limit: %d > %d", len(mappings), maxMappings)
 		}
 
-		// Deduplicate accounts in mappings (keep first occurrence)
-		seen := make(map[uuid.UUID]bool)
-		deduped := make([]domain.AccountTargetMapping, 0, len(mappings))
+		// Merge repeated account mappings instead of silently discarding later target lists.
+		// Keep first-seen account order and first-seen target order for predictable execution.
+		accountIndex := make(map[uuid.UUID]int, len(mappings))
+		targetSeenByAccount := make(map[uuid.UUID]map[string]bool, len(mappings))
+		merged := make([]domain.AccountTargetMapping, 0, len(mappings))
 		for _, m := range mappings {
-			if seen[m.AccountID] {
-				continue
+			index, exists := accountIndex[m.AccountID]
+			if !exists {
+				index = len(merged)
+				accountIndex[m.AccountID] = index
+				merged = append(merged, domain.AccountTargetMapping{AccountID: m.AccountID})
+				targetSeenByAccount[m.AccountID] = make(map[string]bool)
 			}
-			seen[m.AccountID] = true
-			// Also deduplicate targets within each mapping
-			if len(m.Targets) > 0 {
-				targetSeen := make(map[string]bool)
-				targetDeduped := make([]string, 0, len(m.Targets))
-				for _, t := range m.Targets {
-					if targetSeen[t] {
-						continue
-					}
-					targetSeen[t] = true
-					targetDeduped = append(targetDeduped, t)
+			for _, target := range m.Targets {
+				if target == "" || targetSeenByAccount[m.AccountID][target] {
+					continue
 				}
-				m.Targets = targetDeduped
+				targetSeenByAccount[m.AccountID][target] = true
+				merged[index].Targets = append(merged[index].Targets, target)
 			}
-			deduped = append(deduped, m)
 		}
-		mappings = deduped
+		mappings = merged
 		// Mapping mode: validate and count
 		mode = domain.BroadcastModeMapping
 		allAccIDs := make([]uuid.UUID, 0, len(mappings))
@@ -403,6 +401,9 @@ func (s *TaskService) CreateBroadcastWithMapping(ctx context.Context, tenantID u
 		}
 		if err := s.validateAccountOwnership(ctx, tenantID, allAccIDs); err != nil {
 			return nil, err
+		}
+		if totalMsgs == 0 {
+			return nil, fmt.Errorf("没有可发送的目标")
 		}
 		accountIDs = allAccIDs
 		targetIDs = allTargetIDs
