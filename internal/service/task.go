@@ -221,7 +221,8 @@ func (s *TaskService) checkPlanFeature(ctx context.Context, tenantID uuid.UUID, 
 	if plan == nil {
 		return fmt.Errorf("租户套餐不存在或已失效")
 	}
-	if v, ok := plan.FeatureMap()[feature]; !ok || !v {
+	enabled, ok := plan.FeatureMap()[feature].(bool)
+	if !ok || !enabled {
 		return fmt.Errorf("当前套餐不含此功能(%s), 升级套餐后可用", feature)
 	}
 	return nil
