@@ -116,8 +116,14 @@
           </div>
         </div>
         <TargetSelector v-model="showTargetSelector" :groups="groups" :accountId="currentAccount?.account_id" @select="selectedTargets = $event" @refresh="onSelectorRefresh" />
-        <!-- R101 P1: 执行账号多选(后端笛卡尔模式: 每账号×全目标) -->
-        <label class="block text-sm font-medium mb-2 mt-4">执行账号（可多选）</label>
+        <!-- 当前页面使用全部账号群发模式；后续扩展为可选择的分配模式 -->
+        <div class="mt-4 mb-3 rounded-lg border border-cyan/20 bg-cyan/5 p-3">
+          <div class="text-sm font-semibold text-cyan">群发方式：全部账号群发</div>
+          <p class="text-xs text-text-secondary mt-1 leading-relaxed">
+            每个已选账号都会向全部已选群组发送消息；同一个群组会由每个账号分别发送一次。
+          </p>
+        </div>
+        <label class="block text-sm font-medium mb-2">执行账号（可多选）</label>
         <div class="flex flex-wrap gap-1.5">
           <button v-for="acc in onlineAccounts" :key="acc.account_id" type="button" @click="toggleExec(acc.account_id)"
                   class="px-2.5 py-1.5 rounded-lg text-xs border transition-colors whitespace-nowrap"
