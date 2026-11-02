@@ -608,7 +608,28 @@ func (e *Engine) syncJoinedGroups(ctx context.Context, task *domain.Task, accID 
 				log.Printf("[join] 创建群组失败: %v", err)
 			}
 		}
+		if len(task.AccountIDs) > 0 {
+			if saved, getErr := e.groupRepo.GetByTGChatID(ctx, task.TenantID, chatID); getErr == nil && saved != nil {
+				if err := e.associateJoinedGroup(ctx, task.TenantID, task.AccountIDs[0], saved.GroupID); err != nil {
+					log.Printf("[join] 关联私有群到账号失败: %v", err)
+				}
+			}
+		}
 	}
+}
+
+// associateJoinedGroup persists per-account membership after a successful join.
+func (e *Engine) associateJoinedGroup(ctx context.Context, tenantID, accountID, groupID uuid.UUID) error {
+	if e.groupRepo == nil {
+		return fmt.Errorf("group repository is not configured")
+	}
+	if err := e.groupRepo.UpsertAccountGroup(ctx, accountID, groupID, true); err != nil {
+		return fmt.Errorf("upsert account-group relation: %w", err)
+	}
+	if err := e.groupRepo.RefreshJoinStatus(ctx, tenantID, groupID); err != nil {
+		return fmt.Errorf("refresh tenant group join status: %w", err)
+	}
+	return nil
 }
 
 // extractAndSaveGroupFromUpdates extracts group info from Updates (ImportChatInvite result)
