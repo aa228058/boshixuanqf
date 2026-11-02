@@ -453,24 +453,14 @@ func (s *TaskService) createBroadcastWithMappingTask(ctx context.Context, tenant
 		return nil, fmt.Errorf("群发目标不能为空")
 	}
 
-	// 套餐日额度：配置读取或计数失败必须阻断，不能在数据库异常时绕过限额。
-	if s.planLimits == nil {
-		return nil, fmt.Errorf("套餐日额度服务未就绪")
-	}
-	dailyCap, _, err := s.planLimits.GetPlanLimits(ctx, tenantID)
-	if err != nil {
-		return nil, fmt.Errorf("读取套餐日额度失败: %w", err)
-	}
-	if dailyCap > 0 {
-		_, allowed, err := s.planLimits.TryAddDailyUsage(ctx, tenantID, repository.KindBroadcastMsgs, totalMsgs, dailyCap)
-		if err != nil {
-			return nil, fmt.Errorf("检查群发日额度失败: %w", err)
-		}
-		if !allowed {
-			return nil, fmt.Errorf("今日群发额度已用完(体验版 %d 条/天), 请升级套餐", dailyCap)
+	// 套餐日额度(051): 免费体验版限 50 条/天, 原子计数防并发超发; 付费档 0=不限
+	if s.planLimits != nil {
+		if dailyCap, _, err := s.planLimits.GetPlanLimits(ctx, tenantID); err == nil && dailyCap > 0 {
+			if used, err := s.planLimits.AddDailyUsage(ctx, tenantID, repository.KindBroadcastMsgs, totalMsgs); err == nil && used > dailyCap {
+				return nil, fmt.Errorf("今日群发额度已用完(体验版 %d 条/天, 已用 %d), 升级套餐不限量", dailyCap, used)
+			}
 		}
 	}
-
 	// Auto-split: if total messages exceed threshold, split into multiple sub-tasks
 	maxMsgsPerTask := s.cfg.MaxMsgsPerTask
 	if mode == domain.BroadcastModeMapping && totalMsgs > maxMsgsPerTask {
