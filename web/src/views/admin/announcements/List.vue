@@ -141,7 +141,14 @@ function editAnnouncement(a: Announcement) {
   editId.value = a.announcement_id
   // P1-26: 原裸 spread——老数据缺 priority/target_type 时编辑保存会丢字段。
   // 默认值先铺底再覆盖。
-  form.value = { title: '', content: '', priority: 'normal', target_type: 'all', target_plans: [], ...a }
+  form.value = {
+    ...a,
+    title: a.title || '',
+    content: a.content || '',
+    priority: a.priority || 'normal',
+    target_type: a.target_type || 'all',
+    target_plans: a.target_plans || [],
+  }
   showCreate.value = true
 }
 
