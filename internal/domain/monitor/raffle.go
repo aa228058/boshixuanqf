@@ -1,6 +1,7 @@
 package monitor
 
 import (
+	"errors"
 	"context"
 	"log"
 	"math/rand/v2"
@@ -480,7 +481,7 @@ func (e *Engine) sendRaffleReply(ctx context.Context, cl *telegram.Client, chatI
 func (e *Engine) joinRaffle(ctx context.Context, cl *telegram.Client, chatID int64, keyword string) error {
 	peer := e.resolveGroupPeer(ctx, cl, chatID)
 	if peer == nil {
-		return nil // 私聊不参与
+		return errors.New("无法解析抽奖群组，未发送参与关键词")
 	}
 
 	// 拟人延迟 2~6 秒
