@@ -87,7 +87,23 @@ func (r *GroupRepository) UpsertAccountGroup(ctx context.Context, accountID, gro
 	return err
 }
 
-// GetByID retrieves a group by ID.
+// IsJoinedByAccount checks the per-account association, not groups.is_joined.
+ // A tenant-level group may be joined by one account and absent from another.
+ func (r *GroupRepository) IsJoinedByAccount(ctx context.Context, tenantID, accountID, groupID uuid.UUID) (bool, error) {
+ 	var joined bool
+ 	err := r.db.QueryRow(ctx, `
+ 		SELECT COALESCE(ag.is_joined, FALSE)
+ 		FROM groups g
+ 		LEFT JOIN account_groups ag ON ag.group_id = g.group_id AND ag.account_id = $2
+ 		WHERE g.tenant_id = $1 AND g.group_id = $3`,
+ 		tenantID, accountID, groupID).Scan(&joined)
+ 	if err != nil {
+ 		return false, fmt.Errorf("check account group membership: %w", err)
+ 	}
+ 	return joined, nil
+ }
+
+ // GetByID retrieves a group by ID.
 func (r *GroupRepository) GetByID(ctx context.Context, tenantID, groupID uuid.UUID) (*domain.Group, error) {
 	var g domain.Group
 	err := r.db.QueryRow(ctx, `
