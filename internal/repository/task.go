@@ -590,10 +590,11 @@ func (r *TaskRepository) StopLoop(ctx context.Context, tenantID, taskID uuid.UUI
 	return err
 }
 
-// StopLoopIfCurrent disables a non-running loop only if its status has not changed.
+// StopLoopIfCurrent pauses a waiting loop only if its status has not changed.
+// Keep is_loop intact so Resume can continue the recurring schedule.
 func (r *TaskRepository) StopLoopIfCurrent(ctx context.Context, tenantID, taskID uuid.UUID, expected domain.TaskStatus) error {
 	res, err := r.db.Exec(ctx, `
-		UPDATE tasks SET is_loop = FALSE, status = 'paused', locked_at = NULL, worker_id = NULL
+		UPDATE tasks SET status = 'paused', locked_at = NULL, worker_id = NULL
 		WHERE tenant_id = $1 AND task_id = $2 AND status = $3`, tenantID, taskID, expected)
 	if err != nil {
 		return err
