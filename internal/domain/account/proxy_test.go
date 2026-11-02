@@ -5,7 +5,6 @@ import (
 	"errors"
 	"net"
 	"testing"
-	"time"
 
 	"golang.org/x/net/proxy"
 )
@@ -38,13 +37,12 @@ func TestDialProxyContextHonorsCancellation(t *testing.T) {
 	}
 }
 
-func TestDialProxyContextRejectsNonContextDialer(t *testing.T) {
-	var d proxy.Dialer = proxy.Direct
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-	defer cancel()
-
-	_, err := dialProxyContext(ctx, d, "tcp", "example.com:443")
-	if err == nil {
-		t.Fatal("expected unsupported context dialer error")
+func TestProxyDialerSupportsContext(t *testing.T) {
+	d, err := ProxyDialer("socks5://127.0.0.1:1080")
+	if err != nil {
+		t.Fatalf("create SOCKS5 dialer: %v", err)
+	}
+	if _, ok := d.(proxy.ContextDialer); !ok {
+		t.Fatal("SOCKS5 dialer does not implement proxy.ContextDialer")
 	}
 }

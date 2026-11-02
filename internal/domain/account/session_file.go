@@ -7,8 +7,8 @@ import (
 	"io"
 	"os"
 
-	_ "modernc.org/sqlite"
 	"github.com/mtgo-labs/storage"
+	_ "modernc.org/sqlite"
 )
 
 const maxTelethonSessionFileSize = 10 << 20 // 与账号会话上传入口的 10MB 限制保持一致。
