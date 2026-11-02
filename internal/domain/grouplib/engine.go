@@ -133,7 +133,7 @@ func (e *Engine) aggregateScrapedLinks(ctx context.Context) error {
 		if status == "joined" {
 			st = "joined"
 		}
-		sg := &domain.SystemGroup{Source: "scraped", Title: firstNonEmpty(title, url), Username: username, TmeLink: url, GType: gt, MemberCount: mc, Status: st}
+		sg := &domain.SystemGroup{Source: "scraped", Title: firstNonEmpty(title, url), Username: username, TmeLink: url, GType: gt, MemberCount: mc, Status: st, LastSeenAt: ct}
 		if err := e.repo.Upsert(ctx, sg); err != nil {
 			log.Printf("[grouplib] scraped upsert %s: %v", url, err)
 			continue
@@ -195,7 +195,7 @@ func (e *Engine) aggregateJoinedGroups(ctx context.Context) error {
 		}
 		sg := &domain.SystemGroup{
 			Source: "joined", Title: firstNonEmpty(title, "@"+username), Username: username,
-			TmeLink: "https://t.me/" + username, GType: gt, MemberCount: mc, Status: "joined",
+			TmeLink: "https://t.me/" + username, GType: gt, MemberCount: mc, Status: "joined", LastSeenAt: ct,
 		}
 		if err := e.repo.Upsert(ctx, sg); err != nil {
 			log.Printf("[grouplib] joined upsert %s: %v", username, err)
@@ -242,7 +242,7 @@ func (e *Engine) aggregateMemberBios(ctx context.Context) error {
 		if ct.After(maxT) {
 			maxT = ct
 		}
-		n += e.upsertBioLinks(ctx, bio)
+		n += e.upsertBioLinks(ctx, bio, ct)
 	}
 	if err := rows.Err(); err != nil {
 		return err
@@ -258,7 +258,7 @@ func (e *Engine) aggregateMemberBios(ctx context.Context) error {
 	return nil
 }
 
-func (e *Engine) upsertBioLinks(ctx context.Context, bio string) int {
+func (e *Engine) upsertBioLinks(ctx context.Context, bio string, seenAt time.Time) int {
 	n := 0
 	seen := map[string]bool{}
 	for _, m := range tmeRe.FindAllStringSubmatch(bio, -1) {
@@ -311,7 +311,7 @@ func (e *Engine) upsertBioLinks(ctx context.Context, bio string) int {
 			continue
 		}
 		seen[key] = true
-		sg := &domain.SystemGroup{Source: "bio", Username: key, TmeLink: "https://t.me/" + key, GType: "public", Title: "@" + key}
+		sg := &domain.SystemGroup{Source: "bio", Username: key, TmeLink: "https://t.me/" + key, GType: "public", Title: "@" + key, LastSeenAt: seenAt}
 		if err := e.repo.Upsert(ctx, sg); err != nil {
 			continue
 		}
