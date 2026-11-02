@@ -229,18 +229,8 @@ func (e *Engine) executeBroadcast(ctx context.Context, task *domain.Task) {
 	semaphore := make(chan struct{}, maxConcurrentAccounts)
 	var wg sync.WaitGroup
 
-	// Deduplicate targets globally to prevent multiple accounts sending to the same target
-	seenTargets := make(map[string]bool)
-	for accID := range accountTargets {
-		unique := make([]string, 0, len(accountTargets[accID]))
-		for _, t := range accountTargets[accID] {
-			if !seenTargets[t] {
-				seenTargets[t] = true
-				unique = append(unique, t)
-			}
-		}
-		accountTargets[accID] = unique
-	}
+	// 保留账号之间的重复目标：笛卡尔模式语义是每个账号都向每个目标发送。
+	// mapping 模式的目标归属也必须严格按账号隔离。
 
 	// P1-47 审计修复: 续传防重原先是每目标一次 count(*) 查询(N+1), 上千目标时
 	// 拖慢发送循环。这里在 worker 扇出前一次性批量查回成功目标集; 运行期新成功
@@ -262,6 +252,7 @@ func (e *Engine) executeBroadcast(ctx context.Context, task *domain.Task) {
 		successSet = ss
 	}
 
+accountLoop:
 	for _, accID := range task.AccountIDs {
 		targets := accountTargets[accID]
 		if len(targets) == 0 {
@@ -275,7 +266,10 @@ func (e *Engine) executeBroadcast(ctx context.Context, task *domain.Task) {
 		case semaphore <- struct{}{}:
 		case <-ctx.Done():
 			wg.Done()
-			break
+			break accountLoop
+		case <-e.stopCh:
+			wg.Done()
+			break accountLoop
 		}
 		safego.Go(func() {
 			// 群名映射: 日志里显示群名而不是 ID
@@ -409,9 +403,13 @@ func (e *Engine) executeBroadcast(ctx context.Context, task *domain.Task) {
 				// P0-12: 按 (账号,目标) 复合键查——按目标全局去重会把 cartesian 模式压成单账号发送
 				mu.Lock()
 				alreadySent := successSet[accID.String()+"|"+targetID]
-				mu.Unlock()
 				if alreadySent {
 					accDone++
+					done++
+					progressAccum.Done++
+				}
+				mu.Unlock()
+				if alreadySent {
 					continue
 				}
 
@@ -462,26 +460,27 @@ func (e *Engine) executeBroadcast(ctx context.Context, task *domain.Task) {
 					if resolveErr != nil {
 						status = "failed"
 						errCode = "resolve_peer_failed"
-						accFailed++
 						e.recordRiskEvent(ctx, task.TenantID, accID, "broadcast_fail", "medium", errCode)
-						taskLog.Printf("[broadcast] target %s resolve failed for account %s: %s (target may be invalid or account restricted)\n",
+						taskLog.Printf("[broadcast] target %s resolve failed for account %s: %s (target may be invalid or account restricted)\\n",
 							targetID, accID, resolveErr.Error())
-						continue
-					}
-					switch p := peer.(type) {
-					case *tg.InputPeerUser:
-						chatID = p.UserID
-					case *tg.InputPeerChat:
-						chatID = p.ChatID
-					case *tg.InputPeerChannel:
-						chatID = p.ChannelID
+					} else {
+						switch p := peer.(type) {
+						case *tg.InputPeerUser:
+							chatID = p.UserID
+						case *tg.InputPeerChat:
+							chatID = p.ChatID
+						case *tg.InputPeerChannel:
+							chatID = p.ChannelID
+						}
 					}
 				}
 				if chatID == 0 {
-					status = "failed"
-					errCode = "unsupported peer type"
-					accFailed++
-					e.recordRiskEvent(ctx, task.TenantID, accID, "broadcast_fail", "medium", errCode)
+					if status == "success" {
+						status = "failed"
+						errCode = "unsupported peer type"
+						accFailed++
+						e.recordRiskEvent(ctx, task.TenantID, accID, "broadcast_fail", "medium", errCode)
+					}
 				} else {
 					// Replace template variables with target info before sending
 					// 先 spintax 随机语法(每个目标独立), 再变量替换
