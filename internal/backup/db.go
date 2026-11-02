@@ -72,13 +72,16 @@ func runDBDump(cfg *config.Config, dir string) error {
 	name := fmt.Sprintf("db_%s.sql.gz", time.Now().Format("20060102_150405"))
 	path := filepath.Join(dir, name)
 
+	// #nosec G703 -- dir is administrator-configured; name is generated internally.
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
 	if err != nil {
 		return fmt.Errorf("create backup file: %w", err)
 	}
+	// #nosec G703 -- same trusted backup directory and generated filename as above.
 	stderr, err := os.OpenFile(path+".err", os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
 	if err != nil {
 		_ = f.Close()
+		// #nosec G703 -- path is the internally generated backup file in the configured backup directory.
 		_ = os.Remove(path)
 		return fmt.Errorf("create pg_dump error log: %w", err)
 	}
@@ -106,11 +109,13 @@ func runDBDump(cfg *config.Config, dir string) error {
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		_, _, _ = closeFiles()
+		// #nosec G703 -- path is the internally generated backup file in the configured backup directory.
 		_ = os.Remove(path)
 		return fmt.Errorf("stdout pipe: %w", err)
 	}
 	if err := cmd.Start(); err != nil {
 		_, _, _ = closeFiles()
+		// #nosec G703 -- path is the internally generated backup file in the configured backup directory.
 		_ = os.Remove(path)
 		return fmt.Errorf("pg_dump start: %w", err)
 	}
@@ -122,29 +127,35 @@ func runDBDump(cfg *config.Config, dir string) error {
 	waitErr := cmd.Wait()
 	gzipErr, fileErr, stderrErr := closeFiles()
 	if copyErr != nil {
+		// #nosec G703 -- path is the internally generated backup file in the configured backup directory.
 		_ = os.Remove(path)
 		return fmt.Errorf("copy dump: %w", copyErr)
 	}
 	if waitErr != nil {
+		// #nosec G703 -- path is the internally generated backup file in the configured backup directory.
 		_ = os.Remove(path)
 		return fmt.Errorf("pg_dump exit: %w (详见 %s)", waitErr, path+".err")
 	}
 	if gzipErr != nil {
+		// #nosec G703 -- path is the internally generated backup file in the configured backup directory.
 		_ = os.Remove(path)
 		return fmt.Errorf("finalize compressed backup: %w", gzipErr)
 	}
 	if fileErr != nil {
+		// #nosec G703 -- path is the internally generated backup file in the configured backup directory.
 		_ = os.Remove(path)
 		return fmt.Errorf("close backup file: %w", fileErr)
 	}
 	if stderrErr != nil {
+		// #nosec G703 -- path is the internally generated backup file in the configured backup directory.
 		_ = os.Remove(path)
 		return fmt.Errorf("close pg_dump error log: %w", stderrErr)
 	}
+	// #nosec G703 -- path is the internally generated backup file in the configured backup directory.
 	if err := os.Remove(path + ".err"); err != nil && !os.IsNotExist(err) {
-		log.Printf("[db-backup] 删除临时错误日志失败 %s: %v", path+".err", err)
+		log.Printf("[db-backup] 删除临时错误日志失败: %v", err)
 	}
-	log.Printf("[db-backup] 备份完成: %s", path)
+	log.Printf("[db-backup] 备份完成")
 	return nil
 }
 
@@ -186,7 +197,7 @@ func pruneOldDBBackups(dir string, keep int) {
 	sort.Strings(matches)
 	for _, old := range matches[:len(matches)-keep] {
 		if err := os.Remove(old); err == nil {
-			log.Printf("[db-backup] 清理旧备份: %s", old)
+			log.Printf("[db-backup] 清理旧备份文件")
 		}
 		_ = os.Remove(old + ".err")
 	}

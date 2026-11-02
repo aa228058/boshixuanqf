@@ -683,7 +683,7 @@ func getInt32Fallback(key, fallbackKey string, defaultVal int32) int32 {
 		if n, ok := parse(value); ok {
 			return n
 		}
-		log.Printf("[config] 警告：%s=%q 超出 int32 范围或无效，使用默认值 %d", key, value, defaultVal)
+		log.Printf("[config] 警告：32 位整数配置无效或超出范围，使用默认值 %d", defaultVal)
 		return defaultVal
 	}
 	if fallbackKey != "" {
@@ -691,7 +691,7 @@ func getInt32Fallback(key, fallbackKey string, defaultVal int32) int32 {
 			if n, ok := parse(value); ok {
 				return n
 			}
-			log.Printf("[config] 警告：%s=%q 超出 int32 范围或无效，使用默认值 %d", fallbackKey, value, defaultVal)
+			log.Printf("[config] 警告：备用 32 位整数配置无效或超出范围，使用默认值 %d", defaultVal)
 		}
 	}
 	return defaultVal

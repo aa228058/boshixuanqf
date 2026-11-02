@@ -755,8 +755,12 @@ accountLoop:
 					accum := progressAccum
 					progressAccum = domain.TaskProgress{} // reset
 					mu.Unlock()
-					if err := e.repo.UpdateProgress(ctx, task.TenantID, task.TaskID, accum); err != nil {
+					updated, err := e.repo.UpdateProgressIfOwned(ctx, task.TenantID, task.TaskID, e.workerID, accum)
+					if err != nil {
 						taskLog.Printf("progress update failed: %v\n", err)
+					} else if !updated {
+						taskLog.Printf("[broadcast] 进度刷新时已失去任务租约，停止当前账号 worker task=%s", task.TaskID)
+						return
 					}
 				}
 				// Use account's actual level for send interval (循环外已查好 accLevel)

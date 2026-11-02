@@ -327,6 +327,26 @@ func (r *TaskRepository) CountOwnedAccounts(ctx context.Context, tenantID uuid.U
 	return n, rows.Err()
 }
 
+// UpdateProgressIfOwned increments progress only while this worker still owns
+// the running task lease. The ownership predicate is checked atomically by SQL.
+func (r *TaskRepository) UpdateProgressIfOwned(ctx context.Context, tenantID, taskID uuid.UUID, workerID string, progress domain.TaskProgress) (bool, error) {
+	res, err := r.db.Exec(ctx, `
+		UPDATE tasks
+		SET progress = jsonb_set(
+			jsonb_set(
+				jsonb_set(progress, '{done}', to_jsonb(COALESCE((progress->>'done')::int, 0) + $4)),
+				'{failed}', to_jsonb(COALESCE((progress->>'failed')::int, 0) + $5)
+			),
+			'{current_target}', to_jsonb($6::text)
+		)
+		WHERE tenant_id = $1 AND task_id = $2 AND status = 'running' AND worker_id = $3`,
+		tenantID, taskID, workerID, progress.Done, progress.Failed, progress.CurrentTarget)
+	if err != nil {
+		return false, err
+	}
+	return res.RowsAffected() == 1, nil
+}
+
 // UpdateProgress atomically increments task progress counters.
 // Uses row-level locking to prevent concurrent updates from overwriting each other.
 func (r *TaskRepository) UpdateProgress(ctx context.Context, tenantID, taskID uuid.UUID, progress domain.TaskProgress) error {
