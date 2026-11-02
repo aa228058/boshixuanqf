@@ -227,7 +227,7 @@ func (e *Engine) aggregateMemberBios(ctx context.Context) error {
 	rows, err := e.pool.Query(ctx, `
 		SELECT member_id, bio, scraped_at FROM members
 		WHERE (scraped_at, member_id) > ($1, $2) AND bio IS NOT NULL AND bio <> ''
-		  AND (bio ILIKE '%t.me%' OR bio ILIKE '%telegram%')
+		  AND (bio ILIKE '%t.me%' OR bio ILIKE '%telegram%' OR bio ILIKE '%@%')
 		ORDER BY scraped_at ASC, member_id ASC LIMIT 5000`, wm, wmID)
 	if err != nil {
 		return err
