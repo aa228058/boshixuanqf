@@ -329,6 +329,19 @@ accountLoop:
 		}
 		wg.Add(1)
 		safego.Go(func() {
+			nextTargetIndex := 0
+			var recordPanicRemainder func()
+			defer func() {
+				if recovered := recover(); recovered != nil {
+					taskLog.Printf("[task] broadcast panic for account %s: %v\n%s", accID, recovered, debug.Stack())
+					if recordPanicRemainder != nil {
+						recordPanicRemainder()
+					}
+				}
+			}()
+			defer wg.Done()
+			defer func() { <-semaphore }()
+
 			// 群名映射: 日志里显示群名而不是 ID
 			titleByChatID := map[int64]string{}
 			if gl, err := e.groupRepo.ListByAccount(ctx, task.TenantID, accID, 1000, 0); err == nil {
@@ -343,14 +356,8 @@ accountLoop:
 			if cn, err := e.memberRepo.ListContactsByAccount(ctx, task.TenantID, accID); err == nil {
 				contactNameByID = cn
 			}
-			defer func() {
-				if r := recover(); r != nil {
-					taskLog.Printf("[task] broadcast panic for account %s: %v\n%s", accID, r, debug.Stack())
-				}
-			}()
-			defer wg.Done()
-			defer func() { <-semaphore }()
-
+			accDone := 0
+			accFailed := 0
 			recordAccountFailure := func(code, message string) {
 				now := time.Now()
 				mu.Lock()
@@ -369,6 +376,34 @@ accountLoop:
 					AccountID: accID, Done: 0, Failed: len(targets), Total: len(targets),
 				}
 				mu.Unlock()
+				nextTargetIndex = len(targets)
+			}
+
+			recordPanicRemainder = func() {
+				start := nextTargetIndex
+				now := time.Now()
+				mu.Lock()
+				for _, targetID := range targets[start:] {
+					tl := &domain.TaskLog{
+						LogID: uuid.New(), TaskID: task.TaskID, TenantID: task.TenantID,
+						AccountID: accID, TargetID: targetID, Action: "send_message",
+						Status: "failed", ErrorCode: "account_worker_panic",
+						Message: "账号执行异常，当前及剩余目标未能确认发送结果", ExecutedAt: now,
+					}
+					batchLogs = append(batchLogs, tl)
+					pendingLogs = append(pendingLogs, tl)
+				}
+				failed += len(targets) - start
+				doneForAccount := accDone
+				if doneForAccount > start {
+					doneForAccount = start
+				}
+				accountProgress[accID] = &domain.AccountProgress{
+					AccountID: accID, Done: doneForAccount, Failed: len(targets) - start, Total: len(targets),
+				}
+				pendingProgress = domain.TaskProgress{Total: total, Done: done, Failed: failed}
+				mu.Unlock()
+				nextTargetIndex = len(targets)
 			}
 
 			// 检查账号状态，非 ACTIVE 或已被 block 的账号跳过
@@ -419,8 +454,6 @@ accountLoop:
 				return
 			}
 
-			accDone := 0
-			accFailed := 0
 			progressAccum := domain.TaskProgress{}
 			progressFlushThreshold := 10 // flush progress every N messages to reduce DB writes
 
@@ -455,6 +488,7 @@ accountLoop:
 					progressAccum.Total++
 					progressAccum.CurrentTarget = targetID
 					mu.Unlock()
+					nextTargetIndex = i + 1
 					continue
 				}
 
@@ -697,6 +731,7 @@ accountLoop:
 					successSet[accID.String()+"|"+targetID] = true
 				}
 				mu.Unlock()
+				nextTargetIndex = i + 1
 
 				// Throttled SSE: accumulate into pending buffer, flushed by aggregator goroutine
 				// Prevents memory explosion from per-message SSE channel writes
