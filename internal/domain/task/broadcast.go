@@ -791,14 +791,33 @@ accountLoop:
 	}
 	e.publishProgress(task.TenantID, task.TaskID, finalProgress)
 
+	// 不允许群发收尾覆盖用户取消/暂停的状态。
+	stateCtx, stateCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	freshTask, stateErr := e.repo.GetByID(stateCtx, task.TenantID, task.TaskID)
+	stateCancel()
+	if stateErr != nil || freshTask == nil {
+		taskLog.Printf("[broadcast] 收尾时无法确认任务状态 task=%s err=%v；不写入 completed", task.TaskID, stateErr)
+		return
+	}
+	if freshTask.Status == domain.TaskStatusCancelled || freshTask.Status == domain.TaskStatusPaused {
+		return
+	}
+	finalStatus := domain.TaskStatusCompleted
 	if failed == total && total > 0 {
-		if err := e.repo.UpdateStatus(ctx, task.TenantID, task.TaskID, domain.TaskStatusFailed); err != nil {
-			taskLog.Printf("[task] UpdateStatus failed: %v", err)
+		finalStatus = domain.TaskStatusFailed
+	}
+	if ctx.Err() != nil {
+		select {
+		case <-e.stopCh:
+			finalStatus = domain.TaskStatusPaused
+		default:
+			finalStatus = domain.TaskStatusFailed
 		}
-	} else {
-		if err := e.repo.UpdateStatus(ctx, task.TenantID, task.TaskID, domain.TaskStatusCompleted); err != nil {
-			taskLog.Printf("[task] UpdateStatus failed: %v", err)
-		}
+	}
+	statusCtx, statusCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer statusCancel()
+	if err := e.repo.UpdateStatus(statusCtx, task.TenantID, task.TaskID, finalStatus); err != nil {
+		taskLog.Printf("[task] UpdateStatus failed: %v", err)
 	}
 }
 
