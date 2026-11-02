@@ -749,7 +749,7 @@ func (e *Engine) runTask(ctx context.Context, task *domain.Task) {
 			}
 		}()
 
-		// Create a cancellable context for this specific task
+		// Create a cancellable context for this specific task.
 		taskCtx, cancel := context.WithCancel(ctx)
 		e.taskCtxs.Store(taskKey, cancel)
 		defer func() {
@@ -757,14 +757,57 @@ func (e *Engine) runTask(ctx context.Context, task *domain.Task) {
 			e.taskCtxs.Delete(taskKey)
 		}()
 
-		// Check if task was cancelled before starting
+		// Check if task was cancelled before starting.
 		freshTask, err := e.repo.GetByID(ctx, task.TenantID, task.TaskID)
 		if err == nil && freshTask.Status == domain.TaskStatusCancelled {
 			return
 		}
 
+		// Renew the DB lease while executing. Without this heartbeat, a healthy
+		// long-running broadcast can be reclaimed by another process after the
+		// fixed lock timeout and send the same targets concurrently.
+		leaseDone := make(chan struct{})
+		go e.renewTaskLease(taskCtx, task, cancel, leaseDone)
+		defer func() { <-leaseDone }()
+
 		e.executeTask(taskCtx, task)
 	})
+}
+
+// renewTaskLease keeps a claimed task's lock alive and cancels execution if ownership is lost.
+func (e *Engine) renewTaskLease(ctx context.Context, task *domain.Task, cancel context.CancelFunc, done chan<- struct{}) {
+	defer close(done)
+	lockTimeout := time.Duration(e.cfg.TaskLockTimeoutMin) * time.Minute
+	if lockTimeout <= 0 {
+		lockTimeout = 40 * time.Minute
+	}
+	interval := lockTimeout / 3
+	if interval < time.Second {
+		interval = time.Second
+	}
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			renewCtx, renewCancel := context.WithTimeout(ctx, 10*time.Second)
+			owned, err := e.repo.RefreshTaskLock(renewCtx, task.TenantID, task.TaskID, e.workerID)
+			renewCancel()
+			if err != nil {
+				taskLog.Printf("[task] lease renewal failed task=%s: %v; stopping worker to avoid duplicate execution", task.TaskID, err)
+				cancel()
+				return
+			}
+			if !owned {
+				taskLog.Printf("[task] lease ownership lost task=%s; stopping stale worker", task.TaskID)
+				cancel()
+				return
+			}
+		}
+	}
 }
 
 // CancelTask cancels a running task by its ID.
