@@ -227,20 +227,29 @@ func (h *AIConfigHandler) RaffleToggle(c echo.Context) error {
 		return err
 	}
 	ctx := c.Request().Context()
-	current, _ := h.tenantRepo.IsRaffleEnabled(ctx, tenantID)
-	next := !current
-	if c.Request().Body != nil {
-		body, _ := io.ReadAll(c.Request().Body)
-		trimmed := strings.TrimSpace(string(body))
-		if trimmed != "" && trimmed != "{}" {
-			var req struct {
-				Enabled bool `json:"enabled"`
-			}
-			if err := json.Unmarshal(body, &req); err != nil {
-				return echo.NewHTTPError(http.StatusBadRequest, "invalid body")
-			}
-			next = req.Enabled
+	var next bool
+	body, err := io.ReadAll(c.Request().Body)
+	if err != nil {
+		return echo.NewHTTPError(http.StatusBadRequest, "读取请求内容失败")
+	}
+	trimmed := strings.TrimSpace(string(body))
+	if trimmed != "" && trimmed != "{}" {
+		var req struct {
+			Enabled *bool `json:"enabled"`
 		}
+		if err := json.Unmarshal(body, &req); err != nil {
+			return echo.NewHTTPError(http.StatusBadRequest, "invalid body")
+		}
+		if req.Enabled == nil {
+			return echo.NewHTTPError(http.StatusBadRequest, "enabled is required")
+		}
+		next = *req.Enabled
+	} else {
+		current, err := h.tenantRepo.IsRaffleEnabled(ctx, tenantID)
+		if err != nil {
+			return echo.NewHTTPError(http.StatusInternalServerError, "抽奖开关读取失败，未修改状态")
+		}
+		next = !current
 	}
 	if err := h.tenantRepo.SetRaffleEnabled(ctx, tenantID, next); err != nil {
 		return echo.NewHTTPError(http.StatusInternalServerError, err.Error())
