@@ -362,6 +362,12 @@ func (s *TaskService) CreateBroadcastWithMode(ctx context.Context, tenantID uuid
 		return nil, fmt.Errorf("不支持的群发方式")
 	}
 	mode := requestedMode
+	if mode == domain.BroadcastModeMapping && len(mappings) == 0 {
+		return nil, fmt.Errorf("指定账号发送模式缺少账号与群组分配")
+	}
+	if mode == domain.BroadcastModeCartesian && len(mappings) > 0 {
+		return nil, fmt.Errorf("全部账号都发模式不接受手动分配数据")
+	}
 	var totalMsgs int
 
 	// Canonicalize cartesian inputs before calculating totals or persisting the task.
@@ -448,6 +454,29 @@ func (s *TaskService) CreateBroadcastWithMode(ctx context.Context, tenantID uuid
 			}
 		}
 		mappings = merged
+		// When the client supplied the selected target list, enforce an exact one-account
+		// assignment for every target. This prevents omitted or multiply assigned targets.
+		if len(targetIDs) > 0 {
+			expected := make(map[string]bool, len(targetIDs))
+			for _, target := range targetIDs {
+				expected[target] = true
+			}
+			assigned := make(map[string]uuid.UUID, len(targetIDs))
+			for _, mapping := range mappings {
+				for _, target := range mapping.Targets {
+					if !expected[target] {
+						return nil, fmt.Errorf("分配的群组不在本次选择列表中")
+					}
+					if owner, exists := assigned[target]; exists && owner != mapping.AccountID {
+						return nil, fmt.Errorf("同一个群组不能分配给多个账号")
+					}
+					assigned[target] = mapping.AccountID
+				}
+			}
+			if len(assigned) != len(expected) {
+				return nil, fmt.Errorf("还有未分配的群组")
+			}
+		}
 		// Manual assignment and auto-balance both execute from an explicit account-target plan.
 		allAccIDs := make([]uuid.UUID, 0, len(mappings))
 		allTargetIDs := make([]string, 0)
