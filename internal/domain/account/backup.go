@@ -77,13 +77,17 @@ func (e *Engine) DeleteSessionBackups(sessionName string) error {
 	if err != nil {
 		return fmt.Errorf("read session backup directory: %w", err)
 	}
+	var failures []string
 	for _, entry := range entries {
 		if entry.IsDir() || !strings.HasPrefix(entry.Name(), base) {
 			continue
 		}
 		if err := os.Remove(filepath.Join(e.backupDir, entry.Name())); err != nil && !os.IsNotExist(err) {
-			return fmt.Errorf("remove session backup %s: %w", entry.Name(), err)
+			failures = append(failures, fmt.Sprintf("%s: %v", entry.Name(), err))
 		}
+	}
+	if len(failures) > 0 {
+		return fmt.Errorf("remove session backups: %s", strings.Join(failures, "; "))
 	}
 	return nil
 }
