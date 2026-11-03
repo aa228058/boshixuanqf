@@ -115,15 +115,16 @@ func (e *Engine) getClientOnce(ctx context.Context, tenantID, accountID uuid.UUI
 			delete(e.clients, key)
 		}
 		e.mu.Unlock()
-		// 崩溃类修复: 裸 go 里 Stop() panic 会崩进程, 自带 recover
-		go func() {
-			defer func() {
-				if r := recover(); r != nil {
-					log.Printf("[client] stop探活失败客户端 panic: %v", r)
-				}
-			}()
-			managedMc.client.Stop()
-		}()
+		// 同步安全停止，避免断开流程漏掉仍在后台 flush Session 的客户端。
+		// 停止失败时恢复注册，确保后续断开/删除仍可重试。
+		if !stopManagedAsync(managedMc) {
+			e.mu.Lock()
+			if _, exists := e.clients[key]; !exists {
+				e.clients[key] = managedMc
+			}
+			e.mu.Unlock()
+			return nil, false, fmt.Errorf("account %s stale managed client did not stop cleanly; retry disconnect before deleting credentials", accountID)
+		}
 	}
 
 	// 1. Check connection pool。写锁: 命中时要更新 lastUsed(D/N修复: 原来在 RLock 下写字段, race)
