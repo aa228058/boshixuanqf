@@ -767,9 +767,14 @@ func (s *AccountService) SetPoolStatus(ctx context.Context, tenantID, accountID 
 		return fmt.Errorf("切换池状态失败: %w", err)
 	}
 	if target == "standby" {
-		// 转备用: 断连接停业务, 标记离线
-		s.engine.DisconnectAccount(ctx, tenantID, accountID)
-		_ = s.repo.UpdateStatus(ctx, tenantID, accountID, "offline")
+		// 转备用: 断连接停业务, 标记离线。池状态已先落库；
+		// 后续步骤失败必须明确返回，不能把仍在线/状态未同步的账号报告为完整成功。
+		if err := s.engine.DisconnectAccount(ctx, tenantID, accountID); err != nil {
+			return fmt.Errorf("账号已转为备用，但断开连接失败: %w", err)
+		}
+		if err := s.repo.UpdateStatus(ctx, tenantID, accountID, "offline"); err != nil {
+			return fmt.Errorf("账号已转为备用并已断开，但离线状态更新失败: %w", err)
+		}
 	}
 	return nil
 }
