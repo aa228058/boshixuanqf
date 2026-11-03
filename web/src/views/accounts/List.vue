@@ -1684,10 +1684,10 @@ async function doDelete() {
 const showGroupModal = ref(false)
 const showEditGroup = ref(false)
 const newGroupName = ref('')
-const newGroupColor = ref('text-cyan')
+const newGroupColor = ref('#06b6d4')
 const editGroupId = ref('')
 const editGroupName = ref('')
-const editGroupColor = ref('text-cyan')
+const editGroupColor = ref('#06b6d4')
 // 编辑分组时保留原成员列表：后端 Update 会无条件覆盖 account_ids，
 // 传空数组会把组内账号全部清空
 const editGroupAccountIds = ref<string[]>([])
@@ -1720,7 +1720,7 @@ async function createGroup() {
 function editGroup(g: AccountGroup) {
   editGroupId.value = g.group_id
   editGroupName.value = g.name
-  editGroupColor.value = g.color || 'text-cyan'
+  editGroupColor.value = g.color || '#06b6d4'
   editGroupAccountIds.value = [...(g.account_ids || [])]
   showEditGroup.value = true
 }
