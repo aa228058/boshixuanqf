@@ -748,18 +748,22 @@ func (s *AccountService) SetPoolStatus(ctx context.Context, tenantID, accountID 
 	if target != "active" && target != "standby" {
 		return fmt.Errorf("无效的池状态: %s", target)
 	}
-	// 先在引擎内封住新连接，再更新数据库和断开旧连接，避免状态落库与断连之间
-	// 的窗口仍命中已有池化客户端。接口断言兼容测试替身/其他实现。
-	blocker, canBlock := s.engine.(interface {
-		SetAccountConnectionBlocked(uuid.UUID, uuid.UUID, bool)
-	})
-	if target == "standby" && canBlock {
-		blocker.SetAccountConnectionBlocked(tenantID, accountID, true)
-	}
 	acc, err := s.repo.GetByID(ctx, tenantID, accountID)
 	if err != nil {
-		if target == "standby" && canBlock { blocker.SetAccountConnectionBlocked(tenantID, accountID, false) }
 		return err
+	}
+	// 先读取原状态，再封住新连接。失败回滚时恢复原有封锁状态，
+	// 避免重复操作一个已处于备用/断连失败状态的账号时误解除保护。
+	blocker, canBlock := s.engine.(interface {
+		SetAccountConnectionBlocked(uuid.UUID, uuid.UUID, bool)
+		AccountConnectionBlocked(uuid.UUID, uuid.UUID) bool
+	})
+	wasBlocked := false
+	if canBlock {
+		wasBlocked = blocker.AccountConnectionBlocked(tenantID, accountID)
+	}
+	if target == "standby" && canBlock {
+		blocker.SetAccountConnectionBlocked(tenantID, accountID, true)
 	}
 	maxAccounts := 0
 	if target == "active" {
@@ -773,7 +777,9 @@ func (s *AccountService) SetPoolStatus(ctx context.Context, tenantID, accountID 
 		}
 	}
 	if err := s.repo.SetPoolStatusWithLimit(ctx, tenantID, accountID, target, maxAccounts); err != nil {
-		if target == "standby" && canBlock { blocker.SetAccountConnectionBlocked(tenantID, accountID, false) }
+		if target == "standby" && canBlock && !wasBlocked {
+			blocker.SetAccountConnectionBlocked(tenantID, accountID, false)
+		}
 		return fmt.Errorf("切换池状态失败: %w", err)
 	}
 	if target == "active" && canBlock {
@@ -830,12 +836,28 @@ func (s *AccountService) SetProxy(ctx context.Context, tenantID, accountID uuid.
 			return err
 		}
 	}
+	// 代理变更期间封锁新连接，避免新代理已落库但旧连接仍被热路径复用。
+	blocker, canBlock := s.engine.(interface {
+		SetAccountConnectionBlocked(uuid.UUID, uuid.UUID, bool)
+		AccountConnectionBlocked(uuid.UUID, uuid.UUID) bool
+	})
+	wasBlocked := false
+	if canBlock {
+		wasBlocked = blocker.AccountConnectionBlocked(tenantID, accountID)
+		blocker.SetAccountConnectionBlocked(tenantID, accountID, true)
+	}
 	if err := s.repo.UpdateProxyURL(ctx, tenantID, accountID, proxyURL); err != nil {
+		if canBlock && !wasBlocked {
+			blocker.SetAccountConnectionBlocked(tenantID, accountID, false)
+		}
 		return err
 	}
-	// 代理配置已保存；旧连接必须成功断开，后续连接才能确定使用新线路。
+	// 代理配置已保存；旧连接必须成功断开。失败时保持封锁，防止继续使用旧线路。
 	if err := s.engine.DisconnectAccount(ctx, tenantID, accountID); err != nil {
 		return fmt.Errorf("代理已保存，但旧连接断开失败，请重试断开后再使用新代理: %w", err)
+	}
+	if canBlock && !wasBlocked {
+		blocker.SetAccountConnectionBlocked(tenantID, accountID, false)
 	}
 	return nil
 }
