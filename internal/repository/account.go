@@ -5,8 +5,6 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
-	"log"
-	"os"
 	"time"
 
 	"github.com/google/uuid"
@@ -288,7 +286,7 @@ func (r *AccountRepository) UpdateHealthScore(ctx context.Context, tenantID, acc
 	return err
 }
 
-// Delete removes an account and its session file.
+// Delete removes an account and its database-backed session credential.
 func (r *AccountRepository) Delete(ctx context.Context, tenantID, accountID uuid.UUID) error {
 	var sessionName string
 
@@ -364,13 +362,6 @@ func (r *AccountRepository) Delete(ctx context.Context, tenantID, accountID uuid
 		return err
 	}
 
-	// Delete session file after successful DB deletion
-	if sessionName != "" {
-		sessionPath := "sessions/" + sessionName + ".session"
-		if removeErr := os.Remove(sessionPath); removeErr != nil {
-			log.Printf("[account] 删除会话文件 %s 失败: %v", sessionPath, removeErr)
-		}
-	}
 	return nil
 }
 
