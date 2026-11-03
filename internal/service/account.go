@@ -836,6 +836,10 @@ func (s *AccountService) SetProxy(ctx context.Context, tenantID, accountID uuid.
 			return err
 		}
 	}
+	acc, err := s.repo.GetByID(ctx, tenantID, accountID)
+	if err != nil {
+		return err
+	}
 	// 代理变更期间封锁新连接，避免新代理已落库但旧连接仍被热路径复用。
 	blocker, canBlock := s.engine.(interface {
 		SetAccountConnectionBlocked(uuid.UUID, uuid.UUID, bool)
@@ -856,7 +860,8 @@ func (s *AccountService) SetProxy(ctx context.Context, tenantID, accountID uuid.
 	if err := s.engine.DisconnectAccount(ctx, tenantID, accountID); err != nil {
 		return fmt.Errorf("代理已保存，但旧连接断开失败，请重试断开后再使用新代理: %w", err)
 	}
-	if canBlock && !wasBlocked {
+	// 已成功断开后，正常账号解除封锁；备用账号仍保持封锁。
+	if canBlock && acc.PoolStatus != "standby" {
 		blocker.SetAccountConnectionBlocked(tenantID, accountID, false)
 	}
 	return nil
