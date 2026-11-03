@@ -868,6 +868,13 @@ func (s *AccountService) SetPoolStatus(ctx context.Context, tenantID, accountID 
 	if target != "active" && target != "standby" {
 		return fmt.Errorf("无效的池状态: %s", target)
 	}
+	// 与完整 DC 迁移串行，避免迁移过程中更换代理/池状态导致源连接被提前断开。
+	if migrationLocker, ok := s.engine.(interface {
+		LockAccountMigration(uuid.UUID, uuid.UUID) func()
+	}); ok {
+		unlockMigration := migrationLocker.LockAccountMigration(tenantID, accountID)
+		defer unlockMigration()
+	}
 	unlockConfig := s.lockAccountConfigOperation(tenantID, accountID)
 	defer unlockConfig()
 	acc, err := s.repo.GetByID(ctx, tenantID, accountID)
@@ -960,6 +967,13 @@ func (s *AccountService) GetAvatarPath(ctx context.Context, tenantID, accountID 
 // SetProxy 设置/清除账号代理(空串=直连)。格式非法直接拒绝。
 func (s *AccountService) SetProxy(ctx context.Context, tenantID, accountID uuid.UUID, proxyURL string) error {
 	proxyURL = strings.TrimSpace(proxyURL)
+	// 与完整 DC 迁移串行，避免迁移过程中更换代理/池状态导致源连接被提前断开。
+	if migrationLocker, ok := s.engine.(interface {
+		LockAccountMigration(uuid.UUID, uuid.UUID) func()
+	}); ok {
+		unlockMigration := migrationLocker.LockAccountMigration(tenantID, accountID)
+		defer unlockMigration()
+	}
 	unlockConfig := s.lockAccountConfigOperation(tenantID, accountID)
 	defer unlockConfig()
 	if proxyURL != "" {
