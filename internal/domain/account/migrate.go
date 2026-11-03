@@ -195,6 +195,12 @@ func (e *Engine) maybeAutoMigrate(tenantID, accountID uuid.UUID) {
 
 	// 判定缓存: 会话名+DC, 5 分钟 TTL, 热路径零 DB
 	e.autoMigrateMu.Lock()
+	// 判定缓存仅保留 5 分钟；在每次访问时顺手回收过期账号，避免常驻 map 无限增长。
+	for cachedKey, cachedInfo := range e.autoMigrateCache {
+		if time.Since(cachedInfo.at) > 5*time.Minute {
+			delete(e.autoMigrateCache, cachedKey)
+		}
+	}
 	info, cached := e.autoMigrateCache[key]
 	e.autoMigrateMu.Unlock()
 	if !cached || time.Since(info.at) > 5*time.Minute {
@@ -232,6 +238,11 @@ func (e *Engine) maybeAutoMigrate(tenantID, accountID uuid.UUID) {
 	}
 
 	e.migrateMu.Lock()
+	// 多个保活周期可能同时完成 DB 判定；在真正启动 goroutine 前再次检查并原子预约，防止重复迁移。
+	if last, exists := e.migrateAttempts[key]; exists && time.Since(last) < 10*time.Minute {
+		e.migrateMu.Unlock()
+		return
+	}
 	e.migrateAttempts[key] = time.Now()
 	e.migrateMu.Unlock()
 
