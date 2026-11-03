@@ -254,14 +254,34 @@ safego.Go(func() { e.runAuth(authCtx, mc, key, newSessionName, keep) })
 }
 
 func (e *Engine) runAuth(ctx context.Context, mc *managedClient, key, sessionName string, keep bool) {
+	accountID := mc.accountID
+	tenantID := mc.tenantID
 	defer func() {
 		if r := recover(); r != nil {
 			log.Printf("认证协程异常: %v\n%s\n", r, debug.Stack())
+			// panic 不能只记日志：否则认证客户端仍留在 clients，状态可能永久停在
+			// pending_auth，后续重新连接也会被误判为 auth already in progress。
+			mc.cancel()
+			e.removeClient(key)
+			if mc.client != nil {
+				func() {
+					defer func() {
+						if stopPanic := recover(); stopPanic != nil {
+							log.Printf("[AUTH] panic 清理时停止客户端再次异常 account=%s: %v", accountID, stopPanic)
+						}
+					}()
+					mc.client.Stop()
+				}()
+			}
+			statusCtx, statusCancel := context.WithTimeout(context.Background(), 5*time.Second)
+			if err := e.updateStatus(statusCtx, tenantID, accountID, domain.AccountStatusOffline); err != nil {
+				log.Printf("[AUTH] panic 清理时更新账号 %s 状态失败: %v", accountID, err)
+			}
+			statusCancel()
 		}
 	}()
 
-	accountID := mc.accountID
-	tenantID := mc.tenantID
+
 
 	// 连接/发码阶段标记：TG 真正进入等码阶段(CodeFunc 回调)时会被覆盖为
 	// waiting_code。前端据此区分"发送中"与"已发送"，杜绝"假已发送"。
