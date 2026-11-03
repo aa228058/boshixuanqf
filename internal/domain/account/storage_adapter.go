@@ -129,7 +129,9 @@ func (a *PgxPoolAdapter) SaveSession(sess *storage.Session) error {
 		stateEnc = enc
 	}
 
-	_, err := a.pool.Exec(context.Background(), `
+	ctx, cancel := a.opCtx()
+	defer cancel()
+	_, err := a.pool.Exec(ctx, `
 		INSERT INTO sessions (
 			session_id, dc, api_id, api_hash, test_mode,
 			auth_key, state, user_id, is_bot,
@@ -165,7 +167,9 @@ func (a *PgxPoolAdapter) SaveSession(sess *storage.Session) error {
 // ==================== PeerStore (5 methods) ====================
 
 func (a *PgxPoolAdapter) SavePeer(p *storage.Peer) error {
-	_, err := a.pool.Exec(context.Background(), `
+	ctx, cancel := a.opCtx()
+	defer cancel()
+	_, err := a.pool.Exec(ctx, `
 		INSERT INTO peers (
 			id, type, access_hash, username, usernames,
 			first_name, last_name, phone_number, is_bot,
@@ -220,7 +224,9 @@ func (a *PgxPoolAdapter) GetPeer(id int64) (*storage.Peer, error) {
 func (a *PgxPoolAdapter) GetPeerByUsername(username string) (*storage.Peer, error) {
 	var p storage.Peer
 	var peerType int
-	err := a.pool.QueryRow(context.Background(), `
+	ctx, cancel := a.opCtx()
+	defer cancel()
+	err := a.pool.QueryRow(ctx, `
 		SELECT id, type, access_hash, username, usernames,
 		       first_name, last_name, phone_number, is_bot,
 		       photo_id, language, last_updated
@@ -279,7 +285,9 @@ func (a *PgxPoolAdapter) LoadPeers() ([]*storage.Peer, error) {
 }
 
 func (a *PgxPoolAdapter) DeletePeer(id int64) error {
-	_, err := a.pool.Exec(context.Background(), `DELETE FROM peers WHERE id = $1`, id)
+	ctx, cancel := a.opCtx()
+	defer cancel()
+	_, err := a.pool.Exec(ctx, `DELETE FROM peers WHERE id = $1`, id)
 	if err != nil {
 		return fmt.Errorf("delete peer: %w", err)
 	}
