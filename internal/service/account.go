@@ -618,17 +618,33 @@ func (s *AccountService) ImportSessionFiles(ctx context.Context, tenantID uuid.U
 			continue
 		}
 		if err := s.quota.InitAccountQuotas(ctx, acc.AccountID, acc.Level); err != nil {
-			_ = s.repo.Delete(ctx, tenantID, accountID)
+			rollbackErr := s.repo.Delete(ctx, tenantID, accountID)
+			message := fmt.Sprintf("第%d个文件: 配额初始化失败(%v)", i+1, err)
+			if rollbackErr != nil {
+				message += fmt.Sprintf("；账号回滚失败(%v)，请检查残留账号", rollbackErr)
+			}
 			result.Failed++
-			result.Errors = append(result.Errors, fmt.Sprintf("第%d个文件: 配额初始化失败(%v)", i+1, err))
+			result.Errors = append(result.Errors, message)
 			continue
 		}
 		if err := s.engine.StoreImportedSession(ctx, acc.SessionName, serverAddr, sess); err != nil {
-			_ = s.repo.Delete(ctx, tenantID, accountID)
-			// 回滚会话落库失败的账号时，同时清理已创建的配额记录。
-			_ = s.quota.DeleteByAccount(ctx, accountID)
+			accountRollbackErr := s.repo.Delete(ctx, tenantID, accountID)
+			// 账号删除事务通常会一并清理配额；仍显式检查配额清理结果，
+			// 以便发现部分回滚或未来仓储实现变化造成的残留。
+			quotaRollbackErr := s.quota.DeleteByAccount(ctx, accountID)
+			message := fmt.Sprintf("第%d个文件: 会话落库失败(%v)", i+1, err)
+			if accountRollbackErr != nil || quotaRollbackErr != nil {
+				message += "；回滚未完全完成"
+				if accountRollbackErr != nil {
+					message += fmt.Sprintf("(账号: %v)", accountRollbackErr)
+				}
+				if quotaRollbackErr != nil {
+					message += fmt.Sprintf("(配额: %v)", quotaRollbackErr)
+				}
+				message += "，请检查残留数据"
+			}
 			result.Failed++
-			result.Errors = append(result.Errors, fmt.Sprintf("第%d个文件: 会话落库失败(%v)", i+1, err))
+			result.Errors = append(result.Errors, message)
 			continue
 		}
 		result.Created++
