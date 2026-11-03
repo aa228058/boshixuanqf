@@ -79,18 +79,23 @@ func (e *Engine) MigrateDC(ctx context.Context, tenantID, accountID uuid.UUID, t
 	if err := e.DisconnectAccount(ctx, tenantID, accountID); err != nil {
 		return fmt.Errorf("旧客户端断开失败，新 DC%d 会话尚未写入，请重试断开后再迁移: %w", targetDC, err)
 	}
-	// 再检查一次：若删除流程在断开期间启动，绝不能把已删除账号的 Session 重新写回。
-	if e.accountConnectionBlocked(key) {
+	// 与删除/配置切换设置封锁标记串行化：封锁方需要 blockedAccountMu 写锁，
+	// 本段持读锁直到新 Session 写入完成，避免检查后、写入前账号被删除。
+	e.blockedAccountMu.RLock()
+	if e.blockedAccounts[key] {
+		e.blockedAccountMu.RUnlock()
 		return fmt.Errorf("账号正在删除或变更连接配置，已取消 DC 会话写入")
 	}
-	if err := e.StoreImportedSession(ctx, acc.SessionName, "", &storage.Session{
+	storeErr := e.StoreImportedSession(ctx, acc.SessionName, "", &storage.Session{
 		SessionID: acc.SessionName,
 		DC:        int(targetDC),
 		APIID:     int32(e.cfg.TGAPIID),
 		AuthKey:   newKey,
 		UserID:    userID,
-	}); err != nil {
-		return fmt.Errorf("旧客户端已安全断开，但写入新 DC%d 会话失败；数据库仍保留旧会话，可重试迁移: %w", targetDC, err)
+	})
+	e.blockedAccountMu.RUnlock()
+	if storeErr != nil {
+		return fmt.Errorf("旧客户端已安全断开，但写入新 DC%d 会话失败；数据库仍保留旧会话，可重试迁移: %w", targetDC, storeErr)
 	}
 	log.Printf("[migrate] 账号 %s 已从 DC%d 迁移到 DC%d\n", accountID, oldDC, targetDC)
 	return nil
