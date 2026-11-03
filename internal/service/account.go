@@ -416,15 +416,36 @@ func (s *AccountService) MigrateAccountDC(ctx context.Context, tenantID, account
 
 // Delete removes an account.
 func (s *AccountService) Delete(ctx context.Context, tenantID, accountID uuid.UUID) error {
+	// 与代理/池状态变更串行；同时在断开前封锁所有新连接，封锁保持到
+	// 数据库删除完成，避免 DisconnectAccount 释放生命周期锁后的重连窗口。
+	unlockConfig := s.lockAccountConfigOperation(tenantID, accountID)
+	defer unlockConfig()
+
 	acc, err := s.repo.GetByID(ctx, tenantID, accountID)
 	if err != nil {
 		return err
 	}
+	blocker, canBlock := s.engine.(interface {
+		SetAccountConnectionBlocked(uuid.UUID, uuid.UUID, bool)
+		AccountConnectionBlocked(uuid.UUID, uuid.UUID) bool
+	})
+	wasBlocked := false
+	if canBlock {
+		wasBlocked = blocker.AccountConnectionBlocked(tenantID, accountID)
+		blocker.SetAccountConnectionBlocked(tenantID, accountID, true)
+	}
+	restoreBlock := func() {
+		if canBlock && !wasBlocked {
+			blocker.SetAccountConnectionBlocked(tenantID, accountID, false)
+		}
+	}
 	if err := s.engine.DisconnectAccount(ctx, tenantID, accountID); err != nil {
-		// Do not delete credentials while a client may still be flushing its Session.
+		// Session 可能仍在刷盘；恢复原封锁状态，不允许带病继续删除。
+		restoreBlock()
 		return fmt.Errorf("disconnect account before deletion: %w", err)
 	}
 	if err := s.repo.Delete(ctx, tenantID, accountID); err != nil {
+		restoreBlock()
 		return err
 	}
 	// 头像文件按 account_id 独立保存；数据库删除不会自动清理磁盘文件。
