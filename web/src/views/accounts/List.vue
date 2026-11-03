@@ -128,13 +128,13 @@
             <div class="relative group/avatar shrink-0">
               <div class="w-9 h-9 rounded-full bg-cyan-glow/30 flex items-center justify-center overflow-hidden">
                 <img
-                  v-if="avatarOf(acc)"
-                  :src="avatarOf(acc)!"
+                  v-if="avatarOf(acc?.account_id || '')"
+                  :src="avatarOf(acc?.account_id || '')!"
                   :alt="acc.remark || acc.phone"
                   class="avatar-zoom w-full h-full object-cover"
                 />
                 <!-- R87-M6: 无TG头像时用"首字+品牌淡底"文字头像, 不再显示灰色小人图标 -->
-                <div v-if="!avatarOf(acc)" class="w-full h-full bg-cyan/15 flex items-center justify-center text-cyan text-sm font-semibold">
+                <div v-if="!avatarOf(acc?.account_id || '')" class="w-full h-full bg-cyan/15 flex items-center justify-center text-cyan text-sm font-semibold">
                   {{ (acc.first_name || acc.phone || '?').slice(0, 1) }}
                 </div>
               </div>
