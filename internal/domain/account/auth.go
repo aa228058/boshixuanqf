@@ -19,6 +19,8 @@ import (
 
 func (e *Engine) ConnectAccount(ctx context.Context, tenantID, accountID uuid.UUID, phone string, sessionName string, level domain.AccountLevel, keepOnline ...bool) error {
 	keep := len(keepOnline) > 0 && keepOnline[0]
+	unlock := e.lockAccountOperation(accountKey(tenantID, accountID))
+	defer unlock()
 
 	// R181: 用户主动发起重新登录 → 立即解除死密钥熔断。此前要等 30 分钟 TTL 到期才放行，
 	// 用户重新登录成功后任务仍被熔断表挡住，表现为"登录好了但任务死活不跑"。
@@ -40,6 +42,9 @@ func (e *Engine) ConnectAccount(ctx context.Context, tenantID, accountID uuid.UU
 	acc, err := e.repo.GetByID(ctx, tenantID, accountID)
 	if err != nil {
 		return fmt.Errorf("get account: %w", err)
+	}
+	if acc.PoolStatus == "standby" {
+		return fmt.Errorf("account %s is in standby; activate it before connecting", accountID)
 	}
 
 	// Use saved device profile, or generate new if empty
