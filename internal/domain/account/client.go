@@ -426,6 +426,19 @@ func (e *Engine) registerOrphan(pc *pooledClient) {
 	e.orphanMu.Unlock()
 }
 
+// unregisterOrphan 在停止协程自己取得旧客户端锁时清理登记。
+// 若锁由业务调用方释放，ReleaseClient 已经会删除该登记；此处幂等兜底。
+func (e *Engine) unregisterOrphan(pc *pooledClient) {
+	if pc == nil || pc.client == nil {
+		return
+	}
+	e.orphanMu.Lock()
+	if orphan, ok := e.orphans[pc.client]; ok && orphan == pc {
+		delete(e.orphans, pc.client)
+	}
+	e.orphanMu.Unlock()
+}
+
 // stopPooledAsync 异步停止池化客户端: 先礼貌等锁(持有者在用), 等不到最后强停。
 // 绝不持有 poolMu 调用, 也不在锁外裸 Stop(任务并发使用会损坏 mtgo 内部状态)。
 func (e *Engine) stopPooledAsync(pc *pooledClient) {
@@ -440,6 +453,7 @@ func (e *Engine) stopPooledAsync(pc *pooledClient) {
 	}
 	for i := 0; i < 30; i++ {
 		if pc.mu.TryLock() {
+			e.unregisterOrphan(pc)
 			// DC 迁移等流程可能已在持有同一实例锁时主动 Stop 并完成最终 flush；
 			// 避免这里再次 Stop，尤其不能让重复 flush 覆盖迁移后写入的新 Session。
 			if pc.client.IsConnected() {
@@ -680,7 +694,10 @@ func (e *Engine) InvalidatePooledClient(tenantID, accountID uuid.UUID) {
 			}
 		}()
 		pc.mu.Lock()
-		pc.client.Stop()
+		e.unregisterOrphan(pc)
+		if pc.client.IsConnected() {
+			pc.client.Stop()
+		}
 		pc.mu.Unlock()
 	}()
 	}
