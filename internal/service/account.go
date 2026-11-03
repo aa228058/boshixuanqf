@@ -293,7 +293,7 @@ func (s *AccountService) ImportSessions(ctx context.Context, tenantID uuid.UUID,
 
 // UpdateAccountProfile 修改账号资料：TG 侧（名字/签名/用户名）+ 本地备注 + 2FA 存档。
 func (s *AccountService) UpdateAccountProfile(ctx context.Context, tenantID, accountID uuid.UUID, firstName, lastName, about, username, remark, twoFA string) error {
-	if firstName != "" || about != "" || username != "" {
+	if firstName != "" || lastName != "" || about != "" || username != "" {
 		if err := s.engine.UpdateProfile(ctx, tenantID, accountID, firstName, lastName, about, username); err != nil {
 			return err
 		}

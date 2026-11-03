@@ -51,7 +51,7 @@ func (e *Engine) CloneProfile(ctx context.Context, tenantID uuid.UUID, sourceUse
 	}
 	// 复用现有 UpdateProfile(ctx, tenant, acc, firstName, lastName, about, username) —— 末位 username 传空=不改
 	for _, tid := range targetIDs {
-		if err := e.UpdateProfile(ctx, tenantID, tid, srcFirst, srcLast, srcAbout, ""); err != nil {
+		if err := e.updateProfileFields(ctx, tenantID, tid, srcFirst, srcLast, srcAbout, "", false); err != nil {
 			failed++
 			continue
 		}

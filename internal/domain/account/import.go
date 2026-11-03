@@ -45,46 +45,62 @@ func (e *Engine) StoreImportedSession(ctx context.Context, sessionName string, s
 }
 
 // UpdateProfile 调用 TG 接口修改账号资料：名字/姓氏/签名 + 用户名。
-// username 传空字符串表示清除用户名；about 同理。
+// username 传空字符串表示清除用户名；不需要修改用户名的内部调用应使用 updateProfileFields。
 func (e *Engine) UpdateProfile(ctx context.Context, tenantID, accountID uuid.UUID, firstName, lastName, about, username string) error {
+	return e.updateProfileFields(ctx, tenantID, accountID, firstName, lastName, about, username, true)
+}
+
+// updateProfileFields 将"是否修改用户名"与用户名值分开，避免克隆资料时把目标账号用户名清空。
+func (e *Engine) updateProfileFields(ctx context.Context, tenantID, accountID uuid.UUID, firstName, lastName, about, username string, updateUsername bool) error {
 	client, err := e.GetClient(ctx, tenantID, accountID)
 	if err != nil {
 		return fmt.Errorf("获取连接失败: %w", err)
 	}
 	defer e.ReleaseClient(tenantID, accountID, client)
 	raw := client.Raw()
-	if _, err := raw.AccountUpdateProfile(ctx, &tg.AccountUpdateProfileRequest{
-		FirstName: firstName,
-		LastName:  lastName,
-		About:     about,
-	}); err != nil {
-		return fmt.Errorf("修改名字/签名失败: %w", err)
-	}
-	if _, err := raw.AccountUpdateUsername(ctx, &tg.AccountUpdateUsernameRequest{
-		Username: username,
-	}); err != nil && !strings.Contains(err.Error(), "USERNAME_NOT_MODIFIED") {
-		// R119: 错误细分 —— 占用/格式/频繁分别明确提示, 不再笼统"可能已被占用"
-		es := err.Error()
-		switch {
-		case strings.Contains(es, "USERNAME_OCCUPIED"):
-			return fmt.Errorf("用户名 @%s 已被他人占用, 请换一个再试", username)
-		case strings.Contains(es, "USERNAME_INVALID"):
-			return fmt.Errorf("用户名 @%s 格式非法(仅字母/数字/下划线, 5-32位)", username)
-		case strings.Contains(es, "FLOOD_WAIT"):
-			return fmt.Errorf("修改用户名太频繁, 请等待几分钟后重试")
-		default:
-			return fmt.Errorf("修改用户名失败: %w", err)
+	if firstName != "" || lastName != "" || about != "" {
+		if _, err := raw.AccountUpdateProfile(ctx, &tg.AccountUpdateProfileRequest{
+			FirstName: firstName,
+			LastName:  lastName,
+			About:     about,
+		}); err != nil {
+			return fmt.Errorf("修改名字/签名失败: %w", err)
 		}
 	}
-	// USERNAME_NOT_MODIFIED = 用户名和当前一致，TG 视为"无需修改"，不算失败
-	// 关键: 同步本地 sessions 表。列表的名字从 sessions 表读，
-	// 不同步的话 TG 改成功了但前端刷新看到的还是旧名字。
+	if updateUsername {
+		if _, err := raw.AccountUpdateUsername(ctx, &tg.AccountUpdateUsernameRequest{
+			Username: username,
+		}); err != nil && !strings.Contains(err.Error(), "USERNAME_NOT_MODIFIED") {
+			// R119: 错误细分 —— 占用/格式/频繁分别明确提示, 不再笼统"可能已被占用"
+			es := err.Error()
+			switch {
+			case strings.Contains(es, "USERNAME_OCCUPIED"):
+				return fmt.Errorf("用户名 @%s 已被他人占用, 请换一个再试", username)
+			case strings.Contains(es, "USERNAME_INVALID"):
+				return fmt.Errorf("用户名 @%s 格式非法(仅字母/数字/下划线, 5-32位)", username)
+			case strings.Contains(es, "FLOOD_WAIT"):
+				return fmt.Errorf("修改用户名太频繁, 请等待几分钟后重试")
+			default:
+				return fmt.Errorf("修改用户名失败: %w", err)
+			}
+		}
+	}
+	// USERNAME_NOT_MODIFIED = 用户名和当前一致，TG 视为"无需修改"，不算失败。
+	// 列表资料从 sessions 表读取，TG 修改成功后同步本地展示字段。
 	acc, err := e.repo.GetByID(ctx, tenantID, accountID)
 	if err == nil && acc != nil && acc.SessionName != "" {
-		if _, err := e.pool.Exec(ctx,
-			`UPDATE sessions SET first_name=$1, last_name=$2, username=$3 WHERE session_id=$4`,
-			firstName, lastName, username, acc.SessionName); err != nil {
-			log.Printf("[profile] 同步本地资料失败: %v\n", err)
+		var syncErr error
+		if updateUsername {
+			_, syncErr = e.pool.Exec(ctx,
+				`UPDATE sessions SET first_name=$1, last_name=$2, username=$3 WHERE session_id=$4`,
+				firstName, lastName, username, acc.SessionName)
+		} else {
+			_, syncErr = e.pool.Exec(ctx,
+				`UPDATE sessions SET first_name=$1, last_name=$2 WHERE session_id=$3`,
+				firstName, lastName, acc.SessionName)
+		}
+		if syncErr != nil {
+			log.Printf("[profile] 同步本地资料失败: %v\n", syncErr)
 		}
 	}
 	return nil
