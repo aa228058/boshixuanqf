@@ -185,6 +185,10 @@ type managedClient struct {
 	// finished: 认证流程已结束(成功/失败/断开)。置位后 SubmitCode/SubmitPassword
 	// 拒绝提交, 防止向已关闭的 channel 发送(panic)。
 	finished bool
+	// done 在 runAuth 完整退出(含 Idle 最终 Session flush)时关闭。
+	done chan struct{}
+	idleDone chan struct{}
+	idleStarted bool
 }
 
 // finish 幂等结束认证流程: 标记 finished + 关闭提交通道。
