@@ -448,6 +448,10 @@ func (s *AccountService) Delete(ctx context.Context, tenantID, accountID uuid.UU
 		restoreBlock()
 		return err
 	}
+	// 删除成功后释放封锁表条目，避免已删除账号的阻断标记长期残留。
+	if canBlock {
+		blocker.SetAccountConnectionBlocked(tenantID, accountID, false)
+	}
 	// 头像文件按 account_id 独立保存；数据库删除不会自动清理磁盘文件。
 	// 只允许删除 AvatarDir 下的文件名，避免历史 avatar_path 脏数据造成路径穿越。
 	if acc.AvatarPath != "" && s.cfg.AvatarDir != "" {
