@@ -350,11 +350,26 @@ func (s *AccountService) MigrateAccountDC(ctx context.Context, tenantID, account
 
 // Delete removes an account.
 func (s *AccountService) Delete(ctx context.Context, tenantID, accountID uuid.UUID) error {
+	acc, err := s.repo.GetByID(ctx, tenantID, accountID)
+	if err != nil {
+		return err
+	}
 	if err := s.engine.DisconnectAccount(ctx, tenantID, accountID); err != nil {
 		// Log but continue — account may not be connected
 		log.Printf("[account] warn: disconnect account %s: %v", accountID, err)
 	}
-	return s.repo.Delete(ctx, tenantID, accountID)
+	if err := s.repo.Delete(ctx, tenantID, accountID); err != nil {
+		return err
+	}
+	// 头像文件按 account_id 独立保存；数据库删除不会自动清理磁盘文件。
+	// 只允许删除 AvatarDir 下的文件名，避免历史 avatar_path 脏数据造成路径穿越。
+	if acc.AvatarPath != "" && s.cfg.AvatarDir != "" {
+		avatarPath := filepath.Join(s.cfg.AvatarDir, filepath.Base(acc.AvatarPath))
+		if err := os.Remove(avatarPath); err != nil && !os.IsNotExist(err) {
+			log.Printf("[account] 删除账号 %s 头像文件失败: %v", accountID, err)
+		}
+	}
+	return nil
 }
 
 // Connect connects an account to Telegram.
