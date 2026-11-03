@@ -416,6 +416,13 @@ func (s *AccountService) MigrateAccountDC(ctx context.Context, tenantID, account
 
 // Delete removes an account.
 func (s *AccountService) Delete(ctx context.Context, tenantID, accountID uuid.UUID) error {
+	// 等待该账号正在进行的 DC 迁移结束，避免删除流程中途断开迁移源客户端。
+	if migrationLocker, ok := s.engine.(interface {
+		LockAccountMigration(uuid.UUID, uuid.UUID) func()
+	}); ok {
+		unlockMigration := migrationLocker.LockAccountMigration(tenantID, accountID)
+		defer unlockMigration()
+	}
 	// 与代理/池状态变更串行；同时在断开前封锁所有新连接，封锁保持到
 	// 数据库删除完成，避免 DisconnectAccount 释放生命周期锁后的重连窗口。
 	unlockConfig := s.lockAccountConfigOperation(tenantID, accountID)
