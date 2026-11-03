@@ -460,6 +460,15 @@ func (s *AccountService) Delete(ctx context.Context, tenantID, accountID uuid.UU
 	if canBlock {
 		blocker.SetAccountConnectionBlocked(tenantID, accountID, false)
 	}
+	// 本地 Session 备份包含可直接登录的 auth_key，删除账号时一并清理。
+	// 使用可选接口保持 AccountEngine 抽象兼容；清理失败明确报告部分完成。
+	if backupCleaner, ok := s.engine.(interface {
+		DeleteSessionBackups(string) error
+	}); ok && acc.SessionName != "" {
+		if err := backupCleaner.DeleteSessionBackups(acc.SessionName); err != nil {
+			return fmt.Errorf("账号已删除，但本地 Session 备份清理失败: %w", err)
+		}
+	}
 	// 头像文件按 account_id 独立保存；数据库删除不会自动清理磁盘文件。
 	// 只允许删除 AvatarDir 下的文件名，避免历史 avatar_path 脏数据造成路径穿越。
 	if acc.AvatarPath != "" && s.cfg.AvatarDir != "" {
