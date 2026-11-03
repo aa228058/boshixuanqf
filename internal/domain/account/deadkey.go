@@ -33,8 +33,18 @@ func isAuthKeyDead(err error) bool {
 func (e *Engine) deadKeyBlocked(accountID uuid.UUID) bool {
 	e.deadKeyMu.Lock()
 	defer e.deadKeyMu.Unlock()
-	t, ok := e.deadKey[accountID]
-	return ok && time.Since(t) < deadKeyTTL
+	now := time.Now()
+	var blocked bool
+	for id, markedAt := range e.deadKey {
+		if now.Sub(markedAt) >= deadKeyTTL {
+			delete(e.deadKey, id)
+			continue
+		}
+		if id == accountID {
+			blocked = true
+		}
+	}
+	return blocked
 }
 
 // markDeadKey 熔断 + 状态置"需重新登录"(SessionRevoked) + 风险事件。
@@ -43,7 +53,13 @@ func (e *Engine) deadKeyBlocked(accountID uuid.UUID) bool {
 // 此时熔断 30 分钟是误杀——宽限期内不熔断, 标 offline 交给下一轮重试/用户点连接。
 func (e *Engine) markDeadKey(ctx context.Context, tenantID, accountID uuid.UUID) {
 	e.deadKeyMu.Lock()
-	if t, ok := e.authGrace[accountID]; ok && time.Since(t) < 5*time.Minute {
+	now := time.Now()
+	for id, authenticatedAt := range e.authGrace {
+		if now.Sub(authenticatedAt) >= 5*time.Minute {
+			delete(e.authGrace, id)
+		}
+	}
+	if t, ok := e.authGrace[accountID]; ok && now.Sub(t) < 5*time.Minute {
 		e.deadKeyMu.Unlock()
 		log.Printf("[client] R182 账号 %s 登录成功仅 %v, -404 判定为存储时序竞态, 宽限不熔断, 标离线待重试", accountID, time.Since(t).Round(time.Second))
 		if err := e.updateStatus(ctx, tenantID, accountID, domain.AccountStatusOffline); err != nil {
@@ -72,7 +88,13 @@ func (e *Engine) noteAuthOK(accountID uuid.UUID) {
 	if e.authGrace == nil {
 		e.authGrace = make(map[uuid.UUID]time.Time)
 	}
-	e.authGrace[accountID] = time.Now()
+	now := time.Now()
+	for id, authenticatedAt := range e.authGrace {
+		if now.Sub(authenticatedAt) >= 5*time.Minute {
+			delete(e.authGrace, id)
+		}
+	}
+	e.authGrace[accountID] = now
 	e.deadKeyMu.Unlock()
 }
 
