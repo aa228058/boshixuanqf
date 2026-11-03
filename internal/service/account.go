@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -32,7 +33,14 @@ type GroupSyncer interface {
 }
 
 // AccountService handles account business logic.
+type accountConfigOperationLock struct {
+	mu   sync.Mutex
+	refs int
+}
+
 type AccountService struct {
+	configOpMu sync.Mutex
+	configOps  map[string]*accountConfigOperationLock
 	cfg         *config.Config
 	repo        *repository.AccountRepository
 	probeRepo   *repository.ProbeConfigRepository // R119: 探测配置
@@ -75,6 +83,34 @@ type AccountEngine interface {
 	// 注意: 这里是 AccountEngine(引擎抽象)接口——只放引擎方法;
 	// UpdateRemark 是 repo 本地操作(引擎无此方法), 不放这里, 报错"missing method UpdateRemark"即此因
 	CloneProfile(ctx context.Context, tenantID uuid.UUID, sourceUsername string, targetIDs []uuid.UUID) (ok, failed int, err error)
+}
+
+// lockAccountConfigOperation serializes proxy and pool-status changes for one account.
+// A reference count allows idle lock entries to be reclaimed safely.
+func (s *AccountService) lockAccountConfigOperation(tenantID, accountID uuid.UUID) func() {
+	key := tenantID.String() + ":" + accountID.String()
+	s.configOpMu.Lock()
+	if s.configOps == nil {
+		s.configOps = make(map[string]*accountConfigOperationLock)
+	}
+	op := s.configOps[key]
+	if op == nil {
+		op = &accountConfigOperationLock{}
+		s.configOps[key] = op
+	}
+	op.refs++
+	s.configOpMu.Unlock()
+
+	op.mu.Lock()
+	return func() {
+		op.mu.Unlock()
+		s.configOpMu.Lock()
+		op.refs--
+		if op.refs == 0 && s.configOps[key] == op {
+			delete(s.configOps, key)
+		}
+		s.configOpMu.Unlock()
+	}
 }
 
 // NewAccountService creates a new account service.
@@ -790,6 +826,8 @@ func (s *AccountService) SetPoolStatus(ctx context.Context, tenantID, accountID 
 	if target != "active" && target != "standby" {
 		return fmt.Errorf("无效的池状态: %s", target)
 	}
+	unlockConfig := s.lockAccountConfigOperation(tenantID, accountID)
+	defer unlockConfig()
 	acc, err := s.repo.GetByID(ctx, tenantID, accountID)
 	if err != nil {
 		return err
@@ -880,6 +918,8 @@ func (s *AccountService) GetAvatarPath(ctx context.Context, tenantID, accountID 
 // SetProxy 设置/清除账号代理(空串=直连)。格式非法直接拒绝。
 func (s *AccountService) SetProxy(ctx context.Context, tenantID, accountID uuid.UUID, proxyURL string) error {
 	proxyURL = strings.TrimSpace(proxyURL)
+	unlockConfig := s.lockAccountConfigOperation(tenantID, accountID)
+	defer unlockConfig()
 	if proxyURL != "" {
 		if _, err := account.ParseProxyURL(proxyURL); err != nil {
 			return err
