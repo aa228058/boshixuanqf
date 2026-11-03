@@ -86,6 +86,7 @@ func (e *Engine) ConnectAccount(ctx context.Context, tenantID, accountID uuid.UU
 		cancel:        cancel,
 		deviceProfile: acc.DeviceProfile,
 		deviceType:    deviceType,
+		done:          make(chan struct{}),
 	}
 
 	// Use deterministic session name based on accountID
@@ -264,6 +265,7 @@ safego.Go(func() { e.runAuth(authCtx, mc, key, newSessionName, keep) })
 func (e *Engine) runAuth(ctx context.Context, mc *managedClient, key, sessionName string, keep bool) {
 	accountID := mc.accountID
 	tenantID := mc.tenantID
+	defer close(mc.done)
 	defer func() {
 		if r := recover(); r != nil {
 			log.Printf("认证协程异常: %v\n%s\n", r, debug.Stack())
@@ -312,8 +314,13 @@ func (e *Engine) runAuth(ctx context.Context, mc *managedClient, key, sessionNam
 		return
 	}
 
-	// Start Idle so mtgo can complete auth in background
+	// Start Idle so mtgo can complete auth in background. Keep its completion
+	// signal on managedClient so DisconnectAccount can wait for the final flush.
 	idleDone := make(chan struct{})
+	mc.mu.Lock()
+	mc.idleDone = idleDone
+	mc.idleStarted = true
+	mc.mu.Unlock()
 	safego.Go(func() {
 		defer close(idleDone)
 		mc.client.Idle()
@@ -349,6 +356,9 @@ func (e *Engine) runAuth(ctx context.Context, mc *managedClient, key, sessionNam
 		case <-timeout.C:
 			log.Printf("账号 %s 认证超时\n", accountID)
 			mc.client.Stop()
+			// Stop 返回不代表 gotd Idle 已完成最终 Session flush。
+			// 必须等 Idle 退出后才能摘除客户端并允许凭据清理/重新连接。
+			<-idleDone
 			statusCtx3, statusCancel3 := context.WithTimeout(context.Background(), 5*time.Second)
 			if err := e.updateStatus(statusCtx3, tenantID, accountID, domain.AccountStatusOffline); err != nil {
 				log.Printf("[AUTH] 更新账号 %s 为离线状态失败: %v\n", accountID, err)
