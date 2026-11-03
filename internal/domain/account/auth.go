@@ -458,7 +458,8 @@ func (e *Engine) runAuth(ctx context.Context, mc *managedClient, key, sessionNam
 				case <-idleDone:
 					log.Printf("账号 %s 空闲退出，会话已保存\n", accountID)
 				case <-time.After(e.cfg.AuthIdleTimeout):
-					log.Printf("账号 %s 空闲退出超时，会话可能未完全保存\n", accountID)
+					log.Printf("账号 %s 空闲退出等待超时，继续等待最终 Session flush 完成后再清理\n", accountID)
+					<-idleDone
 				}
 
 				// R182.2: gotd 的最终 flush 写的是 login_xxx 名(adapter 会话名未随 rename 变),
