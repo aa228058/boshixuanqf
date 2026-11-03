@@ -173,6 +173,10 @@ func (s *AccountService) Create(ctx context.Context, tenantID uuid.UUID, phone s
 
 	// Init quotas
 	if err := s.quota.InitAccountQuotas(ctx, acc.AccountID, level); err != nil {
+		// 账号记录已创建；配额初始化失败时必须回滚，避免留下无法正常执行的半成品账号。
+		if cleanupErr := s.repo.Delete(ctx, tenantID, acc.AccountID); cleanupErr != nil {
+			log.Printf("[account] 配额初始化失败后回滚账号 %s 失败: %v", acc.AccountID, cleanupErr)
+		}
 		return nil, fmt.Errorf("init quotas: %w", err)
 	}
 
@@ -249,10 +253,14 @@ func (s *AccountService) ImportSessions(ctx context.Context, tenantID uuid.UUID,
 			continue
 		}
 		if err := s.quota.InitAccountQuotas(ctx, acc.AccountID, acc.Level); err != nil {
-			log.Printf("[account] init quotas %s: %v", accountID, err)
+			_ = s.repo.Delete(ctx, tenantID, accountID)
+			result.Failed++
+			result.Errors = append(result.Errors, fmt.Sprintf("第%d行: 配额初始化失败(%v)", i+1, err))
+			continue
 		}
 		if err := s.engine.StoreImportedSession(ctx, acc.SessionName, serverAddr, sess); err != nil {
 			_ = s.repo.Delete(ctx, tenantID, accountID)
+			_ = s.quota.DeleteByAccount(ctx, accountID)
 			result.Failed++
 			result.Errors = append(result.Errors, fmt.Sprintf("第%d行: 会话落库失败(%v)", i+1, err))
 			continue
@@ -300,13 +308,12 @@ func (s *AccountService) UpdateAccountProfile(ctx context.Context, tenantID, acc
 			acc.DeviceProfile = map[string]any{}
 		}
 		if twoFA != "" {
-			// R182: 2FA 密码不明文落 JSONB(device_profile)——审计报告#11。
-			// 加密存 twofa_enc, 同时清掉历史明文遗留键。
-			if enc, err := crypto.Encrypt([]byte(twoFA)); err == nil {
-				acc.DeviceProfile["twofa_enc"] = enc
-			} else {
-				log.Printf("[account] 2FA 密码加密存储失败: %v", err)
+			// 2FA 密码不得明文落 JSONB；加密失败必须中止保存，不能静默丢弃新密码。
+			enc, err := crypto.Encrypt([]byte(twoFA))
+			if err != nil {
+				return fmt.Errorf("2FA 密码加密存储失败: %w", err)
 			}
+			acc.DeviceProfile["twofa_enc"] = enc
 			delete(acc.DeviceProfile, "twofa")
 		}
 		// 空串=保持不变(2FA已不随API返回前端, 绝不能因空误清)
@@ -571,14 +578,15 @@ func (s *AccountService) ImportSessionFiles(ctx context.Context, tenantID uuid.U
 			continue
 		}
 		if err := s.quota.InitAccountQuotas(ctx, acc.AccountID, acc.Level); err != nil {
-			log.Printf("[account] init quotas %s: %v", accountID, err)
+			_ = s.repo.Delete(ctx, tenantID, accountID)
+			result.Failed++
+			result.Errors = append(result.Errors, fmt.Sprintf("第%d个文件: 配额初始化失败(%v)", i+1, err))
+			continue
 		}
 		if err := s.engine.StoreImportedSession(ctx, acc.SessionName, serverAddr, sess); err != nil {
 			_ = s.repo.Delete(ctx, tenantID, accountID)
-			// R182: 归还已扣额度(审计报告#17: 失败账号继续占额度, 新号导不进来)
-			if s.quota != nil {
-				_ = s.quota.DeleteByAccount(ctx, accountID)
-			}
+			// 回滚会话落库失败的账号时，同时清理已创建的配额记录。
+			_ = s.quota.DeleteByAccount(ctx, accountID)
 			result.Failed++
 			result.Errors = append(result.Errors, fmt.Sprintf("第%d个文件: 会话落库失败(%v)", i+1, err))
 			continue
