@@ -1243,20 +1243,31 @@ async function doProtocolImport() {
   try {
     const remark = newRemark.value.trim()
     const parts: string[] = []
+    let totalCreated = 0
+    let totalFailed = 0
     const sessions = importText.value.split('\n').map((s) => s.trim()).filter(Boolean)
     if (sessions.length > 0) {
       const r = await importSessions(sessions, remark)
+      totalCreated += r.created || 0
+      totalFailed += r.failed || 0
       parts.push(`字符串导入: 成功 ${r.created} / 失败 ${r.failed}`)
       r.errors?.slice(0, 3).forEach((e) => parts.push(e))
     }
     if (importFileList.value.length > 0) {
       const r2 = await importSessionFiles(importFileList.value, remark)
+      totalCreated += r2.created || 0
+      totalFailed += r2.failed || 0
       parts.push(`文件导入: 成功 ${r2.created} / 失败 ${r2.failed}`)
       r2.errors?.slice(0, 3).forEach((e) => parts.push(e))
     }
-    toast({ type: 'success', message: parts.join('；') || '导入完成' })
+    if (totalCreated + totalFailed === 0) {
+      toast({ type: 'error', message: '请先填写 Session 字符串或选择 .session 文件' })
+      return
+    }
+    const resultType = totalFailed === 0 ? 'success' : totalCreated > 0 ? 'warning' : 'error'
+    toast({ type: resultType, message: parts.join('；') || '导入完成' })
     closeAddModal()
-    accountStore.fetchAccounts(true)
+    await accountStore.fetchAccounts(true)
   } catch (err: any) {
     toast({ type: 'error', message: err?.message || '导入失败' })
   } finally {
