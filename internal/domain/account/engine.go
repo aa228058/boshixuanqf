@@ -65,6 +65,10 @@ type Engine struct {
 	accountOpMu sync.Mutex
 	accountOps   map[string]*accountOperationLock
 
+	// 独立迁移锁：迁移流程内部会调用 GetClient/DisconnectAccount，不能复用 accountOps。
+	migrationMu    sync.Mutex
+	migrationLocks map[string]*accountOperationLock
+
 	blockedAccountMu sync.RWMutex
 	blockedAccounts map[string]bool
 
@@ -389,4 +393,31 @@ func accountKey(tenantID, accountID uuid.UUID) string {
 // GetByID implements AccountEngine.
 func (e *Engine) GetByID(ctx context.Context, tenantID, accountID uuid.UUID) (*domain.Account, error) {
 	return e.repo.GetByID(ctx, tenantID, accountID)
+}
+
+// LockAccountMigration serializes a full DC migration against account deletion.
+// The returned unlock function must be called after the lifecycle operation completes.
+func (e *Engine) LockAccountMigration(tenantID, accountID uuid.UUID) func() {
+ key := accountKey(tenantID, accountID)
+ e.migrationMu.Lock()
+ if e.migrationLocks == nil {
+  e.migrationLocks = make(map[string]*accountOperationLock)
+ }
+ op := e.migrationLocks[key]
+ if op == nil {
+  op = &accountOperationLock{}
+  e.migrationLocks[key] = op
+ }
+ op.refs++
+ e.migrationMu.Unlock()
+ op.mu.Lock()
+ return func() {
+  op.mu.Unlock()
+  e.migrationMu.Lock()
+  op.refs--
+  if op.refs == 0 && e.migrationLocks[key] == op {
+   delete(e.migrationLocks, key)
+  }
+  e.migrationMu.Unlock()
+ }
 }
