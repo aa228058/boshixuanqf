@@ -652,6 +652,15 @@ func (e *Engine) keepClientAlive(mc *managedClient, tenantID, accountID uuid.UUI
 		if !mc.mu.TryLock() {
 			continue // 任务正在使用 client, 本轮跳过
 		}
+		// 再次确认注册身份：上面的检查与抢锁之间可能发生 DisconnectAccount。
+		// 若只在抢锁前检查，断开流程 Stop 后，本轮保活仍可能拿到锁并重连已断开的账号。
+		e.mu.RLock()
+		current, stillManaged := e.clients[accountKey(tenantID, accountID)]
+		e.mu.RUnlock()
+		if !stillManaged || current != mc {
+			mc.mu.Unlock()
+			return
+		}
 		c := mc.client
 		phase := mc.authPhase
 		if c == nil || phase != "success" {
