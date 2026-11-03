@@ -236,6 +236,12 @@ func (r *AccountRepository) Create(ctx context.Context, a *domain.Account) error
 func (r *AccountRepository) CountAndCreate(ctx context.Context, a *domain.Account, maxAccounts int) (*domain.Account, int, error) {
 	var count int
 	err := pgx.BeginFunc(ctx, r.db, func(tx pgx.Tx) error {
+		// 租户行作为额度互斥锁：创建账号与备用号转正必须使用同一把锁。
+		// 锁定失败/租户不存在时直接终止，不能退化为无锁额度检查。
+		var lockedTenant uuid.UUID
+		if err := tx.QueryRow(ctx, `SELECT tenant_id FROM tenants WHERE tenant_id = $1 FOR UPDATE`, a.TenantID).Scan(&lockedTenant); err != nil {
+			return fmt.Errorf("lock tenant account quota: %w", err)
+		}
 		// 056: 备用池不占额度 —— 只统计"启用"状态的账号
 		if err := tx.QueryRow(ctx, `SELECT COUNT(*) FROM accounts WHERE tenant_id = $1 AND pool_status = 'active'`, a.TenantID).Scan(&count); err != nil {
 			return err
@@ -521,8 +527,42 @@ func (r *AccountRepository) UpdateRemark(ctx context.Context, tenantID, accountI
 	return err
 }
 
-// UpdatePoolStatus 切换账号 启用/备用 状态(056)
-// 转备用时业务由上层停止; 转正后占套餐额度(由 service 校验额度余量)
+// SetPoolStatusWithLimit 在租户额度锁内原子切换账号池状态。
+// CountAndCreate 使用相同租户行锁，避免并发导入与备用号转正互相穿透额度。
+func (r *AccountRepository) SetPoolStatusWithLimit(ctx context.Context, tenantID, accountID uuid.UUID, status string, maxAccounts int) error {
+	return pgx.BeginFunc(ctx, r.db, func(tx pgx.Tx) error {
+		var lockedTenant uuid.UUID
+		if err := tx.QueryRow(ctx, `SELECT tenant_id FROM tenants WHERE tenant_id = $1 FOR UPDATE`, tenantID).Scan(&lockedTenant); err != nil {
+			return fmt.Errorf("lock tenant account quota: %w", err)
+		}
+		var current string
+		if err := tx.QueryRow(ctx, `SELECT pool_status FROM accounts WHERE tenant_id = $1 AND account_id = $2 FOR UPDATE`, tenantID, accountID).Scan(&current); err != nil {
+			return fmt.Errorf("get account pool status: %w", err)
+		}
+		if current == status {
+			return nil
+		}
+		if status == "active" && maxAccounts > 0 {
+			var count int
+			if err := tx.QueryRow(ctx, `SELECT COUNT(*) FROM accounts WHERE tenant_id = $1 AND pool_status = 'active'`, tenantID).Scan(&count); err != nil {
+				return err
+			}
+			if count >= maxAccounts {
+				return fmt.Errorf("套餐账号额度已满(%d/%d), 无法转正备用号", count, maxAccounts)
+			}
+		}
+		tag, err := tx.Exec(ctx, `UPDATE accounts SET pool_status = $3 WHERE tenant_id = $1 AND account_id = $2`, tenantID, accountID, status)
+		if err != nil {
+			return err
+		}
+		if tag.RowsAffected() != 1 {
+			return fmt.Errorf("account not found")
+		}
+		return nil
+	})
+}
+
+// UpdatePoolStatus 仅保留给不涉及额度切换的内部兼容调用；业务切换应走 SetPoolStatusWithLimit。
 func (r *AccountRepository) UpdatePoolStatus(ctx context.Context, tenantID, accountID uuid.UUID, status string) error {
 	_, err := r.db.Exec(ctx, `UPDATE accounts SET pool_status = $3 WHERE tenant_id = $1 AND account_id = $2`, tenantID, accountID, status)
 	return err

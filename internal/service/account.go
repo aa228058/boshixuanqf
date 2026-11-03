@@ -582,10 +582,14 @@ func (s *AccountService) ImportSessionFiles(ctx context.Context, tenantID uuid.U
 			DeviceProfile: map[string]any{},
 		}
 		if twoFA != "" {
-			// R182: sidecar 2FA 密码加密入库(与 UpdateAccountProfile 同规则, 不明文落 JSONB)
-			if enc, err := crypto.Encrypt([]byte(twoFA)); err == nil {
-				acc.DeviceProfile["twofa_enc"] = enc
+			// 2FA 密码属于登录凭据；加密失败时该文件必须失败，不能静默创建不完整账号。
+			enc, encErr := crypto.Encrypt([]byte(twoFA))
+			if encErr != nil {
+				result.Failed++
+				result.Errors = append(result.Errors, fmt.Sprintf("第%d个文件: 2FA 密码加密失败(%v)", i+1, encErr))
+				continue
 			}
+			acc.DeviceProfile["twofa_enc"] = enc
 		}
 		if _, _, err := s.repo.CountAndCreate(ctx, acc, maxAccounts); err != nil {
 			result.Failed++
@@ -735,21 +739,18 @@ func (s *AccountService) SetPoolStatus(ctx context.Context, tenantID, accountID 
 	if err != nil {
 		return err
 	}
-	if target == "active" && acc.PoolStatus != "active" {
-		// 转正: 启用数+1, 校验是否超套餐上限
+	maxAccounts := 0
+	if target == "active" {
 		t, err := s.tenantRepo.GetByID(ctx, tenantID)
 		if err != nil {
 			return err
 		}
-		n, err := s.repo.CountActive(ctx, tenantID)
-		if err != nil {
-			return err
-		}
-		if t.MaxAccounts > 0 && n >= t.MaxAccounts {
-			return fmt.Errorf("套餐账号额度已满(%d/%d), 无法转正备用号; 可在管理端升级套餐或先转备用其他号", n, t.MaxAccounts)
+		maxAccounts = t.MaxAccounts
+		if maxAccounts <= 0 {
+			maxAccounts = s.cfg.MaxAccounts
 		}
 	}
-	if err := s.repo.UpdatePoolStatus(ctx, tenantID, accountID, target); err != nil {
+	if err := s.repo.SetPoolStatusWithLimit(ctx, tenantID, accountID, target, maxAccounts); err != nil {
 		return fmt.Errorf("切换池状态失败: %w", err)
 	}
 	if target == "standby" {
