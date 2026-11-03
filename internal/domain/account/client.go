@@ -528,6 +528,18 @@ func (e *Engine) DisconnectAccount(ctx context.Context, tenantID, accountID uuid
 			e.mu.Unlock()
 			return fmt.Errorf("account %s authentication client did not stop cleanly; retry disconnect before deleting credentials", accountID)
 		}
+		// Stop 仅发起关闭；runAuth 退出前还可能等待 Idle 最终 flush 和
+		// Session 名称搬运。必须等 runAuth 完整退出才能继续删除凭据。
+		select {
+		case <-mc.done:
+		case <-ctx.Done():
+			e.mu.Lock()
+			if _, exists := e.clients[key]; !exists {
+				e.clients[key] = mc
+			}
+			e.mu.Unlock()
+			return fmt.Errorf("account %s authentication shutdown is still flushing its session: %w", accountID, ctx.Err())
+		}
 	}
 
 	// Remove from pool
