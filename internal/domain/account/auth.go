@@ -21,6 +21,9 @@ func (e *Engine) ConnectAccount(ctx context.Context, tenantID, accountID uuid.UU
 	keep := len(keepOnline) > 0 && keepOnline[0]
 	unlock := e.lockAccountOperation(accountKey(tenantID, accountID))
 	defer unlock()
+	if e.accountConnectionBlocked(accountKey(tenantID, accountID)) {
+		return fmt.Errorf("account %s is transitioning to standby", accountID)
+	}
 
 	// R181: 用户主动发起重新登录 → 立即解除死密钥熔断。此前要等 30 分钟 TTL 到期才放行，
 	// 用户重新登录成功后任务仍被熔断表挡住，表现为"登录好了但任务死活不跑"。
