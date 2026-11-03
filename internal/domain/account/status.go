@@ -165,7 +165,7 @@ func (e *Engine) applyGuardRail(tenantMin, tenantMax, floor time.Duration) (min,
 
 	// Guard-rail 1: min cannot go below floor
 	if tenantMin < floor {
-		jitter := randomDuration(e.guardJitterRange())
+		jitter := e.guardJitterOffset()
 		tenantMin = floor + jitter
 	}
 
@@ -194,15 +194,18 @@ func (e *Engine) recentBanRate() float64 {
 	return e.banRate
 }
 
-// guardJitterRange returns the jitter range for floor offset.
-func (e *Engine) guardJitterRange() time.Duration {
+// guardJitterOffset returns a random offset within the configured [min,max) range.
+func (e *Engine) guardJitterOffset() time.Duration {
 	minJ := e.cfg.GuardMinJitter
 	maxJ := e.cfg.GuardMaxJitter
+	if minJ < 0 {
+		minJ = 0
+	}
 	if maxJ <= minJ {
 		minJ = 0
 		maxJ = 2 * time.Second
 	}
-	return maxJ - minJ
+	return minJ + randomDuration(maxJ-minJ)
 }
 
 // randomDuration returns a random duration in [0, max).
