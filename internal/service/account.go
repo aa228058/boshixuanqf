@@ -387,6 +387,9 @@ func (s *AccountService) Connect(ctx context.Context, tenantID, accountID uuid.U
 	if err != nil {
 		return err
 	}
+	if acc.PoolStatus == "standby" {
+		return fmt.Errorf("备用号请先转正再连接")
+	}
 	return s.engine.ConnectAccount(ctx, tenantID, accountID, acc.Phone, acc.SessionName, acc.Level)
 }
 
