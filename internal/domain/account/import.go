@@ -45,9 +45,9 @@ func (e *Engine) StoreImportedSession(ctx context.Context, sessionName string, s
 }
 
 // UpdateProfile 调用 TG 接口修改账号资料：名字/姓氏/签名 + 用户名。
-// username 传空字符串表示清除用户名；不需要修改用户名的内部调用应使用 updateProfileFields。
+// 与账号管理表单约定一致：空字段表示不修改；用户名非空时才提交用户名变更。
 func (e *Engine) UpdateProfile(ctx context.Context, tenantID, accountID uuid.UUID, firstName, lastName, about, username string) error {
-	return e.updateProfileFields(ctx, tenantID, accountID, firstName, lastName, about, username, true)
+	return e.updateProfileFields(ctx, tenantID, accountID, firstName, lastName, about, username, username != "")
 }
 
 // updateProfileFields 将"是否修改用户名"与用户名值分开，避免克隆资料时把目标账号用户名清空。
