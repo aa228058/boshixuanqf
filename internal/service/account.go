@@ -820,8 +820,10 @@ func (s *AccountService) SetProxy(ctx context.Context, tenantID, accountID uuid.
 	if err := s.repo.UpdateProxyURL(ctx, tenantID, accountID, proxyURL); err != nil {
 		return err
 	}
-	// 代理变更后旧连接仍走旧线路, 主动断开让下次使用时走新代理
-	_ = s.engine.DisconnectAccount(ctx, tenantID, accountID)
+	// 代理配置已保存；旧连接必须成功断开，后续连接才能确定使用新线路。
+	if err := s.engine.DisconnectAccount(ctx, tenantID, accountID); err != nil {
+		return fmt.Errorf("代理已保存，但旧连接断开失败，请重试断开后再使用新代理: %w", err)
+	}
 	return nil
 }
 
