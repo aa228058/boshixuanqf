@@ -777,7 +777,7 @@ func (s *AccountService) SetPoolStatus(ctx context.Context, tenantID, accountID 
 		}
 	}
 	if err := s.repo.SetPoolStatusWithLimit(ctx, tenantID, accountID, target, maxAccounts); err != nil {
-		if target == "standby" && canBlock && !wasBlocked {
+		if target == "standby" && canBlock && !wasBlocked && acc.PoolStatus != "standby" {
 			blocker.SetAccountConnectionBlocked(tenantID, accountID, false)
 		}
 		return fmt.Errorf("切换池状态失败: %w", err)
@@ -851,7 +851,7 @@ func (s *AccountService) SetProxy(ctx context.Context, tenantID, accountID uuid.
 		blocker.SetAccountConnectionBlocked(tenantID, accountID, true)
 	}
 	if err := s.repo.UpdateProxyURL(ctx, tenantID, accountID, proxyURL); err != nil {
-		if canBlock && !wasBlocked {
+		if canBlock && !wasBlocked && acc.PoolStatus != "standby" {
 			blocker.SetAccountConnectionBlocked(tenantID, accountID, false)
 		}
 		return err
