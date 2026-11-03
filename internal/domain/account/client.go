@@ -17,6 +17,8 @@ import (
 )
 
 func (e *Engine) GetClient(ctx context.Context, tenantID, accountID uuid.UUID) (*telegram.Client, error) {
+	unlock := e.lockAccountOperation(accountKey(tenantID, accountID))
+	defer unlock()
 	// 有限重试: 并发窗口/double-check 拿到死连接时剔除后重走一遍，
 	// 而不是把死连接交给调用方(任务拿到僵尸连接 = 发送失败/挂起, 重启才恢复)。
 	const maxAttempts = 3
@@ -233,6 +235,9 @@ func (e *Engine) getClientOnce(ctx context.Context, tenantID, accountID uuid.UUI
 	acc, err := e.repo.GetByID(ctx, tenantID, accountID)
 	if err != nil {
 		return nil, false, err
+	}
+	if acc.PoolStatus == "standby" {
+		return nil, false, fmt.Errorf("account %s is in standby; activate it before connecting", accountID)
 	}
 	if acc.Status != domain.AccountStatusAuthenticated && acc.Status != domain.AccountStatusOnline && acc.Status != domain.AccountStatusOffline {
 		return nil, false, fmt.Errorf("account %s not authenticated (status: %s)", accountID, acc.Status)
@@ -497,6 +502,8 @@ func stopManagedAsync(mc *managedClient) {
 // DisconnectAccount removes an account from the connection pool and disconnects.
 func (e *Engine) DisconnectAccount(ctx context.Context, tenantID, accountID uuid.UUID) error {
 	key := accountKey(tenantID, accountID)
+	unlock := e.lockAccountOperation(key)
+	defer unlock()
 
 	// Remove from auth flow and wait for its final Session flush before returning.
 	e.mu.Lock()
