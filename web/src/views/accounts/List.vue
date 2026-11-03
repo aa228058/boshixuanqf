@@ -1639,23 +1639,23 @@ async function doTestProxy() {
 
 async function saveRemark() {
   if (!editingAccount.value) return
-  // P2-25 审计修复: 原两步一个 try——第一步(备注)成功第二步(代理)失败时报
-  // "更新失败", 但备注实际已入库, 用户认知与实际状态不一致。拆开处理:
-  // 备注失败全停; 代理失败单独告警但保留备注成果。
+  // 备注与代理是两个独立接口：备注失败时不继续；代理失败时保留弹窗，
+  // 让用户修正代理后重试，避免输入丢失，也不能再弹出误导性的整体成功提示。
   try {
     await accountApi.update(editingAccount.value.account_id, { remark: editRemarkText.value })
   } catch (e: unknown) {
     toast({ type: 'error', title: '备注保存失败', message: (e instanceof Error ? e.message : '请稍后重试') })
     return
   }
-  // 代理单独走专用接口(带格式校验+断线重连)
   try {
     await setAccountProxy(editingAccount.value.account_id, editProxyText.value.trim())
   } catch (e: unknown) {
+    await accountStore.fetchAccounts(true)
     toast({ type: 'warning', title: '备注已保存, 代理设置失败', message: (e instanceof Error ? e.message : '请检查代理格式后重试') })
+    return
   }
   showEditRemark.value = false
-  await accountStore.fetchAccounts()
+  await accountStore.fetchAccounts(true)
   toast({ type: 'success', title: '已保存' })
 }
 
