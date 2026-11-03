@@ -68,7 +68,11 @@ func (e *Engine) getAllDialogs(ctx context.Context, client *telegram.Client) ([]
 	seen := make(map[int64]bool)
 
 	// 私聊必须先拉: 深度分页容易触发 FLOOD_WAIT, 把私聊请求放在分页之前
-	for _, u := range e.getPrivateDialogs(ctx, client) {
+	privateDialogs := e.getPrivateDialogs(ctx, client)
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	for _, u := range privateDialogs {
 		if id, ok := u["id"].(int64); ok && !seen[id] {
 			seen[id] = true
 			allResults = append(allResults, u)
@@ -88,7 +92,7 @@ func (e *Engine) getAllDialogs(ctx context.Context, client *telegram.Client) ([]
 		if page > 0 {
 			select {
 			case <-ctx.Done():
-				return allResults, nil
+				return allResults, ctx.Err()
 			case <-time.After(1500 * time.Millisecond):
 			}
 		}
@@ -199,7 +203,7 @@ func (e *Engine) GetTelegramContacts(ctx context.Context, tenantID, accountID uu
 			})
 		}
 	default:
-		// Unknown contacts type, return empty
+		return nil, fmt.Errorf("get contacts: unexpected response type %T", contactsRaw)
 	}
 	return result, nil
 }
