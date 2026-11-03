@@ -36,6 +36,8 @@ export interface RequestOptions {
   method?: string
   headers?: Record<string, string>
   body?: Record<string, unknown> | unknown
+  // 二进制接口(头像/文件)绕过 JSON 解析，直接返回 Blob 或 ArrayBuffer。
+  responseType?: 'blob' | 'arrayBuffer'
   timeout?: number
   // 查询参数(2026-10-20): doFetch 拼 query string, 此前被静默忽略
   params?: Record<string, string | number | boolean | undefined>
