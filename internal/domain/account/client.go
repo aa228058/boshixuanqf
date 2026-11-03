@@ -562,11 +562,9 @@ func (e *Engine) evictOldestIdleClientLocked() bool {
 			log.Printf("[client] 账号 %s 正在执行任务，跳过本次驱逐", pc.accountID)
 			return false
 		}
-		defer pc.mu.Unlock()
-		if pc.client != nil {
-			pc.client.Stop()
-		}
 		delete(e.poolClients, oldestKey)
+		pc.mu.Unlock()
+		go e.stopPooledAsync(pc)
 		return true
 	}
 	return false
