@@ -310,15 +310,20 @@ func (s *AccountService) ImportSessions(ctx context.Context, tenantID uuid.UUID,
 
 // UpdateAccountProfile 修改账号资料：TG 侧（名字/签名/用户名）+ 本地备注 + 2FA 存档。
 func (s *AccountService) UpdateAccountProfile(ctx context.Context, tenantID, accountID uuid.UUID, firstName, lastName, about, username, remark, twoFA string) error {
+	profileUpdated := false
 	if firstName != "" || lastName != "" || about != "" || username != "" {
 		if err := s.engine.UpdateProfile(ctx, tenantID, accountID, firstName, lastName, about, username); err != nil {
 			return err
 		}
+		profileUpdated = true
 	}
 	// 2FA 存档(存 device_profile, 号掉线重登时自动过二步验证) + 备注一次落库
 	if twoFA != "" || remark != "" {
 		acc, err := s.repo.GetByID(ctx, tenantID, accountID)
 		if err != nil {
+			if profileUpdated {
+				return fmt.Errorf("Telegram 资料已修改，但读取本地账号资料失败，备注/二步验证存档未保存: %w", err)
+			}
 			return fmt.Errorf("get account: %w", err)
 		}
 		if acc.DeviceProfile == nil {
@@ -328,6 +333,9 @@ func (s *AccountService) UpdateAccountProfile(ctx context.Context, tenantID, acc
 			// 2FA 密码不得明文落 JSONB；加密失败必须中止保存，不能静默丢弃新密码。
 			enc, err := crypto.Encrypt([]byte(twoFA))
 			if err != nil {
+				if profileUpdated {
+					return fmt.Errorf("Telegram 资料已修改，但二步验证存档加密失败，备注/二步验证未保存: %w", err)
+				}
 				return fmt.Errorf("2FA 密码加密存储失败: %w", err)
 			}
 			acc.DeviceProfile["twofa_enc"] = enc
@@ -337,7 +345,12 @@ func (s *AccountService) UpdateAccountProfile(ctx context.Context, tenantID, acc
 		if remark != "" {
 			acc.Remark = remark
 		}
-		return s.repo.Update(ctx, acc)
+		if err := s.repo.Update(ctx, acc); err != nil {
+			if profileUpdated {
+				return fmt.Errorf("Telegram 资料已修改，但本地备注/二步验证存档保存失败: %w", err)
+			}
+			return err
+		}
 	}
 	return nil
 }
