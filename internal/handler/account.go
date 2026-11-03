@@ -813,6 +813,14 @@ func (h *AccountHandler) ImportSessionFiles(c echo.Context) error {
 	// 落盘临时文件（SQLite 驱动需要可寻址路径）
 	// (2026-10-20) 支持 .zip 压缩包: 自动解压包内全部 .session 逐个导入
 	var paths []string
+	// 临时会话与 sidecar 可能包含 auth_key/2FA 等敏感数据；从创建时就登记，
+	// 确保任何提前返回路径都会统一清理，而不只覆盖正常导入结束。
+	var tempArtifacts []string
+	defer func() {
+		for _, p := range tempArtifacts {
+			_ = os.Remove(p)
+		}
+	}()
 	for _, fh := range files {
 		src, err := fh.Open()
 		if err != nil {
@@ -866,6 +874,7 @@ func (h *AccountHandler) ImportSessionFiles(c echo.Context) error {
 					rc.Close()
 					continue
 				}
+				tempArtifacts = append(tempArtifacts, tmp.Name())
 				// P2-50 审计修复: 原来 LimitReader 到限返回 EOF——Copy 视为成功, 超 10MB
 				// 的文件被静默截断当完整 session 导入。+1 探测: 超限时拒绝。
 				written, err := io.Copy(tmp, io.LimitReader(rc, 10<<20+1))
@@ -880,7 +889,12 @@ func (h *AccountHandler) ImportSessionFiles(c echo.Context) error {
 				// R182: 同 stem 的 sidecar json 写出(2FA 密码/手机号), service 端 readSidecarJSON 读取
 				if stem := sanitizeStem(zf.Name); stem != "" {
 					if data, ok := sidecars[stem]; ok {
-						_ = os.WriteFile(strings.TrimSuffix(tmp.Name(), ".session")+".json", data, 0600)
+						sidecarPath := strings.TrimSuffix(tmp.Name(), ".session") + ".json"
+						if err := os.WriteFile(sidecarPath, data, 0600); err == nil {
+							tempArtifacts = append(tempArtifacts, sidecarPath)
+						} else {
+							log.Printf("[account] 写入导入 sidecar 失败: %v", err)
+						}
 					}
 				}
 				paths = append(paths, tmp.Name())
@@ -928,6 +942,7 @@ func (h *AccountHandler) ImportSessionFiles(c echo.Context) error {
 				if derr != nil {
 					return nil
 				}
+				tempArtifacts = append(tempArtifacts, dest.Name())
 				in, ierr := os.Open(p)
 				if ierr != nil {
 					dest.Close()
@@ -943,7 +958,12 @@ func (h *AccountHandler) ImportSessionFiles(c echo.Context) error {
 				}
 				// R182: 同 stem .json 跟随拷贝(rar/7z 包内 sidecar, 同 zip 规则)
 				if jdata, jerr := os.ReadFile(strings.TrimSuffix(p, ".session") + ".json"); jerr == nil {
-					_ = os.WriteFile(strings.TrimSuffix(dest.Name(), ".session")+".json", jdata, 0600)
+					sidecarPath := strings.TrimSuffix(dest.Name(), ".session") + ".json"
+					if err := os.WriteFile(sidecarPath, jdata, 0600); err == nil {
+						tempArtifacts = append(tempArtifacts, sidecarPath)
+					} else {
+						log.Printf("[account] 写入导入 sidecar 失败: %v", err)
+					}
 				}
 				paths = append(paths, dest.Name())
 				arcCount++
@@ -968,6 +988,7 @@ func (h *AccountHandler) ImportSessionFiles(c echo.Context) error {
 			src.Close()
 			return echo.NewHTTPError(http.StatusInternalServerError, "创建临时文件失败")
 		}
+		tempArtifacts = append(tempArtifacts, tmp.Name())
 		// P2-50 审计修复: 同 zip 分支——LimitReader 到限返回 EOF 被当成功, 超 10MB
 		// 文件被静默截断。+1 探测: 超限拒绝。
 		written, err := io.Copy(tmp, io.LimitReader(src, 10<<20+1)) // 单文件 10MB 上限
@@ -981,12 +1002,6 @@ func (h *AccountHandler) ImportSessionFiles(c echo.Context) error {
 		tmp.Close()
 		paths = append(paths, tmp.Name())
 	}
-	defer func() {
-		for _, p := range paths {
-			os.Remove(p)
-		}
-	}()
-
 	result, err := h.svc.ImportSessionFiles(c.Request().Context(), tenantID, paths, remark)
 	if err != nil {
 		return echo.NewHTTPError(http.StatusInternalServerError, err.Error())
