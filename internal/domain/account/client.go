@@ -500,6 +500,10 @@ func (e *Engine) DisconnectAccount(ctx context.Context, tenantID, accountID uuid
 	}
 	e.poolMu.Unlock()
 	if hadPooled {
+		// entry 已从池摘除，但调用方可能仍持有 pc.mu 使用客户端。
+		// 登记为 orphan 后，ReleaseClient 才能在实例身份匹配时释放旧锁，
+		// stopPooledAsync 随后即可安全停止，不必等 30 秒强停。
+		e.registerOrphan(pc)
 		go e.stopPooledAsync(pc)
 	}
 
