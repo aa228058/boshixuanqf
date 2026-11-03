@@ -53,15 +53,19 @@ func (e *Engine) MigrateDC(ctx context.Context, tenantID, accountID uuid.UUID, t
 		if !mc.mu.TryLock() {
 			return fmt.Errorf("账号 %s 正被任务占用, DC 迁移请稍后重试", accountID)
 		}
-		migrateErr = e.migrateDCWithSource(ctx, tenantID, accountID, acc.SessionName, mc.client, userID, oldDC, targetDC)
-		mc.mu.Unlock()
+		func() {
+			defer mc.mu.Unlock()
+			migrateErr = e.migrateDCWithSource(ctx, tenantID, accountID, acc.SessionName, mc.client, userID, oldDC, targetDC)
+		}()
 	} else {
 		c, err := e.GetClient(ctx, tenantID, accountID)
 		if err != nil {
 			return fmt.Errorf("拿不到源DC连接（需先连上保活再迁移）: %w", err)
 		}
-		migrateErr = e.migrateDCWithSource(ctx, tenantID, accountID, acc.SessionName, c, userID, oldDC, targetDC)
-		e.ReleaseClient(tenantID, accountID, c)
+		func() {
+			defer e.ReleaseClient(tenantID, accountID, c)
+			migrateErr = e.migrateDCWithSource(ctx, tenantID, accountID, acc.SessionName, c, userID, oldDC, targetDC)
+		}()
 	}
 	if migrateErr != nil {
 		return migrateErr
