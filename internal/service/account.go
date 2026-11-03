@@ -177,7 +177,7 @@ func (s *AccountService) Create(ctx context.Context, tenantID uuid.UUID, phone s
 	if err := s.quota.InitAccountQuotas(ctx, acc.AccountID, level); err != nil {
 		// 账号记录已创建；配额初始化失败时必须回滚，避免留下无法正常执行的半成品账号。
 		if cleanupErr := s.repo.Delete(ctx, tenantID, acc.AccountID); cleanupErr != nil {
-			log.Printf("[account] 配额初始化失败后回滚账号 %s 失败: %v", acc.AccountID, cleanupErr)
+			return nil, fmt.Errorf("init quotas: %w; account rollback also failed (%v), inspect the orphan account", err, cleanupErr)
 		}
 		return nil, fmt.Errorf("init quotas: %w", err)
 	}
