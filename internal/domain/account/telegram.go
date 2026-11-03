@@ -106,6 +106,9 @@ func (e *Engine) getAllDialogs(ctx context.Context, client *telegram.Client) ([]
 
 		chats, err := client.GetDialogs(ctx, batchSize, offsetDate)
 		if err != nil {
+			if ctx.Err() != nil {
+				return allResults, ctx.Err()
+			}
 			// FLOOD_WAIT 等限流: 不整盘失败, 返回已获取的部分结果
 			if len(allResults) > 0 {
 				log.Printf("[dialogs] page %d hit rate limit (%v), returning %d partial results", page, err, len(allResults))
