@@ -65,3 +65,25 @@ func (e *Engine) backupSessionFiles() {
 		log.Printf("[BACKUP] 已备份 %d 个会话文件到 %s\n", backedUp, e.backupDir)
 	}
 }
+ 
+// DeleteSessionBackups removes timestamped local backups for a deleted account.
+// Backup files contain a reusable Telegram auth_key and must not outlive account deletion.
+func (e *Engine) DeleteSessionBackups(sessionName string) error {
+	base := filepath.Base(sessionName) + ".session_"
+	entries, err := os.ReadDir(e.backupDir)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("read session backup directory: %w", err)
+	}
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasPrefix(entry.Name(), base) {
+			continue
+		}
+		if err := os.Remove(filepath.Join(e.backupDir, entry.Name())); err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("remove session backup %s: %w", entry.Name(), err)
+		}
+	}
+	return nil
+}
