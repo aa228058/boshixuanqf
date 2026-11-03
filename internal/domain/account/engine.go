@@ -65,6 +65,9 @@ type Engine struct {
 	accountOpMu sync.Mutex
 	accountOps   map[string]*accountOperationLock
 
+	blockedAccountMu sync.RWMutex
+	blockedAccounts map[string]bool
+
 	// R181: 死会话密钥熔断表(AUTH_KEY_UNREGISTERED 的账号 TTL 内 GetClient 快速失败)
 	deadKeyMu sync.Mutex
 	deadKey   map[uuid.UUID]time.Time
@@ -88,6 +91,28 @@ type Engine struct {
 	stopCh   chan struct{}
 	stopOnce sync.Once
 	wg       sync.WaitGroup
+}
+
+// SetAccountConnectionBlocked fences new account connections during pool-status transitions.
+func (e *Engine) SetAccountConnectionBlocked(tenantID, accountID uuid.UUID, blocked bool) {
+	key := accountKey(tenantID, accountID)
+	e.blockedAccountMu.Lock()
+	if e.blockedAccounts == nil {
+		e.blockedAccounts = make(map[string]bool)
+	}
+	if blocked {
+		e.blockedAccounts[key] = true
+	} else {
+		delete(e.blockedAccounts, key)
+	}
+	e.blockedAccountMu.Unlock()
+}
+
+func (e *Engine) accountConnectionBlocked(key string) bool {
+	e.blockedAccountMu.RLock()
+	blocked := e.blockedAccounts[key]
+	e.blockedAccountMu.RUnlock()
+	return blocked
 }
 
 // NOTE: statuses cache removed — GetAccountStatus reads directly from DB for accuracy.
