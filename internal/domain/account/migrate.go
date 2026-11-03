@@ -181,6 +181,12 @@ func (e *Engine) maybeAutoMigrate(tenantID, accountID uuid.UUID) {
 	if e.migrateAttempts == nil {
 		e.migrateAttempts = make(map[string]time.Time)
 	}
+	// 冷却表只需保留最近 10 分钟的记录；定期清理过期账号，避免长期运行时无限增长。
+	for accountKey, attemptedAt := range e.migrateAttempts {
+		if time.Since(attemptedAt) >= 10*time.Minute {
+			delete(e.migrateAttempts, accountKey)
+		}
+	}
 	if last, ok := e.migrateAttempts[key]; ok && time.Since(last) < 10*time.Minute {
 		e.migrateMu.Unlock()
 		return
