@@ -737,25 +737,38 @@ func (e *Engine) InvalidatePooledClient(tenantID, accountID uuid.UUID) {
 	pc, ok := e.poolClients[key]
 	if ok {
 		delete(e.poolClients, key)
-		// P1-9 审计修复: registerOrphan 定义了却全仓零调用——entry 已摘除但
-		// 持有者可能仍握锁在用, 不登记则 ReleaseClient 的兜底认领路径失效。
-		e.registerOrphan(pc)
 	}
 	e.poolMu.Unlock()
-	if ok && pc != nil && pc.client != nil {
-		// 崩溃类修复: 裸 go 里 Stop() panic 会崩进程, 自带 recover
-	go func() {
+	if !ok || pc == nil || pc.client == nil {
+		return
+	}
+
+	// 调用方在 GetClient 的账号生命周期锁内；同步完成 Stop，确保返回后
+	// DisconnectAccount 不会漏掉仍在后台 flush Session 的失效客户端。
+	e.registerOrphan(pc)
+	pc.mu.Lock()
+	stopOK := true
+	func() {
 		defer func() {
 			if r := recover(); r != nil {
 				log.Printf("[client] InvalidatePooledClient stop panic: %v", r)
+				stopOK = false
 			}
 		}()
-		pc.mu.Lock()
-		e.unregisterOrphan(pc)
 		if pc.client.IsConnected() {
 			pc.client.Stop()
 		}
-		pc.mu.Unlock()
 	}()
+	pc.mu.Unlock()
+
+	e.unregisterOrphan(pc)
+	if !stopOK {
+		// Stop 异常时保留账号索引，让后续 DisconnectAccount 可以再次尝试；
+		// 不能让删除流程把这个客户端当作已经安全退出。
+		e.poolMu.Lock()
+		if _, exists := e.poolClients[key]; !exists {
+			e.poolClients[key] = pc
+		}
+		e.poolMu.Unlock()
 	}
 }
