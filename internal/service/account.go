@@ -783,6 +783,13 @@ func (s *AccountService) SetPoolStatus(ctx context.Context, tenantID, accountID 
 		return fmt.Errorf("切换池状态失败: %w", err)
 	}
 	if target == "active" && canBlock {
+		// 若此前因断连失败而保持封锁，转正时先再次清理旧连接；
+		// 只有确认旧客户端已退出，才解除封锁，避免旧代理/旧会话被复用。
+		if wasBlocked {
+			if err := s.engine.DisconnectAccount(ctx, tenantID, accountID); err != nil {
+				return fmt.Errorf("账号已转正，但清理旧连接失败，连接仍保持封锁: %w", err)
+			}
+		}
 		blocker.SetAccountConnectionBlocked(tenantID, accountID, false)
 	}
 	if target == "standby" {
