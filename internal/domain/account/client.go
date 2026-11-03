@@ -440,7 +440,8 @@ func (e *Engine) ReleaseClient(tenantID, accountID uuid.UUID, client *telegram.C
 	// 从孤儿锁表认领并解锁, 否则锁永久泄漏(该账号后续所有 GetClient 永远阻塞)。
 	e.orphanMu.Lock()
 	if orphan, ok := e.orphans[client]; ok {
-		delete(e.orphans, client)
+		// 只释放业务持有的实例锁，不提前移除 orphan 登记。
+		// 驱逐停止协程完成 Stop 前，DisconnectAccount 仍需能找到并等待它。
 		e.orphanMu.Unlock()
 		orphan.mu.Unlock()
 		return
@@ -594,6 +595,22 @@ func (e *Engine) DisconnectAccount(ctx context.Context, tenantID, accountID uuid
 			}
 			e.poolMu.Unlock()
 			return fmt.Errorf("account %s client did not release its session lock; retry disconnect before deleting credentials", accountID)
+		}
+	}
+
+	// 驱逐流程会先从 poolClients 摘除客户端，再异步等待其锁并 Stop。
+	// 这些 orphan 不在池索引里，但仍可能正在刷写 Session；删除账号前必须等待。
+	e.orphanMu.Lock()
+	orphans := make([]*pooledClient, 0)
+	for _, orphan := range e.orphans {
+		if orphan != nil && orphan.tenantID == tenantID && orphan.accountID == accountID {
+			orphans = append(orphans, orphan)
+		}
+	}
+	e.orphanMu.Unlock()
+	for _, orphan := range orphans {
+		if !e.stopPooledAsync(orphan) {
+			return fmt.Errorf("account %s evicted client is still active; retry disconnect before deleting credentials", accountID)
 		}
 	}
 
