@@ -460,7 +460,7 @@ accountLoop:
 
 			// P2修复(精读发现): 账号等级原来在逐目标循环内每发一条消息查一次库
 			// (万级群发 = 万次 DB 查询, Q族同款)。等级在账号维度不变, 循环外查一次。
-			accLevel := e.accEngine.GetAccountLevel(ctx, task.TenantID, accID)
+			accLevel := acc.Level // 上方已读取账号记录，直接复用，避免重复查库及查询失败时静默降级为普通等级
 
 			if len(accountIDs) == 0 || len(targets) == 0 {
 				taskLog.Printf("[task] broadcast task %s has empty account_ids or target_ids, marking failed", task.TaskID)
