@@ -108,6 +108,11 @@ func (e *Engine) SetAccountConnectionBlocked(tenantID, accountID uuid.UUID, bloc
 	e.blockedAccountMu.Unlock()
 }
 
+// AccountConnectionBlocked reports whether new connections are fenced for an account.
+func (e *Engine) AccountConnectionBlocked(tenantID, accountID uuid.UUID) bool {
+	return e.accountConnectionBlocked(accountKey(tenantID, accountID))
+}
+
 func (e *Engine) accountConnectionBlocked(key string) bool {
 	e.blockedAccountMu.RLock()
 	blocked := e.blockedAccounts[key]
