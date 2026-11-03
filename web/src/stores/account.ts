@@ -39,11 +39,12 @@ let lastAccountsSnapshot = ''
   // force=true 用于轮询：绕过 60s 新鲜期，否则状态轮询全部空转
   async function fetchAccounts(force = false) {
     if (!force && Date.now() - lastAccountsFetch < 60_000 && accounts.value.length) return
-    lastAccountsFetch = Date.now()
     // R155: 轮询刷新不置 loading —— 否则每 30s 列表被加载转圈整体替换, 界面持续闪烁
     if (force || !accounts.value.length) loading.value = true
     try {
       const res: any = await accountApi.list(!force) // 轮询(非force)走 silent: 不触发顶部进度条
+      // 只有请求成功后才更新新鲜期；失败时允许下一次进入/刷新立即重试。
+      lastAccountsFetch = Date.now()
       // 后端 ListResponse 返回 data 字段, 兼容直返数组
       // 兼容 ListResponse 三种形态（res.data 可能是 {list,total} 对象）
       const raw = res.list || res.data?.list || (Array.isArray(res.data) ? res.data : []) || (Array.isArray(res) ? res : [])
