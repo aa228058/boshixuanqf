@@ -455,8 +455,11 @@ func (s *AccountService) Delete(ctx context.Context, tenantID, accountID uuid.UU
 		restoreBlock()
 		return err
 	}
-	// 删除成功后保留封锁：旧任务可能仍持有账号 ID 并再次调用 GetClient，
-	// 不能让已删除账号在删除窗口之后重新建立 Telegram 连接。
+	// 数据库账号已删除且 DisconnectAccount 已确认清理全部客户端，可以解除内存封锁。
+	// 后续旧任务再次调用 GetClient 时会因账号记录不存在而无法重新建连，避免封锁表永久增长。
+	if canBlock {
+		blocker.SetAccountConnectionBlocked(tenantID, accountID, false)
+	}
 	// 头像文件按 account_id 独立保存；数据库删除不会自动清理磁盘文件。
 	// 只允许删除 AvatarDir 下的文件名，避免历史 avatar_path 脏数据造成路径穿越。
 	if acc.AvatarPath != "" && s.cfg.AvatarDir != "" {
