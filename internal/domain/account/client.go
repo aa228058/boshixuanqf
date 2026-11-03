@@ -55,6 +55,17 @@ func (e *Engine) getClientOnce(ctx context.Context, tenantID, accountID uuid.UUI
 		// 登录中的客户端直接交给调用方(调用方 RPC 失败自行容错), 注册与保活原样保留。
 		managedMc.mu.Lock()
 		_phase := managedMc.authPhase
+		if _phase == "success" {
+			// 认证成功后的 runAuth 仍可能在下载头像、等待 Idle flush、搬运最终 Session。
+			// 这段时间不能把认证客户端交给业务 RPC，也不能由探活失败路径提前 Stop。
+			managedMc.mu.Unlock()
+			select {
+			case <-managedMc.done:
+				return e.getClientOnce(ctx, tenantID, accountID)
+			case <-ctx.Done():
+				return nil, false, ctx.Err()
+			}
+		}
 		if _phase == "connecting" || _phase == "waiting_code" || _phase == "waiting_password" {
 			// R161: 登录中免探活; 持锁返回, 由调用方 ReleaseClient 解锁
 			return managedMc.client, false, nil
