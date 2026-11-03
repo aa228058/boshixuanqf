@@ -91,12 +91,21 @@ func (e *Engine) updateProfileFields(ctx context.Context, tenantID, accountID uu
 	if err == nil && acc != nil && acc.SessionName != "" {
 		var syncErr error
 		if updateUsername {
+			// 空名字/姓氏表示调用方未要求修改（TG 更新也会跳过空字段），
+			// 不能把 sessions 缓存里的现有资料覆盖为空；用户名仍允许显式清空。
 			_, syncErr = e.pool.Exec(ctx,
-				`UPDATE sessions SET first_name=$1, last_name=$2, username=$3 WHERE session_id=$4`,
+				`UPDATE sessions SET
+					first_name = CASE WHEN $1 <> '' THEN $1 ELSE first_name END,
+					last_name = CASE WHEN $2 <> '' THEN $2 ELSE last_name END,
+					username = $3
+				 WHERE session_id = $4`,
 				firstName, lastName, username, acc.SessionName)
 		} else {
 			_, syncErr = e.pool.Exec(ctx,
-				`UPDATE sessions SET first_name=$1, last_name=$2 WHERE session_id=$3`,
+				`UPDATE sessions SET
+					first_name = CASE WHEN $1 <> '' THEN $1 ELSE first_name END,
+					last_name = CASE WHEN $2 <> '' THEN $2 ELSE last_name END
+				 WHERE session_id = $3`,
 				firstName, lastName, acc.SessionName)
 		}
 		if syncErr != nil {
