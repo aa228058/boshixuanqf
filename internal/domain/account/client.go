@@ -125,6 +125,18 @@ func (e *Engine) getClientOnce(ctx context.Context, tenantID, accountID uuid.UUI
 			e.mu.Unlock()
 			return nil, false, fmt.Errorf("account %s stale managed client did not stop cleanly; retry disconnect before deleting credentials", accountID)
 		}
+		// Stop 之后 runAuth 仍可能在等待 Idle flush 或搬运最终 Session；
+		// 等完整退出后才允许后续路径读档/复用该账号。
+		select {
+		case <-managedMc.done:
+		case <-ctx.Done():
+			e.mu.Lock()
+			if _, exists := e.clients[key]; !exists {
+				e.clients[key] = managedMc
+			}
+			e.mu.Unlock()
+			return nil, false, ctx.Err()
+		}
 	}
 
 	// 1. Check connection pool。写锁: 命中时要更新 lastUsed(D/N修复: 原来在 RLock 下写字段, race)
