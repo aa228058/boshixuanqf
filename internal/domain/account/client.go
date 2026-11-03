@@ -586,8 +586,21 @@ func (e *Engine) evictOldestIdleClientLocked() bool {
 	}
 	delete(e.poolClients, oldestKey)
 	log.Printf("[client] evicting oldest idle client %s to free pool space\\n", oldest.accountID)
+	// Entry 摘除后，仍可能有已取得指针但尚未取得实例锁的调用方。
+	// 登记 orphan 让 ReleaseClient 可以识别；停止超时则恢复池条目供后续重试。
+	e.registerOrphan(oldest)
 	oldest.mu.Unlock()
-	go e.stopPooledAsync(oldest)
+	go func() {
+		if e.stopPooledAsync(oldest) {
+			return
+		}
+		e.unregisterOrphan(oldest)
+		e.poolMu.Lock()
+		if _, exists := e.poolClients[oldestKey]; !exists {
+			e.poolClients[oldestKey] = oldest
+		}
+		e.poolMu.Unlock()
+	}()
 	return true
 }
 
