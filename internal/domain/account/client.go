@@ -61,6 +61,11 @@ func (e *Engine) getClientOnce(ctx context.Context, tenantID, accountID uuid.UUI
 			managedMc.mu.Unlock()
 			select {
 			case <-managedMc.done:
+				e.mu.Lock()
+				if current, exists := e.clients[key]; exists && current == managedMc {
+					delete(e.clients, key)
+				}
+				e.mu.Unlock()
 				return e.getClientOnce(ctx, tenantID, accountID)
 			case <-ctx.Done():
 				return nil, false, ctx.Err()
