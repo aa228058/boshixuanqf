@@ -36,7 +36,7 @@ func (e *Engine) GetClient(ctx context.Context, tenantID, accountID uuid.UUID) (
 func (e *Engine) getClientOnce(ctx context.Context, tenantID, accountID uuid.UUID) (client *telegram.Client, retry bool, err error) {
 	key := accountKey(tenantID, accountID)
 	if e.accountConnectionBlocked(key) {
-		return nil, false, fmt.Errorf("account %s connection is temporarily blocked by a configuration change", accountID)
+		return nil, false, fmt.Errorf("account %s connection is temporarily blocked", accountID)
 	}
 
 	// 0. 保活账号：直接复用常驻客户端（不重复建连，避免同号双连接被 TG 踢）
