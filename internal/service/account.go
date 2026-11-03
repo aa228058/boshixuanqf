@@ -661,8 +661,7 @@ func (s *AccountService) ImportSessionFiles(ctx context.Context, tenantID uuid.U
 			continue
 		}
 		if phone == "" {
-			// R182: entities 表没存手机号时, 从文件名兜底(+14687014965.session / 8613xxx.session)。
-			// 手机号用于连接路径判定, 不能丢。
+			// Telethon entities 表不代表登录账号本人；仅从文件名或 sidecar 等明确元数据提取手机号。
 			phone = extractPhoneFromFilename(p)
 		}
 		// R182: sidecar json(压缩包内同 stem .json, 号商惯例) 提供 2FA 密码与第三手机号来源
@@ -685,7 +684,7 @@ func (s *AccountService) ImportSessionFiles(ctx context.Context, tenantID uuid.U
 			TenantID:      tenantID,
 			Source:        "protocol",
 			SessionFingerprint: sessionFingerprint(sess.AuthKey),
-			Phone:         phone, // R182: entities.phone 或文件名解析, 此前为空导致导入后无手机号
+			Phone:         phone, // 来自文件名或 sidecar 的可信手机号元数据
 			Remark:        remark,
 			SessionName:   fmt.Sprintf("acc_%s", accountID.String()),
 			Status:        domain.AccountStatusOffline,
