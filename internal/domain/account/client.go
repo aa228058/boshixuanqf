@@ -440,7 +440,11 @@ func (e *Engine) stopPooledAsync(pc *pooledClient) {
 	}
 	for i := 0; i < 30; i++ {
 		if pc.mu.TryLock() {
-			pc.client.Stop()
+			// DC 迁移等流程可能已在持有同一实例锁时主动 Stop 并完成最终 flush；
+			// 避免这里再次 Stop，尤其不能让重复 flush 覆盖迁移后写入的新 Session。
+			if pc.client.IsConnected() {
+				pc.client.Stop()
+			}
 			pc.mu.Unlock()
 			return
 		}

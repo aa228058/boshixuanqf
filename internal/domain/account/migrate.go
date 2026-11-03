@@ -110,7 +110,11 @@ func (e *Engine) migrateDCWithSource(ctx context.Context, tenantID, accountID uu
 	}
 	impCancel()
 
-	// 6. 抠出目标DC的 auth_key，覆盖库存会话
+	// 6. 先停止源客户端并等待其最终 Session flush 完成，再写入新 DC 密钥。
+	// 否则 DisconnectAccount 的异步 Stop 可能在新密钥写库后把旧密钥覆盖回来。
+	src.Stop()
+
+	// 抠出目标DC的 auth_key，覆盖库存会话
 	newKey := dst.Session().AuthKey()
 	if len(newKey) != 256 {
 		return fmt.Errorf("目标DC auth_key 长度异常: %d", len(newKey))
