@@ -687,7 +687,12 @@ func (s *AccountService) Update2FA(ctx context.Context, tenantID, accountID uuid
 	if err := s.engine.Update2FA(ctx, tenantID, accountID, current, next); err != nil {
 		return err
 	}
-	return s.UpdateAccountProfile(ctx, tenantID, accountID, "", "", "", "", "", next)
+	// Telegram 侧已成功修改；本地加密存档失败不能作为普通失败返回，
+	// 否则用户可能误以为旧密码仍有效。明确提示远端已变更并要求重试存档。
+	if err := s.UpdateAccountProfile(ctx, tenantID, accountID, "", "", "", "", "", next); err != nil {
+		return fmt.Errorf("Telegram 二步验证密码已修改，但本地自动登录存档失败；请立即重试保存新密码，避免下次重连无法自动登录: %w", err)
+	}
+	return nil
 }
 
 // BatchUpdateProfile 批量改资料: 对选中账号逐个应用资料字段(位置参数, 与单号 UpdateAccountProfile 一致)
