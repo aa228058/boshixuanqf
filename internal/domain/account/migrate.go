@@ -71,9 +71,17 @@ func (e *Engine) MigrateDC(ctx context.Context, tenantID, accountID uuid.UUID, t
 	if migrateErr != nil {
 		return migrateErr
 	}
+	// 删除/配置切换已封锁账号时，不再推进迁移；对应生命周期操作会负责断开。
+	if e.accountConnectionBlocked(key) {
+		return fmt.Errorf("账号正在删除或变更连接配置，已取消 DC 迁移")
+	}
 	// 先完整断开并等待源 Session flush，再写入新密钥，避免旧客户端最终 flush 覆盖新 DC。
 	if err := e.DisconnectAccount(ctx, tenantID, accountID); err != nil {
 		return fmt.Errorf("旧客户端断开失败，新 DC%d 会话尚未写入，请重试断开后再迁移: %w", targetDC, err)
+	}
+	// 再检查一次：若删除流程在断开期间启动，绝不能把已删除账号的 Session 重新写回。
+	if e.accountConnectionBlocked(key) {
+		return fmt.Errorf("账号正在删除或变更连接配置，已取消 DC 会话写入")
 	}
 	if err := e.StoreImportedSession(ctx, acc.SessionName, "", &storage.Session{
 		SessionID: acc.SessionName,
