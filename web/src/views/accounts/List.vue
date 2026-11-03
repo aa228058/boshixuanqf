@@ -1662,7 +1662,13 @@ async function saveRemark() {
     await setAccountProxy(editingAccount.value.account_id, editProxyText.value.trim())
   } catch (e: unknown) {
     await accountStore.fetchAccounts(true)
-    toast({ type: 'warning', title: '备注已保存, 代理设置失败', message: (e instanceof Error ? e.message : '请检查代理格式后重试') })
+    const message = e instanceof Error ? e.message : '请检查代理格式后重试'
+    const proxySaved = message.includes('代理已保存')
+    toast({
+      type: 'warning',
+      title: proxySaved ? '代理已保存, 但旧连接断开失败' : '备注已保存, 代理设置失败',
+      message,
+    })
     return
   }
   showEditRemark.value = false
