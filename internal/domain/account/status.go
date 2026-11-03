@@ -213,7 +213,10 @@ func randomDuration(max time.Duration) time.Duration {
 	if max <= 0 {
 		return 0
 	}
-	n, _ := rand.Int(rand.Reader, big.NewInt(int64(max)))
+	n, err := rand.Int(rand.Reader, big.NewInt(int64(max)))
+	if err != nil {
+		return max / 2
+	}
 	return time.Duration(n.Int64())
 }
 
