@@ -48,6 +48,7 @@ func (e *Engine) MigrateDC(ctx context.Context, tenantID, accountID uuid.UUID, t
 	}
 
 	var migrateErr error
+	var newKey []byte
 	if managed && mc.client != nil && mc.client.IsConnected() {
 		// 保活客户端必须独占使用；迁移主体返回后先释放锁，再断开管理客户端。
 		if !mc.mu.TryLock() {
@@ -55,7 +56,7 @@ func (e *Engine) MigrateDC(ctx context.Context, tenantID, accountID uuid.UUID, t
 		}
 		func() {
 			defer mc.mu.Unlock()
-			migrateErr = e.migrateDCWithSource(ctx, tenantID, accountID, acc.SessionName, mc.client, userID, oldDC, targetDC)
+			newKey, migrateErr = e.migrateDCWithSource(ctx, tenantID, accountID, acc.SessionName, mc.client, userID, oldDC, targetDC)
 		}()
 	} else {
 		c, err := e.GetClient(ctx, tenantID, accountID)
@@ -64,14 +65,24 @@ func (e *Engine) MigrateDC(ctx context.Context, tenantID, accountID uuid.UUID, t
 		}
 		func() {
 			defer e.ReleaseClient(tenantID, accountID, c)
-			migrateErr = e.migrateDCWithSource(ctx, tenantID, accountID, acc.SessionName, c, userID, oldDC, targetDC)
+			newKey, migrateErr = e.migrateDCWithSource(ctx, tenantID, accountID, acc.SessionName, c, userID, oldDC, targetDC)
 		}()
 	}
 	if migrateErr != nil {
 		return migrateErr
 	}
+	// 先完整断开并等待源 Session flush，再写入新密钥，避免旧客户端最终 flush 覆盖新 DC。
 	if err := e.DisconnectAccount(ctx, tenantID, accountID); err != nil {
-		return fmt.Errorf("DC%d 会话已写入，但旧客户端断开失败，请重试断开后再使用账号: %w", targetDC, err)
+		return fmt.Errorf("旧客户端断开失败，新 DC%d 会话尚未写入，请重试断开后再迁移: %w", targetDC, err)
+	}
+	if err := e.StoreImportedSession(ctx, acc.SessionName, "", &storage.Session{
+		SessionID: acc.SessionName,
+		DC:        int(targetDC),
+		APIID:     int32(e.cfg.TGAPIID),
+		AuthKey:   newKey,
+		UserID:    userID,
+	}); err != nil {
+		return fmt.Errorf("旧客户端已安全断开，但写入新 DC%d 会话失败；数据库仍保留旧会话，可重试迁移: %w", targetDC, err)
 	}
 	log.Printf("[migrate] 账号 %s 已从 DC%d 迁移到 DC%d\n", accountID, oldDC, targetDC)
 	return nil
@@ -80,7 +91,7 @@ func (e *Engine) MigrateDC(ctx context.Context, tenantID, accountID uuid.UUID, t
 // migrateDCWithSource 用已就位的源DC连接执行迁移主体。
 // T修复: 目标DC客户端先建好连, 再导出授权令牌 —— 令牌窗口压到一次 RPC 内,
 // 避免"先取令牌再 Connect(最长45s)"导致令牌过期、迁移失败进冷却。
-func (e *Engine) migrateDCWithSource(ctx context.Context, tenantID, accountID uuid.UUID, sessionName string, src *telegram.Client, userID int64, oldDC, targetDC int32) error {
+func (e *Engine) migrateDCWithSource(ctx context.Context, tenantID, accountID uuid.UUID, sessionName string, src *telegram.Client, userID int64, oldDC, targetDC int32) ([]byte, error) {
 	// 3. 目标DC临时客户端：全新匿名DH握手，走HTTP传输（目标DC可达即可）
 	cfg := &telegram.Config{
 		APIID:         int32(e.cfg.TGAPIID),
@@ -92,11 +103,11 @@ func (e *Engine) migrateDCWithSource(ctx context.Context, tenantID, accountID uu
 	}
 	dst, err := telegram.NewClient(cfg.APIID, cfg.APIHash, cfg)
 	if err != nil {
-		return fmt.Errorf("创建目标DC客户端失败: %w", err)
+		return nil, fmt.Errorf("创建目标DC客户端失败: %w", err)
 	}
 	if err := dst.Connect(45 * time.Second); err != nil {
 		dst.Stop()
-		return fmt.Errorf("连接目标DC失败（该DC的HTTP传输也不通?）: %w", err)
+		return nil, fmt.Errorf("连接目标DC失败（该DC的HTTP传输也不通?）: %w", err)
 	}
 	defer dst.Stop()
 
@@ -105,7 +116,7 @@ func (e *Engine) migrateDCWithSource(ctx context.Context, tenantID, accountID uu
 	exp, err := src.Raw().AuthExportAuthorization(expCtx, &tg.AuthExportAuthorizationRequest{DCID: targetDC})
 	expCancel()
 	if err != nil {
-		return fmt.Errorf("源DC导出授权失败: %w", err)
+		return nil, fmt.Errorf("源DC导出授权失败: %w", err)
 	}
 
 	// 5. 目标DC导入授权 → 该 auth_key 获得账号身份
@@ -115,31 +126,17 @@ func (e *Engine) migrateDCWithSource(ctx context.Context, tenantID, accountID uu
 		Bytes: exp.Bytes,
 	}); err != nil {
 		impCancel()
-		return fmt.Errorf("目标DC导入授权失败: %w", err)
+		return nil, fmt.Errorf("目标DC导入授权失败: %w", err)
 	}
 	impCancel()
-
-	// 6. 先停止源客户端并等待其最终 Session flush 完成，再写入新 DC 密钥。
-	// 否则 DisconnectAccount 的异步 Stop 可能在新密钥写库后把旧密钥覆盖回来。
-	src.Stop()
 
 	// 抠出目标DC的 auth_key，覆盖库存会话
 	newKey := dst.Session().AuthKey()
 	if len(newKey) != 256 {
-		return fmt.Errorf("目标DC auth_key 长度异常: %d", len(newKey))
+		return nil, fmt.Errorf("目标DC auth_key 长度异常: %d", len(newKey))
 	}
-	if err := e.StoreImportedSession(ctx, sessionName, "", &storage.Session{
-		SessionID: sessionName,
-		DC:        int(targetDC),
-		APIID:     int32(e.cfg.TGAPIID),
-		AuthKey:   newKey,
-		UserID:    userID,
-	}); err != nil {
-		return fmt.Errorf("写入新会话失败（旧会话未动，可重试）: %w", err)
-	}
+	return newKey, nil
 
-	// 旧客户端的断开由 MigrateDC 在释放客户端锁后统一执行。
-	return nil
 }
 
 // autoMigrateInfo 迁移判定缓存条目: 会话名+DC 5分钟内免查库。
