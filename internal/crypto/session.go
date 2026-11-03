@@ -6,12 +6,17 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"io"
 	"log"
 	"os"
 	"sync"
 )
+
+// ErrLegacyPlaintext marks data that predates encrypted session storage.
+// Authentication failures are deliberately not classified as legacy plaintext.
+var ErrLegacyPlaintext = errors.New("legacy plaintext session data")
 
 // sessionKey caches the derived key for process lifetime. Key is read from
 // env on first use; caching avoids re-hashing on every encrypt/decrypt call.
@@ -71,7 +76,7 @@ func Decrypt(ciphertext string) ([]byte, error) {
 	key := GetSessionKey()
 	data, err := base64.StdEncoding.DecodeString(ciphertext)
 	if err != nil {
-		return nil, fmt.Errorf("decode base64: %w", err)
+		return nil, fmt.Errorf("%w: decode base64: %v", ErrLegacyPlaintext, err)
 	}
 	block, err := aes.NewCipher(key)
 	if err != nil {
@@ -82,7 +87,7 @@ func Decrypt(ciphertext string) ([]byte, error) {
 		return nil, fmt.Errorf("create GCM: %w", err)
 	}
 	if len(data) < gcm.NonceSize() {
-		return nil, fmt.Errorf("ciphertext too short")
+		return nil, fmt.Errorf("%w: ciphertext too short", ErrLegacyPlaintext)
 	}
 	nonce, ciphertextBytes := data[:gcm.NonceSize()], data[gcm.NonceSize():]
 	return gcm.Open(nil, nonce, ciphertextBytes, nil)

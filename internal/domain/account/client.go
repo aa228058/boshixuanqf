@@ -482,7 +482,9 @@ func stopManagedAsync(mc *managedClient) {
 	}
 	for i := 0; i < 30; i++ {
 		if mc.mu.TryLock() {
-			mc.client.Stop()
+			if mc.client.IsConnected() {
+				mc.client.Stop()
+			}
 			mc.mu.Unlock()
 			return
 		}
@@ -496,13 +498,15 @@ func stopManagedAsync(mc *managedClient) {
 func (e *Engine) DisconnectAccount(ctx context.Context, tenantID, accountID uuid.UUID) error {
 	key := accountKey(tenantID, accountID)
 
-	// Remove from auth flow
+	// Remove from auth flow and wait for its final Session flush before returning.
 	e.mu.Lock()
-	if mc, ok := e.clients[key]; ok {
-		mc.cancel()
-		delete(e.clients, key)
-	}
+	mc := e.clients[key]
+	if mc != nil { delete(e.clients, key) }
 	e.mu.Unlock()
+	if mc != nil {
+		mc.cancel()
+		stopManagedAsync(mc)
+	}
 
 	// Remove from pool
 	// R181: 锁内只摘除, 锁外异步停 —— 此前持全局 poolMu 裸 Stop: 秒级慢操作阻塞全部
@@ -514,11 +518,10 @@ func (e *Engine) DisconnectAccount(ctx context.Context, tenantID, accountID uuid
 	}
 	e.poolMu.Unlock()
 	if hadPooled {
-		// entry 已从池摘除，但调用方可能仍持有 pc.mu 使用客户端。
-		// 登记为 orphan 后，ReleaseClient 才能在实例身份匹配时释放旧锁，
-		// stopPooledAsync 随后即可安全停止，不必等 30 秒强停。
+		// Wait for the active user to release the client and for Stop to finish
+		// flushing the Session before account credentials are deleted.
 		e.registerOrphan(pc)
-		go e.stopPooledAsync(pc)
+		e.stopPooledAsync(pc)
 	}
 
 	return e.updateStatus(ctx, tenantID, accountID, domain.AccountStatusOffline)

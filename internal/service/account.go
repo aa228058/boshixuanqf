@@ -355,8 +355,8 @@ func (s *AccountService) Delete(ctx context.Context, tenantID, accountID uuid.UU
 		return err
 	}
 	if err := s.engine.DisconnectAccount(ctx, tenantID, accountID); err != nil {
-		// Log but continue — account may not be connected
-		log.Printf("[account] warn: disconnect account %s: %v", accountID, err)
+		// Do not delete credentials while a client may still be flushing its Session.
+		return fmt.Errorf("disconnect account before deletion: %w", err)
 	}
 	if err := s.repo.Delete(ctx, tenantID, accountID); err != nil {
 		return err

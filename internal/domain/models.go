@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -220,7 +221,7 @@ type Account struct {
 	DC           int32                  `json:"dc" db:"-"`
 	DCLine       string                 `json:"dc_line,omitempty" db:"-"`
 	// 代理(049): socks5://user:pass@host:port, 空=直连
-	ProxyURL string `json:"proxy_url,omitempty" db:"proxy_url"`
+	ProxyURL string `json:"-" db:"proxy_url"`
 	// 抽奖助手(055): 该账号是否参与自动抽奖, 默认 true
 	RaffleEnabled bool `json:"raffle_enabled" db:"raffle_enabled"`
 	// 备用池(056): active=启用(占套餐额度) / standby=备用(不占额度, 停业务)
@@ -254,7 +255,22 @@ func (a Account) MarshalJSON() ([]byte, error) {
 	type Alias Account
 	return json.Marshal(struct {
 		Alias
-	}{Alias: (Alias)(a)})
+		ProxyURL string `json:"proxy_url,omitempty"`
+	}{Alias: (Alias)(a), ProxyURL: safeProxyDisplay(a.ProxyURL)})
+}
+
+// safeProxyDisplay preserves the endpoint for the UI while stripping credentials,
+// paths, query parameters and fragments that may contain secrets.
+func safeProxyDisplay(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+	u, err := url.Parse(raw)
+	if err != nil || u.Scheme == "" || u.Host == "" {
+		return "已配置代理"
+	}
+	return u.Scheme + "://" + u.Host
 }
 
 // Task represents a task to be executed.

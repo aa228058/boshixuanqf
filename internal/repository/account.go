@@ -299,15 +299,31 @@ func (r *AccountRepository) Delete(ctx context.Context, tenantID, accountID uuid
 			sessionName = sn.String
 		}
 
-		// Cascade delete related records first (order matters for FK constraints)
+		// Snapshot account identity before removing credentials. Historical task/risk records
+		// keep the original UUID and human-readable account details after account deletion.
+		if _, err := tx.Exec(ctx, `UPDATE task_logs tl SET
+			account_phone_snapshot = COALESCE(a.phone, ''),
+			account_remark_snapshot = COALESCE(a.remark, '')
+			FROM accounts a WHERE tl.account_id = a.account_id
+			AND tl.tenant_id = $1 AND tl.account_id = $2`, tenantID, accountID); err != nil {
+			return fmt.Errorf("snapshot task logs: %w", err)
+		}
+		if _, err := tx.Exec(ctx, `UPDATE risk_events re SET
+			account_phone_snapshot = COALESCE(a.phone, ''),
+			account_remark_snapshot = COALESCE(a.remark, '')
+			FROM accounts a WHERE re.account_id = a.account_id
+			AND re.tenant_id = $1 AND re.account_id = $2`, tenantID, accountID); err != nil {
+			return fmt.Errorf("snapshot risk events: %w", err)
+		}
+
+		// Cascade delete operational records first (order matters for FK constraints).
+		// task_logs and risk_events are intentionally retained as historical records.
 		tables := []struct {
 			name string
 			sql  string
 			args []any
 		}{
 			{"account_quotas", `DELETE FROM account_quotas WHERE account_id = $1`, []any{accountID}},
-			{"risk_events", `DELETE FROM risk_events WHERE tenant_id = $1 AND account_id = $2`, []any{tenantID, accountID}},
-			{"task_logs", `DELETE FROM task_logs WHERE tenant_id = $1 AND account_id = $2`, []any{tenantID, accountID}},
 			{"pending_approvals", `DELETE FROM pending_approvals WHERE tenant_id = $1 AND account_id = $2`, []any{tenantID, accountID}},
 			{"scraped_links", `DELETE FROM scraped_links WHERE tenant_id = $1 AND account_id = $2`, []any{tenantID, accountID}},
 			{"account_groups", `DELETE FROM account_groups WHERE account_id = $1`, []any{accountID}},

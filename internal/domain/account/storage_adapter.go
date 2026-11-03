@@ -2,8 +2,8 @@ package account
 
 import (
 	"context"
+	"errors"
 	"fmt"
-	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -88,7 +88,7 @@ func (a *PgxPoolAdapter) LoadSession() (*storage.Session, error) {
 	if len(authKeyEnc) > 0 {
 		if decrypted, decErr := crypto.Decrypt(string(authKeyEnc)); decErr == nil {
 			sess.AuthKey = decrypted
-		} else if strings.Contains(decErr.Error(), "decode base64") || strings.Contains(decErr.Error(), "ciphertext too short") {
+		} else if errors.Is(decErr, crypto.ErrLegacyPlaintext) {
 			// Plaintext fallback (legacy data before encryption migration)
 			sess.AuthKey = authKeyEnc
 		} else {
@@ -100,7 +100,7 @@ func (a *PgxPoolAdapter) LoadSession() (*storage.Session, error) {
 	if len(stateEnc) > 0 {
 		if decrypted, decErr := crypto.Decrypt(string(stateEnc)); decErr == nil {
 			sess.State = decrypted
-		} else if strings.Contains(decErr.Error(), "decode base64") || strings.Contains(decErr.Error(), "ciphertext too short") {
+		} else if errors.Is(decErr, crypto.ErrLegacyPlaintext) {
 			sess.State = stateEnc
 		} else {
 			return nil, fmt.Errorf("load session: decrypt state failed: %w", decErr)
