@@ -68,7 +68,10 @@ func (e *Engine) getAllDialogs(ctx context.Context, client *telegram.Client) ([]
 	seen := make(map[int64]bool)
 
 	// 私聊必须先拉: 深度分页容易触发 FLOOD_WAIT, 把私聊请求放在分页之前
-	privateDialogs := e.getPrivateDialogs(ctx, client)
+	privateDialogs, privateErr := e.getPrivateDialogs(ctx, client)
+	if privateErr != nil {
+		return nil, fmt.Errorf("get private dialogs: %w", privateErr)
+	}
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -251,7 +254,7 @@ func (e *Engine) ResolvePeer(ctx context.Context, tenantID, accountID uuid.UUID,
 // 私聊(PeerUser)的对方资料在响应的 Users 数组中, 封装层 GetDialogs 只返回 Chats。
 // 翻页偏移三件套必须真实: offset_date=最后一条消息的日期(从Messages里查),
 // offset_id=TopMessage, offset_peer=最后对话框的Peer(用户/群/频道各自带AccessHash)。
-func (e *Engine) getPrivateDialogs(ctx context.Context, client *telegram.Client) []map[string]any {
+func (e *Engine) getPrivateDialogs(ctx context.Context, client *telegram.Client) ([]map[string]any, error) {
 	var all []map[string]any
 	seen := make(map[int64]bool)
 	var offsetDate, offsetID, prevLastMsg int32
@@ -262,7 +265,7 @@ func (e *Engine) getPrivateDialogs(ctx context.Context, client *telegram.Client)
 		if page > 0 {
 			select {
 			case <-ctx.Done():
-				return all
+				return all, ctx.Err()
 			case <-time.After(1500 * time.Millisecond):
 			}
 		}
@@ -280,7 +283,7 @@ func (e *Engine) getPrivateDialogs(ctx context.Context, client *telegram.Client)
 				break
 			}
 			log.Printf("[dialogs] get private dialogs failed: %v", err)
-			return nil
+			return nil, fmt.Errorf("get private dialogs page %d: %w", page, err)
 		}
 
 		var dialogs *tg.MessagesDialogs
@@ -291,7 +294,7 @@ func (e *Engine) getPrivateDialogs(ctx context.Context, client *telegram.Client)
 			dialogs = &tg.MessagesDialogs{Dialogs: d.Dialogs, Users: d.Users, Chats: d.Chats, Messages: d.Messages}
 		default:
 			log.Printf("[dialogs] unexpected response type: %T", resp)
-			return all
+			return all, fmt.Errorf("get private dialogs page %d: unexpected response type %T", page, resp)
 		}
 		if len(dialogs.Dialogs) == 0 {
 			break
@@ -381,9 +384,9 @@ func (e *Engine) getPrivateDialogs(ctx context.Context, client *telegram.Client)
 			}
 			offsetPeer = np
 		default:
-			return all
+			return all, fmt.Errorf("get private dialogs page %d: unsupported offset peer type %T", page, last.Peer)
 		}
 	}
 
-	return all
+	return all, nil
 }
