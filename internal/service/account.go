@@ -2,6 +2,8 @@ package service
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -191,6 +193,12 @@ func (s *AccountService) Create(ctx context.Context, tenantID uuid.UUID, phone s
 	return acc, nil
 }
 
+// sessionFingerprint returns a stable digest of the Telegram auth key. The key itself is never stored here.
+func sessionFingerprint(authKey []byte) string {
+	sum := sha256.Sum256(authKey)
+	return hex.EncodeToString(sum[:])
+}
+
 // ImportResult 批量导入结果
 type ImportResult struct {
 	Created   int      `json:"created"`
@@ -240,6 +248,7 @@ func (s *AccountService) ImportSessions(ctx context.Context, tenantID uuid.UUID,
 			AccountID:     accountID,
 			TenantID:      tenantID,
 			Source:        "protocol",
+			SessionFingerprint: sessionFingerprint(sess.AuthKey),
 			Remark:        remark,
 			SessionName:   fmt.Sprintf("acc_%s", accountID.String()),
 			Status:        domain.AccountStatusOffline,
@@ -573,6 +582,7 @@ func (s *AccountService) ImportSessionFiles(ctx context.Context, tenantID uuid.U
 			AccountID:     accountID,
 			TenantID:      tenantID,
 			Source:        "protocol",
+			SessionFingerprint: sessionFingerprint(sess.AuthKey),
 			Phone:         phone, // R182: entities.phone 或文件名解析, 此前为空导致导入后无手机号
 			Remark:        remark,
 			SessionName:   fmt.Sprintf("acc_%s", accountID.String()),

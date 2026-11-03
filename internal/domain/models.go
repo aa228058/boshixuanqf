@@ -191,6 +191,7 @@ type Account struct {
 	Source        string         `json:"source" db:"source"` // phone=正常号 | protocol=协议号
 
 	SessionName   string         `json:"session_name" db:"session_name"`
+	SessionFingerprint string `json:"-" db:"session_fingerprint"`
 	Status        AccountStatus  `json:"status" db:"status"`
 	Level         AccountLevel   `json:"level" db:"level"`
 	HealthScore   int            `json:"health_score" db:"health_score"`

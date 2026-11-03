@@ -225,9 +225,9 @@ func (r *AccountRepository) GetByID(ctx context.Context, tenantID, accountID uui
 // source 必须入库：037 迁移后该列默认 'phone'，缺省写入导致协议号全被标成正常号（串世界根因）
 func (r *AccountRepository) Create(ctx context.Context, a *domain.Account) error {
 	_, err := r.db.Exec(ctx, `
-		INSERT INTO accounts (account_id, tenant_id, phone, session_name, status, level, health_score, device_profile, remark, source)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
-		a.AccountID, a.TenantID, a.Phone, a.SessionName, a.Status, a.Level, a.HealthScore, a.DeviceProfile, a.Remark, a.Source)
+		INSERT INTO accounts (account_id, tenant_id, phone, session_name, status, level, health_score, device_profile, remark, source, session_fingerprint)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, NULLIF($11, ''))`,
+		a.AccountID, a.TenantID, a.Phone, a.SessionName, a.Status, a.Level, a.HealthScore, a.DeviceProfile, a.Remark, a.Source, a.SessionFingerprint)
 	return err
 }
 
@@ -250,9 +250,9 @@ func (r *AccountRepository) CountAndCreate(ctx context.Context, a *domain.Accoun
 			return fmt.Errorf("account limit reached: %d/%d", count, maxAccounts)
 		}
 		_, err := tx.Exec(ctx, `
-			INSERT INTO accounts (account_id, tenant_id, phone, session_name, status, level, health_score, device_profile, remark, source)
-			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
-			a.AccountID, a.TenantID, a.Phone, a.SessionName, a.Status, a.Level, a.HealthScore, a.DeviceProfile, a.Remark, a.Source)
+			INSERT INTO accounts (account_id, tenant_id, phone, session_name, status, level, health_score, device_profile, remark, source, session_fingerprint)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, NULLIF($11, ''))`,
+			a.AccountID, a.TenantID, a.Phone, a.SessionName, a.Status, a.Level, a.HealthScore, a.DeviceProfile, a.Remark, a.Source, a.SessionFingerprint)
 		return err
 	})
 	if err != nil {
