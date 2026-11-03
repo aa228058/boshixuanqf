@@ -28,8 +28,14 @@ func (e *Engine) StartSessionBackup() {
 }
 
 func (e *Engine) backupSessionFiles() {
-	if err := os.MkdirAll(e.backupDir, 0o755); err != nil {
+	if err := os.MkdirAll(e.backupDir, 0o700); err != nil {
 		log.Printf("[BACKUP] 创建备份目录失败: %v", err)
+		return
+	}
+	// Session 备份包含可直接登录的 auth_key，目录必须仅允许当前服务用户访问；
+	// MkdirAll 不会收紧已存在目录的权限，因此显式 Chmod。
+	if err := os.Chmod(e.backupDir, 0o700); err != nil {
+		log.Printf("[BACKUP] 收紧备份目录权限失败: %v", err)
 		return
 	}
 	entries, err := os.ReadDir(".")
@@ -49,7 +55,7 @@ func (e *Engine) backupSessionFiles() {
 			log.Printf("[BACKUP] 读取 %s 失败: %v", src, err)
 			continue
 		}
-		if err := os.WriteFile(dst, data, 0644); err != nil {
+		if err := os.WriteFile(dst, data, 0o600); err != nil {
 			log.Printf("[BACKUP] 写入 %s 失败: %v", dst, err)
 			continue
 		}
