@@ -27,13 +27,11 @@ func (e *Engine) MigrateDC(ctx context.Context, tenantID, accountID uuid.UUID, t
 		return fmt.Errorf("目标 DC 必须是 1-5，收到 %d", targetDC)
 	}
 
-	// 1. 拿活着的源DC客户端：优先保活的常驻客户端，其次池里现成连接
 	key := accountKey(tenantID, accountID)
 	e.mu.RLock()
 	mc, managed := e.clients[key]
 	e.mu.RUnlock()
 
-	// 2. 读账号与旧会话元数据（UserID 迁移后不变）
 	acc, err := e.repo.GetByID(ctx, tenantID, accountID)
 	if err != nil {
 		return err
@@ -49,23 +47,30 @@ func (e *Engine) MigrateDC(ctx context.Context, tenantID, accountID uuid.UUID, t
 		return fmt.Errorf("会话已在 DC%d，无需迁移", targetDC)
 	}
 
-	// K修复: 保活源连接必须持 mc.mu 使用(mtgo 非线程安全, 任务可能正占用)。
-	// TryLock 失败说明任务执行中, 本轮迁移放弃稍后重试, 绝不阻塞等锁。
+	var migrateErr error
 	if managed && mc.client != nil && mc.client.IsConnected() {
+		// 保活客户端必须独占使用；迁移主体返回后先释放锁，再断开管理客户端。
 		if !mc.mu.TryLock() {
 			return fmt.Errorf("账号 %s 正被任务占用, DC 迁移请稍后重试", accountID)
 		}
-		defer mc.mu.Unlock()
-		log.Printf("[migrate] 账号 %s 使用保活连接作为源DC\n", accountID)
-		return e.migrateDCWithSource(ctx, tenantID, accountID, acc.SessionName, mc.client, userID, oldDC, targetDC)
+		migrateErr = e.migrateDCWithSource(ctx, tenantID, accountID, acc.SessionName, mc.client, userID, oldDC, targetDC)
+		mc.mu.Unlock()
+	} else {
+		c, err := e.GetClient(ctx, tenantID, accountID)
+		if err != nil {
+			return fmt.Errorf("拿不到源DC连接（需先连上保活再迁移）: %w", err)
+		}
+		migrateErr = e.migrateDCWithSource(ctx, tenantID, accountID, acc.SessionName, c, userID, oldDC, targetDC)
+		e.ReleaseClient(tenantID, accountID, c)
 	}
-
-	c, err := e.GetClient(ctx, tenantID, accountID)
-	if err != nil {
-		return fmt.Errorf("拿不到源DC连接（需先连上保活再迁移）: %w", err)
+	if migrateErr != nil {
+		return migrateErr
 	}
-	defer e.ReleaseClient(tenantID, accountID, c)
-	return e.migrateDCWithSource(ctx, tenantID, accountID, acc.SessionName, c, userID, oldDC, targetDC)
+	if err := e.DisconnectAccount(ctx, tenantID, accountID); err != nil {
+		return fmt.Errorf("DC%d 会话已写入，但旧客户端断开失败，请重试断开后再使用账号: %w", targetDC, err)
+	}
+	log.Printf("[migrate] 账号 %s 已从 DC%d 迁移到 DC%d\n", accountID, oldDC, targetDC)
+	return nil
 }
 
 // migrateDCWithSource 用已就位的源DC连接执行迁移主体。
@@ -129,9 +134,7 @@ func (e *Engine) migrateDCWithSource(ctx context.Context, tenantID, accountID uu
 		return fmt.Errorf("写入新会话失败（旧会话未动，可重试）: %w", err)
 	}
 
-	// 7. 断开旧DC连接（保活/池化），状态回待机，下次取客户端自动走新DC
-	_ = e.DisconnectAccount(ctx, tenantID, accountID)
-	log.Printf("[migrate] 账号 %s 已从 DC%d 迁移到 DC%d\n", accountID, oldDC, targetDC)
+	// 旧客户端的断开由 MigrateDC 在释放客户端锁后统一执行。
 	return nil
 }
 
