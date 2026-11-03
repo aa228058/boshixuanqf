@@ -191,9 +191,34 @@ func (e *Engine) storeAvatar(ctx context.Context, tenantID, accountID uuid.UUID,
 		return fmt.Errorf("mkdir avatar dir: %w", err)
 	}
 	name := accountID.String() + ".jpg"
-	if err := os.WriteFile(filepath.Join(e.cfg.AvatarDir, name), data, 0644); err != nil {
+	// 先写同目录临时文件，再原子替换正式头像，避免前端恰好读取时拿到
+	// WriteFile 截断/写入中的半张图片。
+	tmp, err := os.CreateTemp(e.cfg.AvatarDir, ".avatar-"+accountID.String()+"-*")
+	if err != nil {
+		logAvatarErrf("write:"+accountID.String(), "账号 %s 头像临时文件创建失败: %v", accountID, err)
+		return fmt.Errorf("create avatar temp file: %w", err)
+	}
+	tmpName := tmp.Name()
+	defer os.Remove(tmpName)
+	if err := tmp.Chmod(0644); err != nil {
+		tmp.Close()
+		return fmt.Errorf("chmod avatar temp file: %w", err)
+	}
+	if _, err := tmp.Write(data); err != nil {
+		tmp.Close()
 		logAvatarErrf("write:"+accountID.String(), "账号 %s 头像写入失败: %v", accountID, err)
 		return fmt.Errorf("write avatar: %w", err)
+	}
+	if err := tmp.Sync(); err != nil {
+		tmp.Close()
+		return fmt.Errorf("sync avatar: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("close avatar: %w", err)
+	}
+	if err := os.Rename(tmpName, filepath.Join(e.cfg.AvatarDir, name)); err != nil {
+		logAvatarErrf("write:"+accountID.String(), "账号 %s 头像替换失败: %v", accountID, err)
+		return fmt.Errorf("replace avatar: %w", err)
 	}
 	if err := e.repo.UpdateAvatarPath(ctx, tenantID, accountID, name); err != nil {
 		return fmt.Errorf("update avatar_path: %w", err)
