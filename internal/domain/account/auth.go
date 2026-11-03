@@ -272,7 +272,6 @@ func (e *Engine) runAuth(ctx context.Context, mc *managedClient, key, sessionNam
 			// panic 不能只记日志：否则认证客户端仍留在 clients，状态可能永久停在
 			// pending_auth，后续重新连接也会被误判为 auth already in progress。
 			mc.cancel()
-			e.removeClient(key)
 			if mc.client != nil {
 				func() {
 					defer func() {
@@ -283,6 +282,15 @@ func (e *Engine) runAuth(ctx context.Context, mc *managedClient, key, sessionNam
 					mc.client.Stop()
 				}()
 			}
+			// 若 Idle 已启动，panic 清理也必须等待它结束，避免最终 flush
+			// 与后续 DisconnectAccount/Session 删除并发。
+			mc.mu.Lock()
+			idleStarted, idleDone := mc.idleStarted, mc.idleDone
+			mc.mu.Unlock()
+			if idleStarted && idleDone != nil {
+				<-idleDone
+			}
+			e.removeClient(key)
 			statusCtx, statusCancel := context.WithTimeout(context.Background(), 5*time.Second)
 			if err := e.updateStatus(statusCtx, tenantID, accountID, domain.AccountStatusOffline); err != nil {
 				log.Printf("[AUTH] panic 清理时更新账号 %s 状态失败: %v", accountID, err)
