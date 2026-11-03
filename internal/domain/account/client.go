@@ -475,8 +475,7 @@ func (e *Engine) stopPooledAsync(pc *pooledClient) (stopped bool) {
 	}
 	// 超时强停可能与仍在执行的 RPC 竞争。调用方必须知道未能安全停机，
 	// 尤其账号删除流程不能在此时继续删除 Session 凭据。
-	log.Printf("[client] 账号 %s 客户端等待锁超时, 强制停止", pc.accountID)
-	pc.client.Stop()
+	log.Printf("[client] 账号 %s 客户端等待锁超时，未安全停止", pc.accountID)
 	return false
 }
 
@@ -502,8 +501,7 @@ func stopManagedAsync(mc *managedClient) (stopped bool) {
 		}
 		time.Sleep(time.Second)
 	}
-	log.Printf("[client] 保活账号 %s 客户端等待锁超时, 强制停止", mc.accountID)
-	mc.client.Stop()
+	log.Printf("[client] 保活账号 %s 客户端等待锁超时，未安全停止", mc.accountID)
 	return false
 }
 
