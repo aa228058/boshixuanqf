@@ -55,14 +55,10 @@ func ParseTelethonSessionFile(ctx context.Context, path string) (*storage.Sessio
 		return nil, "", "", fmt.Errorf("auth_key 长度异常: %d，期望 256 字节", len(authKey))
 	}
 
-	// R182: entities 表存着登录账号的手机号(Telethon 标准字段, 号商导出文件都有),
-	// 提取用于账号显示。此前只取 server:port, 手机号全靠手工填——审计报告反馈的"导入后无手机号"。
+	// entities 表缓存的是联系人/用户目录，不保证其中任意一条记录属于当前登录账号。
+	// 因此不能把第一条带 phone 的 entity 当作账号本人号码；手机号交由导入服务
+	// 从文件名或同名 sidecar 等明确元数据推断，无法确认时保持为空。
 	phone := ""
-	var entPhone int64
-	if err := db.QueryRowContext(ctx,
-		`SELECT phone FROM entities WHERE phone IS NOT NULL AND phone != 0 LIMIT 1`).Scan(&entPhone); err == nil && entPhone > 0 {
-		phone = fmt.Sprintf("+%d", entPhone)
-	}
 
 	return &storage.Session{
 		DC:      dcID,
