@@ -868,7 +868,9 @@ async function runBatchProfile() {
     if (r.failed === 0) {
       toast({ type: 'success', message: `${r.success} 个账号资料已修改` })
     } else {
-      toast({ type: 'warning', message: `成功 ${r.success}, 失败 ${r.failed} 个` })
+      const details = Array.isArray(r.errors) ? r.errors.slice(0, 3).join('；') : ''
+      const suffix = r.errors?.length > 3 ? `；另有 ${r.errors.length - 3} 项错误` : ''
+      toast({ type: 'warning', message: `成功 ${r.success}, 失败 ${r.failed} 个${details ? '：' + details + suffix : ''}` })
     }
     showBatchProfile.value = false
     selectedIds.value = new Set()
