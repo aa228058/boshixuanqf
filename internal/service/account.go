@@ -262,16 +262,24 @@ func (s *AccountService) ImportSessions(ctx context.Context, tenantID uuid.UUID,
 			continue
 		}
 		if err := s.quota.InitAccountQuotas(ctx, acc.AccountID, acc.Level); err != nil {
-			_ = s.repo.Delete(ctx, tenantID, accountID)
+			cleanupErr := s.repo.Delete(ctx, tenantID, accountID)
 			result.Failed++
-			result.Errors = append(result.Errors, fmt.Sprintf("第%d行: 配额初始化失败(%v)", i+1, err))
+			if cleanupErr != nil {
+				result.Errors = append(result.Errors, fmt.Sprintf("第%d行: 配额初始化失败(%v)，且账号回滚失败(%v)，请检查并清理残留账号", i+1, err, cleanupErr))
+			} else {
+				result.Errors = append(result.Errors, fmt.Sprintf("第%d行: 配额初始化失败(%v)", i+1, err))
+			}
 			continue
 		}
 		if err := s.engine.StoreImportedSession(ctx, acc.SessionName, serverAddr, sess); err != nil {
-			_ = s.repo.Delete(ctx, tenantID, accountID)
-			_ = s.quota.DeleteByAccount(ctx, accountID)
+			accountCleanupErr := s.repo.Delete(ctx, tenantID, accountID)
+			quotaCleanupErr := s.quota.DeleteByAccount(ctx, accountID)
 			result.Failed++
-			result.Errors = append(result.Errors, fmt.Sprintf("第%d行: 会话落库失败(%v)", i+1, err))
+			if accountCleanupErr != nil || quotaCleanupErr != nil {
+				result.Errors = append(result.Errors, fmt.Sprintf("第%d行: 会话落库失败(%v)，回滚未完全完成(账号: %v；配额: %v)，请检查残留数据", i+1, err, accountCleanupErr, quotaCleanupErr))
+			} else {
+				result.Errors = append(result.Errors, fmt.Sprintf("第%d行: 会话落库失败(%v)", i+1, err))
+			}
 			continue
 		}
 		result.Created++
