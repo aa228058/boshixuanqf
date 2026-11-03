@@ -708,8 +708,8 @@ func (e *Engine) keepClientAlive(mc *managedClient, tenantID, accountID uuid.UUI
 				log.Printf("[keepalive] 账号 %s 重连成功\n", accountID)
 			}
 			failures = 0
-			// 在线即自动判定: DC 在迁移黑名单 → 后台自动迁移(全自动化, 无需手动点)
-			e.maybeAutoMigrate(tenantID, accountID)
+			// 自动迁移判定已在本轮抢锁前执行；持有 mc.mu 时不可再次触发迁移，
+			// 否则迁移协程只能因同一把锁繁忙而失败。
 			mc.mu.Unlock()
 			continue
 		}
