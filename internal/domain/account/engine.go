@@ -61,6 +61,10 @@ type Engine struct {
 	connectInflightMu sync.Mutex
 	connectInflight   map[string]chan struct{}
 
+	// 同账号连接生命周期串行化：避免断开与建连/认证登记交错。
+	accountOpMu sync.Mutex
+	accountOps   map[string]*accountOperationLock
+
 	// R181: 死会话密钥熔断表(AUTH_KEY_UNREGISTERED 的账号 TTL 内 GetClient 快速失败)
 	deadKeyMu sync.Mutex
 	deadKey   map[uuid.UUID]time.Time
@@ -88,6 +92,38 @@ type Engine struct {
 
 // NOTE: statuses cache removed — GetAccountStatus reads directly from DB for accuracy.
 // If caching is reintroduced, use a TTL-backed map with proper locking.
+
+type accountOperationLock struct {
+	mu   sync.Mutex
+	refs int
+}
+
+// lockAccountOperation 获取账号级生命周期锁。引用计数确保等待者共享同一把锁，
+// 无等待者时回收条目，避免账号频繁增删导致锁表无限增长。
+func (e *Engine) lockAccountOperation(key string) func() {
+	e.accountOpMu.Lock()
+	if e.accountOps == nil {
+		e.accountOps = make(map[string]*accountOperationLock)
+	}
+	op := e.accountOps[key]
+	if op == nil {
+		op = &accountOperationLock{}
+		e.accountOps[key] = op
+	}
+	op.refs++
+	e.accountOpMu.Unlock()
+
+	op.mu.Lock()
+	return func() {
+		op.mu.Unlock()
+		e.accountOpMu.Lock()
+		op.refs--
+		if op.refs == 0 && e.accountOps[key] == op {
+			delete(e.accountOps, key)
+		}
+		e.accountOpMu.Unlock()
+	}
+}
 
 type managedClient struct {
 	keepOnline bool // 导入协议号时置 true: 认证成功后不断开, 保活常驻(用于连通性验证)
