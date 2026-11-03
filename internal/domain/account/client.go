@@ -35,6 +35,9 @@ func (e *Engine) GetClient(ctx context.Context, tenantID, accountID uuid.UUID) (
 // 成功返回时客户端锁由调用方持有(必须配对 ReleaseClient)。
 func (e *Engine) getClientOnce(ctx context.Context, tenantID, accountID uuid.UUID) (client *telegram.Client, retry bool, err error) {
 	key := accountKey(tenantID, accountID)
+	if e.accountConnectionBlocked(key) {
+		return nil, false, fmt.Errorf("account %s is transitioning to standby", accountID)
+	}
 
 	// 0. 保活账号：直接复用常驻客户端（不重复建连，避免同号双连接被 TG 踢）
 	e.mu.RLock()
