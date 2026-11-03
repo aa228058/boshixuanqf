@@ -540,34 +540,33 @@ func (e *Engine) DisconnectAccount(ctx context.Context, tenantID, accountID uuid
 // evictOldestIdleClientLocked removes the oldest idle client from the pool to make room.
 // Caller must hold e.poolMu write lock.
 func (e *Engine) evictOldestIdleClientLocked() bool {
-	if len(e.poolClients) == 0 {
-		return false
-	}
 	var oldestKey string
 	var oldestTime time.Time
+	var oldest *pooledClient
+
+	// 在扫描过程中只短暂持有一个候选客户端锁；繁忙的最老客户端
+	// 不应阻止回收其他空闲连接。
 	for key, pc := range e.poolClients {
-		if oldestKey == "" || pc.lastUsed.Before(oldestTime) {
-			oldestKey = key
-			oldestTime = pc.lastUsed
+		if pc == nil || (oldest != nil && !pc.lastUsed.Before(oldestTime)) {
+			continue
 		}
-	}
-	if oldestKey != "" {
-		pc := e.poolClients[oldestKey]
-		log.Printf("[client] evicting oldest idle client %s to free pool space\n", pc.accountID)
-		// 与 cleanupIdleConnections 一致：先拿 pc.mu 再操作，
-		// 拿不到说明该 client 正在执行任务，跳过本次驱逐避免竞态。
-		// 注意 TryLock 必须在 nil client 判断之外，否则无 client 的
-		// 条目会绕过保护（本文件的 client_test.go 钉死此行为）。
 		if !pc.mu.TryLock() {
 			log.Printf("[client] 账号 %s 正在执行任务，跳过本次驱逐", pc.accountID)
-			return false
+			continue
 		}
-		delete(e.poolClients, oldestKey)
-		pc.mu.Unlock()
-		go e.stopPooledAsync(pc)
-		return true
+		if oldest != nil {
+			oldest.mu.Unlock()
+		}
+		oldestKey, oldestTime, oldest = key, pc.lastUsed, pc
 	}
-	return false
+	if oldest == nil {
+		return false
+	}
+	delete(e.poolClients, oldestKey)
+	log.Printf("[client] evicting oldest idle client %s to free pool space\\n", oldest.accountID)
+	oldest.mu.Unlock()
+	go e.stopPooledAsync(oldest)
+	return true
 }
 
 // evictOldestIdleClient is the public wrapper that acquires the lock.
