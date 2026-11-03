@@ -23,6 +23,9 @@ import (
 // 前提: 必须已有一个活着的源DC连接（保活模式负责保持），导出令牌短时效须立即消费。
 // 回滚: 迁移不注销源DC授权，原 .session 文件重新导入即可回到源DC。
 func (e *Engine) MigrateDC(ctx context.Context, tenantID, accountID uuid.UUID, targetDC int32) error {
+	unlockMigration := e.LockAccountMigration(tenantID, accountID)
+	defer unlockMigration()
+
 	if targetDC < 1 || targetDC > 5 {
 		return fmt.Errorf("目标 DC 必须是 1-5，收到 %d", targetDC)
 	}
