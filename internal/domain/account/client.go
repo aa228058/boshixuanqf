@@ -521,6 +521,13 @@ func (e *Engine) DisconnectAccount(ctx context.Context, tenantID, accountID uuid
 	if mc != nil {
 		mc.cancel()
 		if !stopManagedAsync(mc) {
+			// 保留可重试的管理客户端引用；否则本次返回错误后，第二次删除
+			// 看不到它，可能误以为已完成断连并继续删除 Session。
+			e.mu.Lock()
+			if _, exists := e.clients[key]; !exists {
+				e.clients[key] = mc
+			}
+			e.mu.Unlock()
 			return fmt.Errorf("account %s authentication client did not stop cleanly; retry disconnect before deleting credentials", accountID)
 		}
 	}
@@ -539,6 +546,14 @@ func (e *Engine) DisconnectAccount(ctx context.Context, tenantID, accountID uuid
 		// flushing the Session before account credentials are deleted.
 		e.registerOrphan(pc)
 		if !e.stopPooledAsync(pc) {
+			// 超时后不能丢失该客户端的账号索引；恢复池条目并清理孤儿登记，
+			// 使 ReleaseClient 和下一次 DisconnectAccount 仍能识别同一实例。
+			e.unregisterOrphan(pc)
+			e.poolMu.Lock()
+			if _, exists := e.poolClients[key]; !exists {
+				e.poolClients[key] = pc
+			}
+			e.poolMu.Unlock()
 			return fmt.Errorf("account %s client did not release its session lock; retry disconnect before deleting credentials", accountID)
 		}
 	}
