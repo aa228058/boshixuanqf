@@ -449,15 +449,16 @@ func (e *Engine) unregisterOrphan(pc *pooledClient) {
 
 // stopPooledAsync 异步停止池化客户端: 先礼貌等锁(持有者在用), 等不到最后强停。
 // 绝不持有 poolMu 调用, 也不在锁外裸 Stop(任务并发使用会损坏 mtgo 内部状态)。
-func (e *Engine) stopPooledAsync(pc *pooledClient) {
+func (e *Engine) stopPooledAsync(pc *pooledClient) (stopped bool) {
 	// 崩溃类修复: 本函数被裸 go 调用, Stop() panic 会崩进程, 必须自带 recover
 	defer func() {
 		if r := recover(); r != nil {
 			log.Printf("[client] stopPooledAsync panic: %v", r)
+			stopped = false
 		}
 	}()
 	if pc == nil || pc.client == nil {
-		return
+		return true
 	}
 	for i := 0; i < 30; i++ {
 		if pc.mu.TryLock() {
@@ -468,25 +469,28 @@ func (e *Engine) stopPooledAsync(pc *pooledClient) {
 				pc.client.Stop()
 			}
 			pc.mu.Unlock()
-			return
+			return true
 		}
 		time.Sleep(time.Second)
 	}
-	// 持有者疑似失联(挂起/卡死): 强停。锁由孤儿锁表兜底给 ReleaseClient 解锁。
+	// 超时强停可能与仍在执行的 RPC 竞争。调用方必须知道未能安全停机，
+	// 尤其账号删除流程不能在此时继续删除 Session 凭据。
 	log.Printf("[client] 账号 %s 客户端等待锁超时, 强制停止", pc.accountID)
 	pc.client.Stop()
+	return false
 }
 
 // stopManagedAsync 异步停止保活客户端(同 stopPooledAsync 语义)。
-func stopManagedAsync(mc *managedClient) {
+func stopManagedAsync(mc *managedClient) (stopped bool) {
 	// 崩溃类修复: 同 stopPooledAsync, 裸 go 调用必须自带 recover
 	defer func() {
 		if r := recover(); r != nil {
 			log.Printf("[client] stopManagedAsync panic: %v", r)
+			stopped = false
 		}
 	}()
 	if mc == nil || mc.client == nil {
-		return
+		return true
 	}
 	for i := 0; i < 30; i++ {
 		if mc.mu.TryLock() {
@@ -494,12 +498,13 @@ func stopManagedAsync(mc *managedClient) {
 				mc.client.Stop()
 			}
 			mc.mu.Unlock()
-			return
+			return true
 		}
 		time.Sleep(time.Second)
 	}
 	log.Printf("[client] 保活账号 %s 客户端等待锁超时, 强制停止", mc.accountID)
 	mc.client.Stop()
+	return false
 }
 
 // DisconnectAccount removes an account from the connection pool and disconnects.
@@ -515,7 +520,9 @@ func (e *Engine) DisconnectAccount(ctx context.Context, tenantID, accountID uuid
 	e.mu.Unlock()
 	if mc != nil {
 		mc.cancel()
-		stopManagedAsync(mc)
+		if !stopManagedAsync(mc) {
+			return fmt.Errorf("account %s authentication client did not stop cleanly; retry disconnect before deleting credentials", accountID)
+		}
 	}
 
 	// Remove from pool
@@ -531,7 +538,9 @@ func (e *Engine) DisconnectAccount(ctx context.Context, tenantID, accountID uuid
 		// Wait for the active user to release the client and for Stop to finish
 		// flushing the Session before account credentials are deleted.
 		e.registerOrphan(pc)
-		e.stopPooledAsync(pc)
+		if !e.stopPooledAsync(pc) {
+			return fmt.Errorf("account %s client did not release its session lock; retry disconnect before deleting credentials", accountID)
+		}
 	}
 
 	return e.updateStatus(ctx, tenantID, accountID, domain.AccountStatusOffline)
