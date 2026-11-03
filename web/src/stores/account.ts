@@ -59,19 +59,20 @@ let lastAccountsSnapshot = ''
         lastAccountsSnapshot = snap
         accounts.value = next
       }
-      // 尝试从 localStorage 恢复选中账号
+      // 优先保留当前/本地记录的账号，但必须以本次服务端列表为准。
+      // 账号可能在其他页面或设备被删除；不能继续持有已不存在的 currentAccount。
       const savedId = localStorage.getItem(CURRENT_ACCOUNT_KEY)
-      if (savedId) {
-        const saved = accounts.value.find((a: Account) => a.account_id === savedId)
-        if (saved) {
-          currentAccount.value = saved
-          return
-        }
-      }
-      // 如果没有保存的账号，默认选第一个在线账号
-      if (!currentAccount.value && accounts.value.length > 0) {
+      const preferredId = currentAccount.value?.account_id || savedId
+      const matched = preferredId
+        ? accounts.value.find((a: Account) => a.account_id === preferredId)
+        : undefined
+      if (matched) {
+        // 同步成最新列表对象，避免 currentAccount 持有旧字段快照。
+        currentAccount.value = matched
+      } else {
+        // 选中账号已不存在（或从未选择）：回退到在线账号，其次第一项。
         const online = accounts.value.find((a: Account) => a.status === 'online')
-        currentAccount.value = online || accounts.value[0]
+        currentAccount.value = online || accounts.value[0] || null
       }
     } finally {
       loading.value = false
