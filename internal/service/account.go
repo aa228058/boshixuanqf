@@ -588,7 +588,7 @@ func (s *AccountService) ResolvePeer(ctx context.Context, tenantID, accountID uu
 var phoneFromNameRe = regexp.MustCompile(`^\+?(\d[\d\s\-]{5,16}\d)$`)
 
 // extractPhoneFromFilename 从文件名解析 E.164 手机号(+14687014965.session → +14687014965)。
-// entities 表优先(见 ParseTelethonSessionFile), 文件名是第二可靠来源——session 文件内容不一定有手机号。
+// Telethon entities 表只是联系人缓存，不作为本人手机号来源；文件名与同名 sidecar 才是可用的导入元数据。
 func extractPhoneFromFilename(path string) string {
 	base := filepath.Base(path)
 	stem := strings.TrimSpace(strings.TrimSuffix(base, filepath.Ext(base)))
