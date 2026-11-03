@@ -359,7 +359,19 @@ export async function request<T>(endpoint: string, options: RequestOptions = {})
         const retryResponse = await doFetchWithRetry(BASE_URL, endpoint, options, authStore.token)
         if (!retryResponse.ok) {
           const retryData = await retryResponse.json().catch(() => ({}))
-          throw new Error(translateError(retryData.message) || `请求失败: ${retryResponse.status}`)
+          const err: any = new Error(translateError(retryData.message) || `请求失败: ${retryResponse.status}`)
+          err.status = retryResponse.status
+          throw err
+        }
+        // Token 刷新后重试也必须遵守二进制响应契约；否则头像请求在 401→刷新成功后
+        // 会把图片字节当 JSON 解析，最终返回空对象导致图片无法显示。
+        if (options.responseType === 'blob') {
+          emitMutation((options.method || 'GET').toUpperCase(), endpoint)
+          return (await retryResponse.blob()) as T
+        }
+        if (options.responseType === 'arrayBuffer') {
+          emitMutation((options.method || 'GET').toUpperCase(), endpoint)
+          return (await retryResponse.arrayBuffer()) as T
         }
         const retryData = await retryResponse.json().catch(() => ({}))
         emitMutation(options.method || 'GET', endpoint)
