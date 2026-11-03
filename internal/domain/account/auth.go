@@ -22,7 +22,7 @@ func (e *Engine) ConnectAccount(ctx context.Context, tenantID, accountID uuid.UU
 	unlock := e.lockAccountOperation(accountKey(tenantID, accountID))
 	defer unlock()
 	if e.accountConnectionBlocked(accountKey(tenantID, accountID)) {
-		return fmt.Errorf("account %s is transitioning to standby", accountID)
+		return fmt.Errorf("account %s connection is temporarily blocked by a configuration change", accountID)
 	}
 
 	// R181: 用户主动发起重新登录 → 立即解除死密钥熔断。此前要等 30 分钟 TTL 到期才放行，
