@@ -748,8 +748,17 @@ func (s *AccountService) SetPoolStatus(ctx context.Context, tenantID, accountID 
 	if target != "active" && target != "standby" {
 		return fmt.Errorf("无效的池状态: %s", target)
 	}
+	// 先在引擎内封住新连接，再更新数据库和断开旧连接，避免状态落库与断连之间
+	// 的窗口仍命中已有池化客户端。接口断言兼容测试替身/其他实现。
+	blocker, canBlock := s.engine.(interface {
+		SetAccountConnectionBlocked(uuid.UUID, uuid.UUID, bool)
+	})
+	if target == "standby" && canBlock {
+		blocker.SetAccountConnectionBlocked(tenantID, accountID, true)
+	}
 	acc, err := s.repo.GetByID(ctx, tenantID, accountID)
 	if err != nil {
+		if target == "standby" && canBlock { blocker.SetAccountConnectionBlocked(tenantID, accountID, false) }
 		return err
 	}
 	maxAccounts := 0
@@ -764,7 +773,11 @@ func (s *AccountService) SetPoolStatus(ctx context.Context, tenantID, accountID 
 		}
 	}
 	if err := s.repo.SetPoolStatusWithLimit(ctx, tenantID, accountID, target, maxAccounts); err != nil {
+		if target == "standby" && canBlock { blocker.SetAccountConnectionBlocked(tenantID, accountID, false) }
 		return fmt.Errorf("切换池状态失败: %w", err)
+	}
+	if target == "active" && canBlock {
+		blocker.SetAccountConnectionBlocked(tenantID, accountID, false)
 	}
 	if target == "standby" {
 		// 转备用: 断连接停业务, 标记离线。池状态已先落库；
